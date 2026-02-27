@@ -1,0 +1,98 @@
+{
+  "customers": [
+    {
+      "fullName": "Amjad",
+      "userName": "amjad123",
+      "mobileNo": "03245678366",
+      "mainArea": "City",
+      "recoveryAgent": "Mahindar",
+      "packageId": 2,
+      "lockedPackagePrice": 2000,
+      "status": "active",
+      "notes": "",
+      "createdAt": "2026-02-27T10:47:08.316Z",
+      "id": 1
+    },
+    {
+      "fullName": "Haider",
+      "userName": "hsdrgsd",
+      "mobileNo": "04567897654",
+      "mainArea": "West",
+      "recoveryAgent": "Mahindar",
+      "packageId": 2,
+      "lockedPackagePrice": 2000,
+      "status": "active",
+      "notes": "",
+      "createdAt": "2026-02-27T11:47:43.911Z",
+      "id": 2
+    }
+  ],
+  "paymentCycles": [
+    {
+      "customerId": 1,
+      "cycleStartDate": "2026-02-27",
+      "cycleEndDate": "2026-03-29",
+      "totalAmount": 2000,
+      "amountPaid": 2000,
+      "amountPending": 0,
+      "status": "clear",
+      "installments": [
+        {
+          "id": "f36d4ec4-71ca-43f3-8a16-116ffb79b6e1",
+          "amountPaid": 2000,
+          "datePaid": "2026-02-27",
+          "note": "",
+          "createdAt": "2026-02-27T10:47:08.341Z"
+        }
+      ],
+      "createdAt": "2026-02-27T10:47:08.334Z",
+      "id": 1
+    },
+    {
+      "customerId": 2,
+      "cycleStartDate": "2026-01-20",
+      "cycleEndDate": "2026-02-18",
+      "totalAmount": 2000,
+      "amountPaid": 1000,
+      "amountPending": 1000,
+      "status": "pending",
+      "installments": [
+        {
+          "id": "5040e531-f1fc-4d55-9a80-d246922c8586",
+          "amountPaid": 1000,
+          "datePaid": "2026-02-27",
+          "note": "",
+          "createdAt": "2026-02-27T11:47:43.949Z"
+        }
+      ],
+      "createdAt": "2026-02-27T11:47:43.936Z",
+      "id": 2
+    }
+  ],
+  "packages": [
+    {
+      "name": "20 MB",
+      "price": 2000,
+      "speedMbps": 20,
+      "priceHistory": [],
+      "lastUpdated": null,
+      "createdAt": "2026-02-27T09:57:06.954Z",
+      "id": 2
+    }
+  ],
+  "inventory": [],
+  "expenses": [],
+  "settings": {
+    "lastBackupDate": "2026-02-27",
+    "areas": [
+      "North",
+      "City",
+      "East",
+      "West"
+    ],
+    "agents": [
+      "Sahil",
+      "Mahindar"
+    ]
+  }
+}

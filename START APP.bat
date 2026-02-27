@@ -1,0 +1,6 @@
+@echo off
+title Galaxy ISP - Starting...
+cd /d "%~dp0"
+echo Starting Galaxy ISP App...
+start "" "http://localhost:5173"
+npm run dev
