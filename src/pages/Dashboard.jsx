@@ -53,7 +53,7 @@ function getLatestCycle(cycles, customerId) {
   );
 }
 
-export default function Dashboard() {
+export default function Dashboard({ onNavigateToCustomers }) {
   const customers = useCustomerStore((s) => s.customers);
   const cycles = usePaymentStore((s) => s.cycles);
   const expenses = useExpenseStore((s) => s.expenses);
@@ -91,25 +91,41 @@ export default function Dashboard() {
   // ── Stats (computed inline — no useMemo, always fresh) ──────────
   const activeCustomers = customers.filter((c) => !c.isArchived);
 
-  let at_collected = 0,
-    at_pending = 0;
+  // Stats Variables
+  let at_collected = 0;
+  let at_pendingActiveAmount = 0; // Only non-expired pending
+  let at_overdueAmount = 0; // Only expired pending
   let at_overdueCount = 0;
   let at_expiringCount = 0;
   let at_renewalCount = 0;
-  let at_activeCount = 0,
-    at_suspendedCount = 0,
-    at_totalEver = 0;
+  let at_activeCount = 0;
+  let at_suspendedCount = 0;
+  let at_totalEver = 0;
 
   activeCustomers.forEach((c) => {
     if (c.status === "active") at_activeCount++;
     if (c.status === "suspended") at_suspendedCount++;
+
     const cycle = getLatestCycle(cycles, c.id);
     if (!cycle) return;
+
     at_collected += cycle.amountPaid || 0;
-    at_pending += cycle.amountPending || 0;
+
+    // Split Pending Amount Logic
+    const pending = cycle.amountPending || 0;
     const days = daysUntil(cycle.cycleEndDate);
 
-    if (days < 0 && cycle.amountPending > 0) at_overdueCount++;
+    if (pending > 0) {
+      if (days < 0) {
+        // Expired
+        at_overdueAmount += pending;
+        at_overdueCount++;
+      } else {
+        // Active (Not Expired)
+        at_pendingActiveAmount += pending;
+      }
+    }
+
     if (days >= 0 && days <= 5) at_expiringCount++;
     if (days < 0) at_renewalCount++;
   });
@@ -130,7 +146,8 @@ export default function Dashboard() {
     activeCount: at_activeCount,
     suspendedCount: at_suspendedCount,
     collected: at_collected,
-    pending: at_pending,
+    pendingActive: at_pendingActiveAmount, // Updated key
+    overdueAmount: at_overdueAmount, // New key
     totalEverCollected: at_totalEver,
     overdueCount: at_overdueCount,
     expiringCount: at_expiringCount,
@@ -139,7 +156,7 @@ export default function Dashboard() {
     netIncome: at_totalEver - at_totalExpenses,
   };
 
-  // Monthly stats
+  // Monthly stats (Simpler logic: Pending = Any pending balance falling in this month's window)
   const monthStart = new Date(selYear, selMonth, 1);
   const monthEnd = new Date(selYear, selMonth + 1, 0, 23, 59, 59);
   let mo_collected = 0,
@@ -312,7 +329,7 @@ export default function Dashboard() {
       {/* CARDS — ALL TIME */}
       {mode === "alltime" && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
             <BigCard
               icon={<Users size={20} />}
               label="Total Customers"
@@ -328,12 +345,24 @@ export default function Dashboard() {
               color="green"
               isSensitive={true} // Hidden by default
             />
+            {/* CLICKABLE PENDING CARD (ACTIVE ONLY) */}
             <BigCard
               icon={<Clock size={20} />}
               label="Currently Pending"
-              value={`PKR ${allTime.pending.toLocaleString()}`}
-              sub="Unpaid across active cycles"
+              value={`PKR ${allTime.pendingActive.toLocaleString()}`}
+              sub="Active cycles (Not Overdue)"
               color="amber"
+              onClick={() => onNavigateToCustomers("pending")}
+            />
+            {/* NEW: TOTAL OVERDUE CARD */}
+            <BigCard
+              icon={<AlertTriangle size={20} />}
+              label="Total Overdue"
+              value={`PKR ${allTime.overdueAmount.toLocaleString()}`}
+              sub="Expired cycles with balance"
+              color="red"
+              highlight={allTime.overdueAmount > 0}
+              onClick={() => onNavigateToCustomers("overdue")}
             />
             <BigCard
               icon={<XCircle size={20} />}
@@ -343,14 +372,17 @@ export default function Dashboard() {
               color="red"
             />
           </div>
+
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* CLICKABLE OVERDUE COUNT CARD */}
             <BigCard
-              icon={<AlertTriangle size={20} />}
-              label="Overdue (Unpaid)"
+              icon={<Users size={20} />}
+              label="Overdue Customers"
               value={allTime.overdueCount}
-              sub="Expired + has balance due"
+              sub="Count of customers overdue"
               color="red"
               highlight={allTime.overdueCount > 0}
+              onClick={() => onNavigateToCustomers("overdue")}
             />
             <BigCard
               icon={<RefreshCw size={20} />}
@@ -380,7 +412,7 @@ export default function Dashboard() {
         </>
       )}
 
-      {/* CARDS — MONTHLY */}
+      {/* CARDS — MONTHLY (Unchanged mostly, pending remains grouped as snapshot) */}
       {mode === "monthly" && (
         <>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -631,7 +663,6 @@ export default function Dashboard() {
                               {days === 0
                                 ? "Expires today"
                                 : `${days + 1}d left`}
-                              {/* Added +1 here */}
                             </span>
                           )}
                         </td>
@@ -742,13 +773,19 @@ function BigCard({
   color,
   highlight = false,
   isSensitive = false,
+  onClick = null,
 }) {
   const c = colorMap[color] || colorMap.blue;
   const [revealed, setRevealed] = useState(false);
+  const isClickable = !!onClick;
 
   return (
     <div
-      className={`rounded-xl p-5 ${c.bg} flex flex-col justify-between ${highlight ? "ring-2 ring-offset-1 ring-red-300" : ""}`}
+      onClick={onClick}
+      className={`rounded-xl p-5 ${c.bg} flex flex-col justify-between 
+        ${highlight ? "ring-2 ring-offset-1 ring-red-300" : ""}
+        ${isClickable ? "cursor-pointer hover:shadow-md transition-shadow active:scale-[0.99]" : ""}
+      `}
     >
       <div>
         <div className="flex items-center justify-between mb-3">
@@ -759,7 +796,10 @@ function BigCard({
           </div>
           {isSensitive && (
             <button
-              onClick={() => setRevealed(!revealed)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setRevealed(!revealed);
+              }}
               className="text-gray-400 hover:text-gray-600 transition-colors"
               title={revealed ? "Hide Amount" : "Show Amount"}
             >

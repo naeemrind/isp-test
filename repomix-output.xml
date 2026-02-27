@@ -120,7 +120,7 @@ import Customers from "./pages/Customers/Customers";
 import Inventory from "./pages/Inventory/Inventory";
 import Expenses from "./pages/Expenses/Expenses";
 import Settings from "./pages/Settings";
-import Login from "./pages/Login"; // Import the new Login page
+import Login from "./pages/Login";
 
 // Stores
 import useCustomerStore from "./store/useCustomerStore";
@@ -142,6 +142,10 @@ export default function App() {
   const [tab, setTab] = useState("dashboard");
   const [loading, setLoading] = useState(false);
   const [dataLoaded, setDataLoaded] = useState(false);
+
+  // State to handle filter requests from Dashboard to Customers page
+  // We use an object with a timestamp to ensure the useEffect in Customers fires even if the filter is the same
+  const [filterRequest, setFilterRequest] = useState(null);
 
   // Function to load data only AFTER login
   const loadApplicationData = async () => {
@@ -177,6 +181,12 @@ export default function App() {
     setIsAuthenticated(true);
   };
 
+  // Function to handle navigation with specific filter (called from Dashboard)
+  const navigateToCustomers = (filterType) => {
+    setFilterRequest({ type: filterType, timestamp: Date.now() });
+    setTab("customers");
+  };
+
   // 1. Show Login Screen if not authenticated
   if (!isAuthenticated) {
     return <Login onLogin={handleLogin} />;
@@ -201,10 +211,10 @@ export default function App() {
       <BackupBanner />
       <main className="flex-1 overflow-auto">
         <div style={{ display: tab === "dashboard" ? "block" : "none" }}>
-          <Dashboard />
+          <Dashboard onNavigateToCustomers={navigateToCustomers} />
         </div>
         <div style={{ display: tab === "customers" ? "block" : "none" }}>
-          <Customers />
+          <Customers filterRequest={filterRequest} />
         </div>
         <div style={{ display: tab === "inventory" ? "block" : "none" }}>
           <Inventory />
@@ -952,173 +962,6 @@ export const generateWhatsAppLink = (mobileNo, message) => {
 };
 </file>
 
-<file path="src/db/database.js">
-/**
- * database.js — File-based storage via Vite dev server API
- * Replaces IndexedDB/Dexie entirely.
- * Data is stored in galaxy-data.json at the project root.
- * All Chrome profiles, all browsers on the same machine share the same file.
- */
-
-const API = "/api/data";
-
-// In-memory cache so we don't hit the file on every single read
-let _cache = null;
-
-// Replace your existing readAll and writeAll in src/db/database.js with these:
-
-async function readAll() {
-  if (_cache) return _cache;
-
-  // 1. Check if we are running inside the Electron Desktop App
-  if (window.electronAPI) {
-    _cache = await window.electronAPI.readData();
-    return _cache;
-  }
-
-  // 2. Fallback for normal browser (npm run dev)
-  const res = await fetch(API);
-  if (!res.ok) throw new Error("Failed to read data file");
-  _cache = await res.json();
-  return _cache;
-}
-
-async function writeAll(data) {
-  _cache = data;
-
-  // 1. Check if we are running inside the Electron Desktop App
-  if (window.electronAPI) {
-    await window.electronAPI.writeData(data);
-    return;
-  }
-
-  // 2. Fallback for normal browser (npm run dev)
-  const res = await fetch(API, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  if (!res.ok) throw new Error("Failed to write data file");
-}
-// Invalidate cache (called after writes so next read is fresh)
-function invalidate() {
-  _cache = null;
-}
-
-// ── Generic table operations ─────────────────────────────────────
-
-async function getTable(table) {
-  const data = await readAll();
-  return data[table] || [];
-}
-
-async function addRow(table, row) {
-  const data = await readAll();
-  const rows = data[table] || [];
-  // Auto-increment ID
-  const maxId = rows.reduce((m, r) => Math.max(m, Number(r.id) || 0), 0);
-  const newRow = { ...row, id: maxId + 1 };
-  data[table] = [...rows, newRow];
-  await writeAll(data);
-  return newRow;
-}
-
-async function updateRow(table, id, updates) {
-  const data = await readAll();
-  data[table] = (data[table] || []).map((r) =>
-    r.id === id ? { ...r, ...updates } : r,
-  );
-  await writeAll(data);
-}
-
-async function deleteRow(table, id) {
-  const data = await readAll();
-  data[table] = (data[table] || []).filter((r) => r.id !== id);
-  await writeAll(data);
-}
-
-async function getRow(table, id) {
-  const rows = await getTable(table);
-  return rows.find((r) => r.id === id) || null;
-}
-
-async function deleteManyWhere(table, field, value) {
-  const data = await readAll();
-  data[table] = (data[table] || []).filter((r) => r[field] !== value);
-  await writeAll(data);
-}
-
-// ── Settings (key/value store) ───────────────────────────────────
-
-async function getSetting(key) {
-  const data = await readAll();
-  const val = (data.settings || {})[key];
-  return val !== undefined ? { key, value: val } : null;
-}
-
-async function setSetting(key, value) {
-  const data = await readAll();
-  data.settings = { ...(data.settings || {}), [key]: value };
-  await writeAll(data);
-}
-
-// ── db interface (mirrors the Dexie API used by stores) ─────────
-
-const db = {
-  customers: {
-    toArray: () => getTable("customers"),
-    get: (id) => getRow("customers", id),
-    add: (row) => addRow("customers", row).then((r) => r.id),
-    update: (id, data) => updateRow("customers", id, data),
-    delete: (id) => deleteRow("customers", id),
-  },
-  paymentCycles: {
-    toArray: () => getTable("paymentCycles"),
-    get: (id) => getRow("paymentCycles", id),
-    add: (row) => addRow("paymentCycles", row).then((r) => r.id),
-    update: (id, data) => updateRow("paymentCycles", id, data),
-    delete: (id) => deleteRow("paymentCycles", id),
-    where: (field) => ({
-      equals: (value) => ({
-        delete: () => deleteManyWhere("paymentCycles", field, value),
-        toArray: async () => {
-          const rows = await getTable("paymentCycles");
-          return rows.filter((r) => r[field] === value);
-        },
-      }),
-    }),
-  },
-  packages: {
-    toArray: () => getTable("packages"),
-    get: (id) => getRow("packages", id),
-    add: (row) => addRow("packages", row).then((r) => r.id),
-    update: (id, data) => updateRow("packages", id, data),
-    delete: (id) => deleteRow("packages", id),
-  },
-  inventory: {
-    toArray: () => getTable("inventory"),
-    get: (id) => getRow("inventory", id),
-    add: (row) => addRow("inventory", row).then((r) => r.id),
-    update: (id, data) => updateRow("inventory", id, data),
-    delete: (id) => deleteRow("inventory", id),
-  },
-  expenses: {
-    toArray: () => getTable("expenses"),
-    get: (id) => getRow("expenses", id),
-    add: (row) => addRow("expenses", row).then((r) => r.id),
-    update: (id, data) => updateRow("expenses", id, data),
-    delete: (id) => deleteRow("expenses", id),
-  },
-  settings: {
-    get: (key) => getSetting(key),
-    put: ({ key, value }) => setSetting(key, value),
-  },
-};
-
-export default db;
-export { readAll, writeAll, invalidate };
-</file>
-
 <file path="src/main.jsx">
 import { createRoot } from "react-dom/client";
 import "./index.css";
@@ -1600,7 +1443,7 @@ function Field({ label, error, children }) {
 </file>
 
 <file path="src/pages/Customers/Customers.jsx">
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Plus,
   Search,
@@ -1616,10 +1459,24 @@ import CustomerForm from "./CustomerForm";
 import PaymentForm from "../Payments/PaymentForm";
 import useCustomerStore from "../../store/useCustomerStore";
 import usePaymentStore from "../../store/usePaymentStore";
-import { formatDate } from "../../utils/dateUtils";
+import { formatDate, daysUntil } from "../../utils/dateUtils";
 import HistoryModal from "../../components/ui/HistoryModal";
 
-export default function Customers() {
+// Defined OUTSIDE the component to prevent re-creation on every render
+const FilterButton = ({ id, label, currentFilter, setFilter }) => (
+  <button
+    onClick={() => setFilter(id)}
+    className={`px-3 py-1.5 text-xs rounded capitalize transition-colors ${
+      currentFilter === id
+        ? "bg-gray-800 text-white shadow-sm"
+        : "border border-gray-300 text-gray-600 hover:bg-gray-50"
+    }`}
+  >
+    {label}
+  </button>
+);
+
+export default function Customers({ filterRequest }) {
   const customers = useCustomerStore((s) => s.customers);
   const archiveCustomer = useCustomerStore((s) => s.archiveCustomer);
   const restoreCustomer = useCustomerStore((s) => s.restoreCustomer);
@@ -1640,10 +1497,21 @@ export default function Customers() {
   const [archiveTarget, setArchiveTarget] = useState(null);
   const [restoreTarget, setRestoreTarget] = useState(null);
   const [purgeTarget, setPurgeTarget] = useState(null);
-  const [historyCustomer, setHistoryCustomer] = useState(null); // <-- Add State for History
+  const [historyCustomer, setHistoryCustomer] = useState(null);
 
   const activeCustomers = customers.filter((c) => !c.isArchived);
   const archivedCustomers = customers.filter((c) => c.isArchived);
+
+  // Effect to listen to requests from Dashboard (via App.jsx)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (filterRequest) {
+        setView("active");
+        setFilter(filterRequest.type);
+      }
+      return () => clearTimeout(timer);
+    }, 0);
+  }, [filterRequest]);
 
   // 1. FILTERING
   const q = search.toLowerCase();
@@ -1655,19 +1523,34 @@ export default function Customers() {
     c.mainArea?.toLowerCase().includes(q);
 
   const filteredActive = activeCustomers.filter((c) => {
-    const matchFilter =
-      filter === "active"
-        ? c.status === "active"
-        : filter === "suspended"
-          ? c.status === "suspended"
-          : filter === "terminated"
-            ? c.status === "terminated"
-            : true;
-    return matchFilter && matchSearch(c);
+    const cycle = getActiveCycle(c.id);
+    const days = cycle ? daysUntil(cycle.cycleEndDate) : 0;
+
+    // Search Filter
+    if (!matchSearch(c)) return false;
+
+    // Logic for Buttons
+    switch (filter) {
+      case "all":
+        return true;
+      case "active":
+        return c.status === "active";
+      case "suspended":
+        return c.status === "suspended";
+      case "terminated":
+        return c.status === "terminated";
+      case "pending":
+        // Shows active customer with pending balance BUT NOT overdue yet
+        return cycle && cycle.amountPending > 0 && days >= 0;
+      case "overdue":
+        // Shows active customers with pending balance AND expired date
+        return cycle && cycle.amountPending > 0 && days < 0;
+      default:
+        return true;
+    }
   });
 
   // 2. SORTING
-  // Removed useMemo because filteredActive is a new reference every render.
   const sortedActive = [...filteredActive].sort((a, b) => {
     const cycleA = getActiveCycle(a.id);
     const cycleB = getActiveCycle(b.id);
@@ -1749,8 +1632,8 @@ export default function Customers() {
       {/* SEARCH + FILTER + SORT */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         {/* Left Side: Search & Status Filters */}
-        <div className="flex items-center gap-2 flex-1 min-w-62.5">
-          <div className="relative flex-1 max-w-xs">
+        <div className="flex items-center gap-2 flex-1 min-w-62.5 overflow-x-auto pb-1 md:pb-0">
+          <div className="relative min-w-[140px] max-w-xs">
             <Search
               size={14}
               className="absolute left-2.5 top-2 text-gray-400"
@@ -1764,19 +1647,37 @@ export default function Customers() {
           </div>
           {view === "active" && (
             <div className="flex gap-1">
-              {["all", "active", "suspended"].map((f) => (
-                <button
-                  key={f}
-                  onClick={() => setFilter(f)}
-                  className={`px-3 py-1.5 text-xs rounded capitalize ${
-                    filter === f
-                      ? "bg-gray-800 text-white"
-                      : "border border-gray-300 text-gray-600 hover:bg-gray-50"
-                  }`}
-                >
-                  {f}
-                </button>
-              ))}
+              <FilterButton
+                id="all"
+                label="All"
+                currentFilter={filter}
+                setFilter={setFilter}
+              />
+              <FilterButton
+                id="active"
+                label="Active"
+                currentFilter={filter}
+                setFilter={setFilter}
+              />
+              <FilterButton
+                id="suspended"
+                label="Suspended"
+                currentFilter={filter}
+                setFilter={setFilter}
+              />
+              {/* Added Pending and Overdue Buttons */}
+              <FilterButton
+                id="pending"
+                label="Pending"
+                currentFilter={filter}
+                setFilter={setFilter}
+              />
+              <FilterButton
+                id="overdue"
+                label="Overdue"
+                currentFilter={filter}
+                setFilter={setFilter}
+              />
             </div>
           )}
         </div>
@@ -2099,8 +2000,15 @@ export default function CustomerTable({
                 <td className="px-3 py-2 text-gray-600">
                   {customer.mainArea || "-"}
                 </td>
-                <td className="px-3 py-2 text-gray-600">
-                  {pkg ? pkg.name : "-"}
+                <td className="px-3 py-2">
+                  <div className="text-gray-800 font-medium">
+                    {pkg ? pkg.name : "-"}
+                  </div>
+                  {customer.lockedPackagePrice > 0 && (
+                    <div className="text-xs text-gray-400">
+                      PKR {customer.lockedPackagePrice.toLocaleString()}
+                    </div>
+                  )}
                 </td>
                 <td className="px-3 py-2">
                   {cycle ? (
@@ -2262,7 +2170,7 @@ function getLatestCycle(cycles, customerId) {
   );
 }
 
-export default function Dashboard() {
+export default function Dashboard({ onNavigateToCustomers }) {
   const customers = useCustomerStore((s) => s.customers);
   const cycles = usePaymentStore((s) => s.cycles);
   const expenses = useExpenseStore((s) => s.expenses);
@@ -2300,25 +2208,41 @@ export default function Dashboard() {
   // ── Stats (computed inline — no useMemo, always fresh) ──────────
   const activeCustomers = customers.filter((c) => !c.isArchived);
 
-  let at_collected = 0,
-    at_pending = 0;
+  // Stats Variables
+  let at_collected = 0;
+  let at_pendingActiveAmount = 0; // Only non-expired pending
+  let at_overdueAmount = 0; // Only expired pending
   let at_overdueCount = 0;
   let at_expiringCount = 0;
   let at_renewalCount = 0;
-  let at_activeCount = 0,
-    at_suspendedCount = 0,
-    at_totalEver = 0;
+  let at_activeCount = 0;
+  let at_suspendedCount = 0;
+  let at_totalEver = 0;
 
   activeCustomers.forEach((c) => {
     if (c.status === "active") at_activeCount++;
     if (c.status === "suspended") at_suspendedCount++;
+
     const cycle = getLatestCycle(cycles, c.id);
     if (!cycle) return;
+
     at_collected += cycle.amountPaid || 0;
-    at_pending += cycle.amountPending || 0;
+
+    // Split Pending Amount Logic
+    const pending = cycle.amountPending || 0;
     const days = daysUntil(cycle.cycleEndDate);
 
-    if (days < 0 && cycle.amountPending > 0) at_overdueCount++;
+    if (pending > 0) {
+      if (days < 0) {
+        // Expired
+        at_overdueAmount += pending;
+        at_overdueCount++;
+      } else {
+        // Active (Not Expired)
+        at_pendingActiveAmount += pending;
+      }
+    }
+
     if (days >= 0 && days <= 5) at_expiringCount++;
     if (days < 0) at_renewalCount++;
   });
@@ -2339,7 +2263,8 @@ export default function Dashboard() {
     activeCount: at_activeCount,
     suspendedCount: at_suspendedCount,
     collected: at_collected,
-    pending: at_pending,
+    pendingActive: at_pendingActiveAmount, // Updated key
+    overdueAmount: at_overdueAmount, // New key
     totalEverCollected: at_totalEver,
     overdueCount: at_overdueCount,
     expiringCount: at_expiringCount,
@@ -2348,7 +2273,7 @@ export default function Dashboard() {
     netIncome: at_totalEver - at_totalExpenses,
   };
 
-  // Monthly stats
+  // Monthly stats (Simpler logic: Pending = Any pending balance falling in this month's window)
   const monthStart = new Date(selYear, selMonth, 1);
   const monthEnd = new Date(selYear, selMonth + 1, 0, 23, 59, 59);
   let mo_collected = 0,
@@ -2521,7 +2446,7 @@ export default function Dashboard() {
       {/* CARDS — ALL TIME */}
       {mode === "alltime" && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
             <BigCard
               icon={<Users size={20} />}
               label="Total Customers"
@@ -2537,12 +2462,24 @@ export default function Dashboard() {
               color="green"
               isSensitive={true} // Hidden by default
             />
+            {/* CLICKABLE PENDING CARD (ACTIVE ONLY) */}
             <BigCard
               icon={<Clock size={20} />}
               label="Currently Pending"
-              value={`PKR ${allTime.pending.toLocaleString()}`}
-              sub="Unpaid across active cycles"
+              value={`PKR ${allTime.pendingActive.toLocaleString()}`}
+              sub="Active cycles (Not Overdue)"
               color="amber"
+              onClick={() => onNavigateToCustomers("pending")}
+            />
+            {/* NEW: TOTAL OVERDUE CARD */}
+            <BigCard
+              icon={<AlertTriangle size={20} />}
+              label="Total Overdue"
+              value={`PKR ${allTime.overdueAmount.toLocaleString()}`}
+              sub="Expired cycles with balance"
+              color="red"
+              highlight={allTime.overdueAmount > 0}
+              onClick={() => onNavigateToCustomers("overdue")}
             />
             <BigCard
               icon={<XCircle size={20} />}
@@ -2552,14 +2489,17 @@ export default function Dashboard() {
               color="red"
             />
           </div>
+
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* CLICKABLE OVERDUE COUNT CARD */}
             <BigCard
-              icon={<AlertTriangle size={20} />}
-              label="Overdue (Unpaid)"
+              icon={<Users size={20} />}
+              label="Overdue Customers"
               value={allTime.overdueCount}
-              sub="Expired + has balance due"
+              sub="Count of customers overdue"
               color="red"
               highlight={allTime.overdueCount > 0}
+              onClick={() => onNavigateToCustomers("overdue")}
             />
             <BigCard
               icon={<RefreshCw size={20} />}
@@ -2589,7 +2529,7 @@ export default function Dashboard() {
         </>
       )}
 
-      {/* CARDS — MONTHLY */}
+      {/* CARDS — MONTHLY (Unchanged mostly, pending remains grouped as snapshot) */}
       {mode === "monthly" && (
         <>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -2840,7 +2780,6 @@ export default function Dashboard() {
                               {days === 0
                                 ? "Expires today"
                                 : `${days + 1}d left`}
-                              {/* Added +1 here */}
                             </span>
                           )}
                         </td>
@@ -2951,13 +2890,19 @@ function BigCard({
   color,
   highlight = false,
   isSensitive = false,
+  onClick = null,
 }) {
   const c = colorMap[color] || colorMap.blue;
   const [revealed, setRevealed] = useState(false);
+  const isClickable = !!onClick;
 
   return (
     <div
-      className={`rounded-xl p-5 ${c.bg} flex flex-col justify-between ${highlight ? "ring-2 ring-offset-1 ring-red-300" : ""}`}
+      onClick={onClick}
+      className={`rounded-xl p-5 ${c.bg} flex flex-col justify-between 
+        ${highlight ? "ring-2 ring-offset-1 ring-red-300" : ""}
+        ${isClickable ? "cursor-pointer hover:shadow-md transition-shadow active:scale-[0.99]" : ""}
+      `}
     >
       <div>
         <div className="flex items-center justify-between mb-3">
@@ -2968,7 +2913,10 @@ function BigCard({
           </div>
           {isSensitive && (
             <button
-              onClick={() => setRevealed(!revealed)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setRevealed(!revealed);
+              }}
               className="text-gray-400 hover:text-gray-600 transition-colors"
               title={revealed ? "Hide Amount" : "Show Amount"}
             >
@@ -5472,6 +5420,218 @@ export default defineConfig({
     },
   },
 });
+</file>
+
+<file path="src/db/database.js">
+/**
+ * database.js — Modified for Vercel / LocalStorage
+ */
+
+// Make Sure to Remove localStorage Code once the app is fully ready for production.
+
+// ------------------------------------------------------------------
+// PART 1: ORIGINAL CODE (COMMENTED OUT)
+// ------------------------------------------------------------------
+/*
+const API = "/api/data";
+
+// In-memory cache so we don't hit the file on every single read
+let _cache = null;
+
+async function readAll() {
+  if (_cache) return _cache;
+
+  // 1. Check if we are running inside the Electron Desktop App
+  if (window.electronAPI) {
+    _cache = await window.electronAPI.readData();
+    return _cache;
+  }
+
+  // 2. Fallback for normal browser (npm run dev)
+  const res = await fetch(API);
+  if (!res.ok) throw new Error("Failed to read data file");
+  _cache = await res.json();
+  return _cache;
+}
+
+async function writeAll(data) {
+  _cache = data;
+
+  // 1. Check if we are running inside the Electron Desktop App
+  if (window.electronAPI) {
+    await window.electronAPI.writeData(data);
+    return;
+  }
+
+  // 2. Fallback for normal browser (npm run dev)
+  const res = await fetch(API, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error("Failed to write data file");
+}
+
+function invalidate() {
+  _cache = null;
+}
+*/
+
+// ------------------------------------------------------------------
+// PART 2: NEW CODE (FOR VERCEL / LOCALSTORAGE)
+// ------------------------------------------------------------------
+
+// This key is where your data lives in the browser
+const DB_KEY = "galaxy_isp_data_v1";
+
+// New readAll function
+async function readAll() {
+  // 1. Try to get data from Chrome/Browser LocalStorage
+  const rawData = localStorage.getItem(DB_KEY);
+
+  // 2. If data exists, parse it into JSON and return it
+  if (rawData) {
+    return JSON.parse(rawData);
+  }
+
+  // 3. If NO data exists (first time loading), return an empty structure.
+  // This prevents "undefined" errors in the rest of your app.
+  return {
+    customers: [],
+    paymentCycles: [],
+    packages: [],
+    inventory: [],
+    expenses: [],
+    settings: {},
+  };
+}
+
+// New writeAll function
+async function writeAll(data) {
+  // Save the data object as a string in LocalStorage
+  localStorage.setItem(DB_KEY, JSON.stringify(data));
+}
+
+// New invalidate function (does nothing, but prevents errors)
+function invalidate() {
+  // No cache to clear in LocalStorage mode
+}
+
+// ------------------------------------------------------------------
+// PART 3: EXISTING LOGIC (KEEP EVERYTHING BELOW THIS LINE AS IS)
+// ------------------------------------------------------------------
+// ── Generic table operations ─────────────────────────────────────
+
+async function getTable(table) {
+  const data = await readAll();
+  return data[table] || [];
+}
+
+async function addRow(table, row) {
+  const data = await readAll();
+  const rows = data[table] || [];
+  // Auto-increment ID
+  const maxId = rows.reduce((m, r) => Math.max(m, Number(r.id) || 0), 0);
+  const newRow = { ...row, id: maxId + 1 };
+  data[table] = [...rows, newRow];
+  await writeAll(data);
+  return newRow;
+}
+
+async function updateRow(table, id, updates) {
+  const data = await readAll();
+  data[table] = (data[table] || []).map((r) =>
+    r.id === id ? { ...r, ...updates } : r,
+  );
+  await writeAll(data);
+}
+
+async function deleteRow(table, id) {
+  const data = await readAll();
+  data[table] = (data[table] || []).filter((r) => r.id !== id);
+  await writeAll(data);
+}
+
+async function getRow(table, id) {
+  const rows = await getTable(table);
+  return rows.find((r) => r.id === id) || null;
+}
+
+async function deleteManyWhere(table, field, value) {
+  const data = await readAll();
+  data[table] = (data[table] || []).filter((r) => r[field] !== value);
+  await writeAll(data);
+}
+
+// ── Settings (key/value store) ───────────────────────────────────
+
+async function getSetting(key) {
+  const data = await readAll();
+  const val = (data.settings || {})[key];
+  return val !== undefined ? { key, value: val } : null;
+}
+
+async function setSetting(key, value) {
+  const data = await readAll();
+  data.settings = { ...(data.settings || {}), [key]: value };
+  await writeAll(data);
+}
+
+// ── db interface (mirrors the Dexie API used by stores) ─────────
+
+const db = {
+  customers: {
+    toArray: () => getTable("customers"),
+    get: (id) => getRow("customers", id),
+    add: (row) => addRow("customers", row).then((r) => r.id),
+    update: (id, data) => updateRow("customers", id, data),
+    delete: (id) => deleteRow("customers", id),
+  },
+  paymentCycles: {
+    toArray: () => getTable("paymentCycles"),
+    get: (id) => getRow("paymentCycles", id),
+    add: (row) => addRow("paymentCycles", row).then((r) => r.id),
+    update: (id, data) => updateRow("paymentCycles", id, data),
+    delete: (id) => deleteRow("paymentCycles", id),
+    where: (field) => ({
+      equals: (value) => ({
+        delete: () => deleteManyWhere("paymentCycles", field, value),
+        toArray: async () => {
+          const rows = await getTable("paymentCycles");
+          return rows.filter((r) => r[field] === value);
+        },
+      }),
+    }),
+  },
+  packages: {
+    toArray: () => getTable("packages"),
+    get: (id) => getRow("packages", id),
+    add: (row) => addRow("packages", row).then((r) => r.id),
+    update: (id, data) => updateRow("packages", id, data),
+    delete: (id) => deleteRow("packages", id),
+  },
+  inventory: {
+    toArray: () => getTable("inventory"),
+    get: (id) => getRow("inventory", id),
+    add: (row) => addRow("inventory", row).then((r) => r.id),
+    update: (id, data) => updateRow("inventory", id, data),
+    delete: (id) => deleteRow("inventory", id),
+  },
+  expenses: {
+    toArray: () => getTable("expenses"),
+    get: (id) => getRow("expenses", id),
+    add: (row) => addRow("expenses", row).then((r) => r.id),
+    update: (id, data) => updateRow("expenses", id, data),
+    delete: (id) => deleteRow("expenses", id),
+  },
+  settings: {
+    get: (key) => getSetting(key),
+    put: ({ key, value }) => setSetting(key, value),
+  },
+};
+
+export default db;
+export { readAll, writeAll, invalidate };
 </file>
 
 </files>

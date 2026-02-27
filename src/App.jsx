@@ -6,7 +6,7 @@ import Customers from "./pages/Customers/Customers";
 import Inventory from "./pages/Inventory/Inventory";
 import Expenses from "./pages/Expenses/Expenses";
 import Settings from "./pages/Settings";
-import Login from "./pages/Login"; // Import the new Login page
+import Login from "./pages/Login";
 
 // Stores
 import useCustomerStore from "./store/useCustomerStore";
@@ -28,6 +28,10 @@ export default function App() {
   const [tab, setTab] = useState("dashboard");
   const [loading, setLoading] = useState(false);
   const [dataLoaded, setDataLoaded] = useState(false);
+
+  // State to handle filter requests from Dashboard to Customers page
+  // We use an object with a timestamp to ensure the useEffect in Customers fires even if the filter is the same
+  const [filterRequest, setFilterRequest] = useState(null);
 
   // Function to load data only AFTER login
   const loadApplicationData = async () => {
@@ -63,6 +67,12 @@ export default function App() {
     setIsAuthenticated(true);
   };
 
+  // Function to handle navigation with specific filter (called from Dashboard)
+  const navigateToCustomers = (filterType) => {
+    setFilterRequest({ type: filterType, timestamp: Date.now() });
+    setTab("customers");
+  };
+
   // 1. Show Login Screen if not authenticated
   if (!isAuthenticated) {
     return <Login onLogin={handleLogin} />;
@@ -87,10 +97,10 @@ export default function App() {
       <BackupBanner />
       <main className="flex-1 overflow-auto">
         <div style={{ display: tab === "dashboard" ? "block" : "none" }}>
-          <Dashboard />
+          <Dashboard onNavigateToCustomers={navigateToCustomers} />
         </div>
         <div style={{ display: tab === "customers" ? "block" : "none" }}>
-          <Customers />
+          <Customers filterRequest={filterRequest} />
         </div>
         <div style={{ display: tab === "inventory" ? "block" : "none" }}>
           <Inventory />

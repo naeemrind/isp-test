@@ -1,11 +1,11 @@
-// src/components/ui/HistoryModal.jsx
 import {
   Calendar,
-  ArrowRight,
   Wallet,
   CheckCircle,
   AlertCircle,
   Receipt,
+  ArrowRightCircle,
+  History,
 } from "lucide-react";
 import Modal from "./Modal";
 import Badge from "./Badge";
@@ -31,7 +31,7 @@ export default function HistoryModal({ customer, onClose }) {
       isOpen={!!customer}
       onClose={onClose}
       title={`Payment History: ${customer.fullName}`}
-      size="3xl" // <--- Set to the newly created 1200px size
+      size="3xl"
     >
       <div className="space-y-6">
         {/* ── TOP SUMMARY DASHBOARD ── */}
@@ -60,7 +60,9 @@ export default function HistoryModal({ customer, onClose }) {
               Total Unpaid Balance
             </span>
             <span
-              className={`text-xl font-black ${totalPending > 0 ? "text-red-600" : "text-green-600"}`}
+              className={`text-xl font-black ${
+                totalPending > 0 ? "text-red-600" : "text-green-600"
+              }`}
             >
               PKR {totalPending.toLocaleString()}
             </span>
@@ -88,39 +90,70 @@ export default function HistoryModal({ customer, onClose }) {
             </div>
           ) : (
             cycles.map((cycle) => {
+              // 1. Detect if this cycle was transferred
+              const isTransferred =
+                cycle.note && cycle.note.includes("[Bal Transferred"); // Match broader string to catch both formats
+
+              // 2. Try to extract the specific amount
+              // Format matches: "[Bal Transferred: 2000]"
+              const transferMatch = cycle.note
+                ? cycle.note.match(/\[Bal Transferred:\s*(\d+)\]/)
+                : null;
+              const transferredAmount = transferMatch
+                ? Number(transferMatch[1])
+                : null;
+
               const isClear = cycle.amountPending === 0;
+
+              // Calculate percent paid
               const percentPaid =
                 cycle.totalAmount > 0
                   ? Math.min(
                       100,
                       Math.round((cycle.amountPaid / cycle.totalAmount) * 100),
                     )
-                  : 0;
+                  : isTransferred || isClear
+                    ? 100
+                    : 0;
+
+              // Determine styling based on status
+              let borderColor = "border-gray-100";
+              let headerBg = "bg-gray-50/70 border-gray-100";
+              let bodyBg = "bg-white";
+
+              if (isTransferred) {
+                borderColor = "border-purple-200";
+                headerBg = "bg-purple-100 border-purple-200";
+                bodyBg = "bg-purple-50/30";
+              } else if (!isClear) {
+                borderColor = "border-orange-200";
+                headerBg = "bg-orange-50 border-orange-200";
+                bodyBg = "bg-orange-50/10";
+              }
 
               return (
                 <div
                   key={cycle.id}
-                  className={`border-2 rounded-xl overflow-hidden transition-colors ${
-                    isClear
-                      ? "border-gray-100 bg-white"
-                      : "border-orange-200 bg-orange-50/10"
-                  }`}
+                  className={`border-2 rounded-xl overflow-hidden transition-colors ${borderColor} ${bodyBg}`}
                 >
                   {/* Cycle Header */}
                   <div
-                    className={`px-4 py-3 border-b flex justify-between items-center ${
-                      isClear
-                        ? "bg-gray-50/70 border-gray-100"
-                        : "bg-orange-50 border-orange-200"
-                    }`}
+                    className={`px-4 py-3 border-b flex justify-between items-center ${headerBg}`}
                   >
                     <div className="flex items-center gap-2.5">
-                      <Calendar
-                        size={16}
-                        className={
-                          isClear ? "text-gray-400" : "text-orange-500"
-                        }
-                      />
+                      {isTransferred ? (
+                        <ArrowRightCircle
+                          size={16}
+                          className="text-purple-600"
+                        />
+                      ) : (
+                        <Calendar
+                          size={16}
+                          className={
+                            isClear ? "text-gray-400" : "text-orange-500"
+                          }
+                        />
+                      )}
                       <span className="text-sm font-bold text-gray-800 tracking-tight">
                         {formatDate(cycle.cycleStartDate)}
                         <span className="mx-2 text-gray-400 font-normal">
@@ -129,10 +162,50 @@ export default function HistoryModal({ customer, onClose }) {
                         {formatDate(cycle.cycleEndDate)}
                       </span>
                     </div>
-                    <Badge status={cycle.status} />
+
+                    {isTransferred ? (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-xs font-bold bg-purple-200 text-purple-800 border border-purple-300">
+                        Forwarded
+                      </span>
+                    ) : (
+                      <Badge status={cycle.status} />
+                    )}
                   </div>
 
                   <div className="p-4">
+                    {/* TRANSFERRED BANNER */}
+                    {isTransferred && (
+                      <div className="mb-4 bg-purple-100 text-purple-900 px-3 py-2.5 rounded-lg flex items-start gap-3 text-xs border border-purple-200 shadow-sm">
+                        <History size={16} className="mt-0.5 shrink-0" />
+                        <div className="leading-relaxed">
+                          {transferredAmount ? (
+                            <>
+                              <strong className="text-purple-900 text-sm">
+                                PKR {transferredAmount.toLocaleString()} Shifted
+                              </strong>
+                              <div className="mt-0.5 opacity-90">
+                                This amount was unpaid in this cycle and has
+                                been added to the{" "}
+                                <span
+                                  className="underline font-semibold cursor-help"
+                                  title="Check the newest cycle"
+                                >
+                                  next billing cycle
+                                </span>
+                                .
+                              </div>
+                            </>
+                          ) : (
+                            // Fallback for older data without exact amount recorded
+                            <>
+                              <strong>Balance Shifted:</strong> The unpaid dues
+                              were added to the next cycle.
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Financials Row */}
                     <div className="flex items-center justify-between mb-3 text-sm px-2">
                       <div className="flex flex-col">
@@ -169,7 +242,9 @@ export default function HistoryModal({ customer, onClose }) {
                           Pending
                         </span>
                         <span
-                          className={`font-extrabold text-base ${!isClear ? "text-red-600" : "text-gray-400"}`}
+                          className={`font-extrabold text-base ${
+                            !isClear ? "text-red-600" : "text-gray-400"
+                          }`}
                         >
                           PKR {cycle.amountPending}
                         </span>
@@ -179,7 +254,13 @@ export default function HistoryModal({ customer, onClose }) {
                     {/* Progress Bar */}
                     <div className="w-full bg-gray-100 rounded-full h-1.5 mb-4 overflow-hidden mt-2">
                       <div
-                        className={`h-1.5 rounded-full transition-all duration-500 ${isClear ? "bg-green-500" : "bg-blue-500"}`}
+                        className={`h-1.5 rounded-full transition-all duration-500 ${
+                          isTransferred
+                            ? "bg-purple-400"
+                            : isClear
+                              ? "bg-green-500"
+                              : "bg-blue-500"
+                        }`}
                         style={{ width: `${percentPaid}%` }}
                       ></div>
                     </div>

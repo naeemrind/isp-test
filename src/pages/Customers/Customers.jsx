@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Plus,
   Search,
@@ -14,10 +14,24 @@ import CustomerForm from "./CustomerForm";
 import PaymentForm from "../Payments/PaymentForm";
 import useCustomerStore from "../../store/useCustomerStore";
 import usePaymentStore from "../../store/usePaymentStore";
-import { formatDate } from "../../utils/dateUtils";
+import { formatDate, daysUntil } from "../../utils/dateUtils";
 import HistoryModal from "../../components/ui/HistoryModal";
 
-export default function Customers() {
+// Defined OUTSIDE the component to prevent re-creation on every render
+const FilterButton = ({ id, label, currentFilter, setFilter }) => (
+  <button
+    onClick={() => setFilter(id)}
+    className={`px-3 py-1.5 text-xs rounded capitalize transition-colors ${
+      currentFilter === id
+        ? "bg-gray-800 text-white shadow-sm"
+        : "border border-gray-300 text-gray-600 hover:bg-gray-50"
+    }`}
+  >
+    {label}
+  </button>
+);
+
+export default function Customers({ filterRequest }) {
   const customers = useCustomerStore((s) => s.customers);
   const archiveCustomer = useCustomerStore((s) => s.archiveCustomer);
   const restoreCustomer = useCustomerStore((s) => s.restoreCustomer);
@@ -38,10 +52,21 @@ export default function Customers() {
   const [archiveTarget, setArchiveTarget] = useState(null);
   const [restoreTarget, setRestoreTarget] = useState(null);
   const [purgeTarget, setPurgeTarget] = useState(null);
-  const [historyCustomer, setHistoryCustomer] = useState(null); // <-- Add State for History
+  const [historyCustomer, setHistoryCustomer] = useState(null);
 
   const activeCustomers = customers.filter((c) => !c.isArchived);
   const archivedCustomers = customers.filter((c) => c.isArchived);
+
+  // Effect to listen to requests from Dashboard (via App.jsx)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (filterRequest) {
+        setView("active");
+        setFilter(filterRequest.type);
+      }
+      return () => clearTimeout(timer);
+    }, 0);
+  }, [filterRequest]);
 
   // 1. FILTERING
   const q = search.toLowerCase();
@@ -53,19 +78,34 @@ export default function Customers() {
     c.mainArea?.toLowerCase().includes(q);
 
   const filteredActive = activeCustomers.filter((c) => {
-    const matchFilter =
-      filter === "active"
-        ? c.status === "active"
-        : filter === "suspended"
-          ? c.status === "suspended"
-          : filter === "terminated"
-            ? c.status === "terminated"
-            : true;
-    return matchFilter && matchSearch(c);
+    const cycle = getActiveCycle(c.id);
+    const days = cycle ? daysUntil(cycle.cycleEndDate) : 0;
+
+    // Search Filter
+    if (!matchSearch(c)) return false;
+
+    // Logic for Buttons
+    switch (filter) {
+      case "all":
+        return true;
+      case "active":
+        return c.status === "active";
+      case "suspended":
+        return c.status === "suspended";
+      case "terminated":
+        return c.status === "terminated";
+      case "pending":
+        // Shows active customer with pending balance BUT NOT overdue yet
+        return cycle && cycle.amountPending > 0 && days >= 0;
+      case "overdue":
+        // Shows active customers with pending balance AND expired date
+        return cycle && cycle.amountPending > 0 && days < 0;
+      default:
+        return true;
+    }
   });
 
   // 2. SORTING
-  // Removed useMemo because filteredActive is a new reference every render.
   const sortedActive = [...filteredActive].sort((a, b) => {
     const cycleA = getActiveCycle(a.id);
     const cycleB = getActiveCycle(b.id);
@@ -147,8 +187,8 @@ export default function Customers() {
       {/* SEARCH + FILTER + SORT */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         {/* Left Side: Search & Status Filters */}
-        <div className="flex items-center gap-2 flex-1 min-w-62.5">
-          <div className="relative flex-1 max-w-xs">
+        <div className="flex items-center gap-2 flex-1 min-w-62.5 overflow-x-auto pb-1 md:pb-0">
+          <div className="relative min-w-[140px] max-w-xs">
             <Search
               size={14}
               className="absolute left-2.5 top-2 text-gray-400"
@@ -162,19 +202,37 @@ export default function Customers() {
           </div>
           {view === "active" && (
             <div className="flex gap-1">
-              {["all", "active", "suspended"].map((f) => (
-                <button
-                  key={f}
-                  onClick={() => setFilter(f)}
-                  className={`px-3 py-1.5 text-xs rounded capitalize ${
-                    filter === f
-                      ? "bg-gray-800 text-white"
-                      : "border border-gray-300 text-gray-600 hover:bg-gray-50"
-                  }`}
-                >
-                  {f}
-                </button>
-              ))}
+              <FilterButton
+                id="all"
+                label="All"
+                currentFilter={filter}
+                setFilter={setFilter}
+              />
+              <FilterButton
+                id="active"
+                label="Active"
+                currentFilter={filter}
+                setFilter={setFilter}
+              />
+              <FilterButton
+                id="suspended"
+                label="Suspended"
+                currentFilter={filter}
+                setFilter={setFilter}
+              />
+              {/* Added Pending and Overdue Buttons */}
+              <FilterButton
+                id="pending"
+                label="Pending"
+                currentFilter={filter}
+                setFilter={setFilter}
+              />
+              <FilterButton
+                id="overdue"
+                label="Overdue"
+                currentFilter={filter}
+                setFilter={setFilter}
+              />
             </div>
           )}
         </div>

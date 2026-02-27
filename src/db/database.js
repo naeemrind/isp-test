@@ -2,6 +2,8 @@
  * database.js — Modified for Vercel / LocalStorage
  */
 
+// Make Sure to Remove localStorage Code once the app is fully ready for production.
+
 // ------------------------------------------------------------------
 // PART 1: ORIGINAL CODE (COMMENTED OUT)
 // ------------------------------------------------------------------
