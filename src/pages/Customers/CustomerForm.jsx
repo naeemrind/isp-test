@@ -10,6 +10,7 @@ const INITIAL = {
   fullName: "",
   userName: "",
   mobileNo: "",
+  cnic: "", // New CNIC field
   mainArea: "",
   recoveryAgent: "",
   packageId: "",
@@ -25,6 +26,17 @@ const PAYMENT_INITIAL = {
   paymentNote: "",
 };
 
+// Helper to format CNIC as 00000-0000000-0
+const formatCNIC = (val) => {
+  // Remove non-digits and limit to 13 digits
+  const digits = val.replace(/\D/g, "").slice(0, 13);
+  let res = "";
+  if (digits.length > 0) res += digits.slice(0, 5);
+  if (digits.length > 5) res += "-" + digits.slice(5, 12);
+  if (digits.length > 12) res += "-" + digits.slice(12, 13);
+  return res;
+};
+
 export default function CustomerForm({ customer, onClose }) {
   const addCustomer = useCustomerStore((s) => s.addCustomer);
   const updateCustomer = useCustomerStore((s) => s.updateCustomer);
@@ -34,8 +46,9 @@ export default function CustomerForm({ customer, onClose }) {
   const packages = allPackages.filter((p) => p.isActive !== false);
   const isEdit = !!customer;
 
+  // Initialize form. Ensure 'cnic' exists even for old records.
   const [form, setFormState] = useState(
-    isEdit ? { ...customer, startDate: today() } : INITIAL,
+    isEdit ? { cnic: "", ...customer, startDate: today() } : INITIAL,
   );
   const [payment, setPaymentState] = useState(PAYMENT_INITIAL);
   const [errors, setErrors] = useState({});
@@ -99,8 +112,20 @@ export default function CustomerForm({ customer, onClose }) {
     if (!form.userName.trim()) e.userName = "Required";
     if (!form.packageId) e.packageId = "Select a package";
     if (!form.mainArea) e.mainArea = "Select an area";
-    if (form.mobileNo && String(form.mobileNo).replace(/\D/g, "").length < 10)
-      e.mobileNo = "Must be at least 10 digits";
+
+    // Mobile Validation (Strict Pakistani Format)
+    if (form.mobileNo) {
+      if (!/^0\d{10}$/.test(form.mobileNo)) {
+        e.mobileNo = "Must be 11 digits starting with 0 (e.g., 03001234567)";
+      }
+    }
+
+    // CNIC Validation (Format: 00000-0000000-0)
+    if (form.cnic) {
+      if (form.cnic.length < 15) {
+        e.cnic = "Invalid CNIC format (13 digits required)";
+      }
+    }
 
     // Validate payment section only if enabled
     if (!isEdit && payment.recordPayment) {
@@ -129,30 +154,23 @@ export default function CustomerForm({ customer, onClose }) {
       const pkg = packages.find((p) => Number(p.id) === pkgId);
       const lockedPrice = pkg ? Number(pkg.price) : 0;
 
+      const customerData = {
+        fullName: form.fullName.trim(),
+        userName: form.userName.trim(),
+        mobileNo: form.mobileNo,
+        cnic: form.cnic, // Save CNIC
+        mainArea: form.mainArea,
+        recoveryAgent: form.recoveryAgent,
+        packageId: pkgId,
+        lockedPackagePrice: lockedPrice,
+        status: isEdit ? form.status : "active",
+        notes: form.notes,
+      };
+
       if (isEdit) {
-        await updateCustomer(customer.id, {
-          fullName: form.fullName.trim(),
-          userName: form.userName.trim(),
-          mobileNo: form.mobileNo,
-          mainArea: form.mainArea,
-          recoveryAgent: form.recoveryAgent,
-          packageId: pkgId,
-          lockedPackagePrice: lockedPrice,
-          status: form.status,
-          notes: form.notes,
-        });
+        await updateCustomer(customer.id, customerData);
       } else {
-        const newCustomer = await addCustomer({
-          fullName: form.fullName.trim(),
-          userName: form.userName.trim(),
-          mobileNo: form.mobileNo,
-          mainArea: form.mainArea,
-          recoveryAgent: form.recoveryAgent,
-          packageId: pkgId,
-          lockedPackagePrice: lockedPrice,
-          status: "active",
-          notes: form.notes,
-        });
+        const newCustomer = await addCustomer(customerData);
 
         // Always create the billing cycle first
         const newCycle = await createInitialCycle(
@@ -227,11 +245,27 @@ export default function CustomerForm({ customer, onClose }) {
               className={inp(errors.mobileNo)}
               value={form.mobileNo}
               onChange={(e) => {
-                setField("mobileNo", e.target.value);
-                checkDup("mobileNo", e.target.value);
+                // Digits only, max 11 chars
+                const val = e.target.value.replace(/\D/g, "").slice(0, 11);
+                setField("mobileNo", val);
+                checkDup("mobileNo", val);
               }}
-              placeholder="e.g. 3001234567"
+              placeholder="03001234567"
               type="tel"
+            />
+          </Field>
+
+          <Field label="CNIC (Optional)" error={errors.cnic}>
+            <input
+              className={inp(errors.cnic)}
+              value={form.cnic}
+              onChange={(e) => {
+                // Apply CNIC masking
+                const val = formatCNIC(e.target.value);
+                setField("cnic", val);
+              }}
+              placeholder="35202-1234567-1"
+              maxLength={15} // 13 digits + 2 dashes
             />
           </Field>
 

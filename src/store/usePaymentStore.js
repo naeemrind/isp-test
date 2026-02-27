@@ -10,14 +10,11 @@ const usePaymentStore = create((set, get) => ({
     set({ cycles });
   },
 
-  // Create the FIRST cycle when a new customer is added
   createInitialCycle: async (customerId, startDate, totalAmount) => {
     const cycleData = {
       customerId,
       cycleStartDate: startDate,
-      // FIXED: Changed from 30 to 29.
-      // 30 days inclusive = Start Date + 29 days.
-      cycleEndDate: addDays(startDate, 29),
+      cycleEndDate: addDays(startDate, 30),
       totalAmount,
       amountPaid: 0,
       amountPending: totalAmount,
@@ -31,7 +28,6 @@ const usePaymentStore = create((set, get) => ({
     return cycle;
   },
 
-  // Add a payment (full or partial installment) to an existing cycle
   addInstallment: async (cycleId, amountPaid, datePaid, note = "") => {
     const cycle = await db.paymentCycles.get(cycleId);
     if (!cycle) throw new Error("Cycle not found");
@@ -67,29 +63,63 @@ const usePaymentStore = create((set, get) => ({
     }));
   },
 
-  // Start a new billing cycle for renewal (after expiry or late payment)
-  renewCycle: async (customerId, startDate, totalAmount) => {
+  renewCycle: async (customerId, startDate, packagePrice) => {
+    const allCycles = get().cycles.filter((c) => c.customerId === customerId);
+    const activeCycle = allCycles.sort(
+      (a, b) => new Date(b.cycleStartDate) - new Date(a.cycleStartDate),
+    )[0];
+
+    // FIX: Prevent accidental double renewal on the exact same date
+    if (
+      activeCycle &&
+      activeCycle.cycleStartDate === startDate &&
+      activeCycle.isRenewal
+    ) {
+      return activeCycle; // Return existing cycle instead of duplicating the math
+    }
+
+    let broughtForward = 0;
+
+    if (activeCycle && activeCycle.amountPending > 0) {
+      broughtForward = activeCycle.amountPending;
+
+      const updates = {
+        amountPending: 0,
+        status: "clear",
+        shiftedAmount: broughtForward,
+      };
+
+      await db.paymentCycles.update(activeCycle.id, updates);
+
+      set((s) => ({
+        cycles: s.cycles.map((c) =>
+          c.id === activeCycle.id ? { ...c, ...updates } : c,
+        ),
+      }));
+    }
+
+    const totalAmount = packagePrice + broughtForward;
+
     const cycleData = {
       customerId,
       cycleStartDate: startDate,
-      // FIXED: Changed from 30 to 29.
-      // 30 days inclusive = Start Date + 29 days.
-      cycleEndDate: addDays(startDate, 29),
+      cycleEndDate: addDays(startDate, 30),
       totalAmount,
       amountPaid: 0,
       amountPending: totalAmount,
       status: "pending",
       installments: [],
       isRenewal: true,
+      previousBalance: broughtForward,
       createdAt: new Date().toISOString(),
     };
+
     const id = await db.paymentCycles.add(cycleData);
     const cycle = await db.paymentCycles.get(id);
     set((s) => ({ cycles: [...s.cycles, cycle] }));
     return cycle;
   },
 
-  // Get the active/latest cycle for a customer
   getActiveCycle: (customerId) => {
     const all = get()
       .cycles.filter((c) => c.customerId === customerId)

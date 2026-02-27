@@ -14,9 +14,6 @@ import {
   RefreshCw,
   Eye,
   EyeOff,
-  Search,
-  ArrowUp,
-  ArrowDown,
 } from "lucide-react";
 import useCustomerStore from "../store/useCustomerStore";
 import usePaymentStore from "../store/usePaymentStore";
@@ -53,25 +50,23 @@ function getLatestCycle(cycles, customerId) {
   );
 }
 
-export default function Dashboard({ onNavigateToCustomers }) {
+export default function Dashboard({ onNavigate }) {
   const customers = useCustomerStore((s) => s.customers);
   const cycles = usePaymentStore((s) => s.cycles);
   const expenses = useExpenseStore((s) => s.expenses);
 
   const [payCustomer, setPayCustomer] = useState(null);
-  const [mode, setMode] = useState("alltime");
+  const [mode, setMode] = useState("alltime"); // alltime | monthly | daily
 
-  // New State for Needs Attention Table
-  const [naSearch, setNaSearch] = useState("");
-  const [sortConfig, setSortConfig] = useState({
-    key: "days",
-    direction: "asc",
-  });
-
+  // Date state for Monthly view
   const now = new Date();
   const [selYear, setSelYear] = useState(now.getFullYear());
   const [selMonth, setSelMonth] = useState(now.getMonth());
 
+  // Date state for Daily view
+  const [selDate, setSelDate] = useState(today());
+
+  // Monthly Navigation
   const prevMonth = () => {
     if (selMonth === 0) {
       setSelMonth(11);
@@ -88,42 +83,35 @@ export default function Dashboard({ onNavigateToCustomers }) {
   const isCurrentMonth =
     selYear === now.getFullYear() && selMonth === now.getMonth();
 
-  // ── Stats (computed inline — no useMemo, always fresh) ──────────
+  // ── Stats Calculation ─────────────────────────────────────────────
   const activeCustomers = customers.filter((c) => !c.isArchived);
 
-  // Stats Variables
-  let at_collected = 0;
-  let at_pendingActiveAmount = 0; // Only non-expired pending
-  let at_overdueAmount = 0; // Only expired pending
+  // 1. ALL TIME STATS
+  let at_collected = 0,
+    at_pending = 0,
+    at_overdueMoney = 0;
   let at_overdueCount = 0;
   let at_expiringCount = 0;
   let at_renewalCount = 0;
-  let at_activeCount = 0;
-  let at_suspendedCount = 0;
-  let at_totalEver = 0;
+  let at_activeCount = 0,
+    at_suspendedCount = 0,
+    at_totalEver = 0;
 
   activeCustomers.forEach((c) => {
     if (c.status === "active") at_activeCount++;
     if (c.status === "suspended") at_suspendedCount++;
-
     const cycle = getLatestCycle(cycles, c.id);
     if (!cycle) return;
 
     at_collected += cycle.amountPaid || 0;
+    at_pending += cycle.amountPending || 0;
 
-    // Split Pending Amount Logic
-    const pending = cycle.amountPending || 0;
     const days = daysUntil(cycle.cycleEndDate);
 
-    if (pending > 0) {
-      if (days < 0) {
-        // Expired
-        at_overdueAmount += pending;
-        at_overdueCount++;
-      } else {
-        // Active (Not Expired)
-        at_pendingActiveAmount += pending;
-      }
+    // Overdue Logic (Pending AND Expired)
+    if (cycle.amountPending > 0 && days < 0) {
+      at_overdueCount++;
+      at_overdueMoney += cycle.amountPending;
     }
 
     if (days >= 0 && days <= 5) at_expiringCount++;
@@ -146,8 +134,8 @@ export default function Dashboard({ onNavigateToCustomers }) {
     activeCount: at_activeCount,
     suspendedCount: at_suspendedCount,
     collected: at_collected,
-    pendingActive: at_pendingActiveAmount, // Updated key
-    overdueAmount: at_overdueAmount, // New key
+    pending: at_pending,
+    overdueMoney: at_overdueMoney,
     totalEverCollected: at_totalEver,
     overdueCount: at_overdueCount,
     expiringCount: at_expiringCount,
@@ -156,27 +144,42 @@ export default function Dashboard({ onNavigateToCustomers }) {
     netIncome: at_totalEver - at_totalExpenses,
   };
 
-  // Monthly stats (Simpler logic: Pending = Any pending balance falling in this month's window)
+  // 2. MONTHLY STATS
   const monthStart = new Date(selYear, selMonth, 1);
   const monthEnd = new Date(selYear, selMonth + 1, 0, 23, 59, 59);
   let mo_collected = 0,
     mo_pending = 0,
+    mo_overdueMoney = 0,
     mo_newCustomers = 0;
   let mo_clearedCount = 0,
-    mo_pendingCount = 0;
+    mo_pendingCount = 0,
+    mo_overdueCount = 0,
+    mo_renewalCount = 0,
+    mo_expiringCount = 0;
 
   cycles.forEach((cy) => {
+    // Collected in this month
     (cy.installments || []).forEach((inst) => {
       const d = new Date(inst.datePaid);
       if (d >= monthStart && d <= monthEnd)
         mo_collected += inst.amountPaid || 0;
     });
+
+    // Check if cycle is relevant to this month
     const cStart = new Date(cy.cycleStartDate);
     const cEnd = new Date(cy.cycleEndDate);
     if (cStart <= monthEnd && cEnd >= monthStart) {
       mo_pending += cy.amountPending || 0;
       if (cy.status === "clear") mo_clearedCount++;
       else mo_pendingCount++;
+
+      const days = daysUntil(cy.cycleEndDate);
+      if (days < 0 && cy.amountPending > 0) {
+        mo_overdueMoney += cy.amountPending;
+        mo_overdueCount++;
+      }
+      if (days < 0) mo_renewalCount++;
+      if (days >= 0 && days <= 5) mo_expiringCount++;
     }
   });
 
@@ -195,92 +198,66 @@ export default function Dashboard({ onNavigateToCustomers }) {
   const monthly = {
     collected: mo_collected,
     pending: mo_pending,
+    overdueMoney: mo_overdueMoney,
     newCustomers: mo_newCustomers,
     clearedCount: mo_clearedCount,
     pendingCount: mo_pendingCount,
+    overdueCount: mo_overdueCount,
+    renewalCount: mo_renewalCount,
+    expiringCount: mo_expiringCount,
     totalExpenses: mo_expenses,
     netIncome: mo_collected - mo_expenses,
   };
 
-  // ── Logic for "Needs Attention" Table ──
+  // 3. DAILY STATS
+  let day_collected = 0;
+  let day_newCustomers = 0;
 
-  // 1. Base List: Get everyone who needs attention
-  const baseUrgent = activeCustomers
+  cycles.forEach((cy) => {
+    (cy.installments || []).forEach((inst) => {
+      if (inst.datePaid === selDate) {
+        day_collected += inst.amountPaid || 0;
+      }
+    });
+  });
+
+  activeCustomers.forEach((c) => {
+    if (c.createdAt && c.createdAt.startsWith(selDate)) {
+      day_newCustomers++;
+    }
+  });
+
+  const day_expenses = expenses
+    .filter((e) => e.date === selDate)
+    .reduce((s, e) => s + (Number(e.amount) || 0), 0);
+
+  const daily = {
+    collected: day_collected,
+    newCustomers: day_newCustomers,
+    totalExpenses: day_expenses,
+    netIncome: day_collected - day_expenses,
+  };
+
+  // ── Urgent List Logic ─────────────────────────────────────────────
+  const urgentCustomers = activeCustomers
     .map((c) => ({ customer: c, cycle: getLatestCycle(cycles, c.id) }))
     .filter(({ cycle }) => {
-      if (!cycle) return true; // No cycle = Needs setup
+      if (!cycle) return true;
       const days = daysUntil(cycle.cycleEndDate);
       return days < 0 || days <= 5;
+    })
+    .sort((a, b) => {
+      const da = a.cycle ? daysUntil(a.cycle.cycleEndDate) : -999;
+      const db2 = b.cycle ? daysUntil(b.cycle.cycleEndDate) : -999;
+      return da - db2;
     });
 
-  // 2. Search Filter
-  const filteredUrgent = baseUrgent.filter(({ customer }) => {
-    const q = naSearch.toLowerCase();
-    return (
-      customer.fullName.toLowerCase().includes(q) ||
-      customer.userName.toLowerCase().includes(q) ||
-      (customer.mobileNo && customer.mobileNo.includes(q)) ||
-      (customer.mainArea && customer.mainArea.toLowerCase().includes(q))
-    );
-  });
-
-  // 3. Sorting
-  const sortedUrgent = [...filteredUrgent].sort((a, b) => {
-    const { key, direction } = sortConfig;
-    const modifier = direction === "asc" ? 1 : -1;
-
-    // Helper for days (handle missing cycle)
-    const getDays = (item) =>
-      item.cycle ? daysUntil(item.cycle.cycleEndDate) : -9999;
-
-    switch (key) {
-      case "name":
-        return (
-          modifier * a.customer.fullName.localeCompare(b.customer.fullName)
-        );
-      case "area":
-        return (
-          modifier *
-          (a.customer.mainArea || "").localeCompare(b.customer.mainArea || "")
-        );
-      case "date": {
-        const dateA = a.cycle ? new Date(a.cycle.cycleEndDate) : new Date(0);
-        const dateB = b.cycle ? new Date(b.cycle.cycleEndDate) : new Date(0);
-        return modifier * (dateA - dateB);
-      }
-      case "days":
-        return modifier * (getDays(a) - getDays(b));
-      case "balance": {
-        const balA = a.cycle ? a.cycle.amountPending : 0;
-        const balB = b.cycle ? b.cycle.amountPending : 0;
-        return modifier * (balA - balB);
-      }
-      default:
-        return 0;
-    }
-  });
-
-  const requestSort = (key) => {
-    let direction = "asc";
-    if (sortConfig.key === key && sortConfig.direction === "asc") {
-      direction = "desc";
-    }
-    setSortConfig({ key, direction });
-  };
-
-  const SortIcon = ({ column }) => {
-    if (sortConfig.key !== column) return <div className="w-3.5 h-3.5" />; // spacer
-    return sortConfig.direction === "asc" ? (
-      <ArrowUp size={14} />
-    ) : (
-      <ArrowDown size={14} />
-    );
-  };
+  const displayStats = mode === "monthly" ? monthly : allTime;
 
   return (
     <div className="p-5 space-y-5 max-w-7xl mx-auto">
       {/* HEADER */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
           <p className="text-sm text-gray-500 mt-0.5">{today()}</p>
@@ -298,10 +275,16 @@ export default function Dashboard({ onNavigateToCustomers }) {
           >
             Monthly
           </button>
+          <button
+            onClick={() => setMode("daily")}
+            className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === "daily" ? "bg-white text-gray-900 shadow" : "text-gray-500 hover:text-gray-800"}`}
+          >
+            Daily
+          </button>
         </div>
       </div>
 
-      {/* MONTH NAVIGATOR */}
+      {/* FILTERS */}
       {mode === "monthly" && (
         <div className="flex items-center gap-3 bg-white border-2 border-gray-200 rounded-xl px-4 py-3 w-fit">
           <button
@@ -326,185 +309,165 @@ export default function Dashboard({ onNavigateToCustomers }) {
         </div>
       )}
 
-      {/* CARDS — ALL TIME */}
-      {mode === "alltime" && (
+      {mode === "daily" && (
+        <div className="flex items-center gap-3 bg-white border-2 border-gray-200 rounded-xl px-4 py-2 w-fit">
+          <Calendar size={18} className="text-blue-600" />
+          <input
+            type="date"
+            value={selDate}
+            max={today()}
+            onChange={(e) => setSelDate(e.target.value)}
+            className="font-bold text-gray-900 text-lg outline-none cursor-pointer"
+          />
+        </div>
+      )}
+
+      {/* ─── CARDS GRID ─── */}
+
+      {mode !== "daily" ? (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+          {/* Top Row: 5 Columns */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
             <BigCard
               icon={<Users size={20} />}
               label="Total Customers"
-              value={allTime.totalCustomers}
-              sub={`${allTime.activeCount} active · ${allTime.suspendedCount} suspended`}
+              value={
+                mode === "monthly"
+                  ? monthly.newCustomers
+                  : allTime.totalCustomers
+              }
+              sub={
+                mode === "monthly"
+                  ? "Joined this month"
+                  : `${allTime.activeCount} active`
+              }
               color="blue"
             />
             <BigCard
               icon={<CheckCircle size={20} />}
               label="Total Collected"
-              value={`PKR ${allTime.totalEverCollected.toLocaleString()}`}
-              sub="All payments ever received"
+              value={`PKR ${mode === "monthly" ? monthly.collected.toLocaleString() : allTime.totalEverCollected.toLocaleString()}`}
+              sub={
+                mode === "monthly" ? "Received this month" : "All payments ever"
+              }
               color="green"
-              isSensitive={true} // Hidden by default
+              isSensitive={true}
             />
-            {/* CLICKABLE PENDING CARD (ACTIVE ONLY) */}
             <BigCard
               icon={<Clock size={20} />}
               label="Currently Pending"
-              value={`PKR ${allTime.pendingActive.toLocaleString()}`}
-              sub="Active cycles (Not Overdue)"
+              value={`PKR ${displayStats.pending.toLocaleString()}`}
+              sub="Click to view details"
               color="amber"
-              onClick={() => onNavigateToCustomers("pending")}
+              // Navigate to Customers > Pending
+              onClick={() => onNavigate("customers", "pending")}
+              isClickable
             />
-            {/* NEW: TOTAL OVERDUE CARD */}
             <BigCard
               icon={<AlertTriangle size={20} />}
               label="Total Overdue"
-              value={`PKR ${allTime.overdueAmount.toLocaleString()}`}
-              sub="Expired cycles with balance"
+              value={`PKR ${displayStats.overdueMoney.toLocaleString()}`}
+              sub="Expired + Unpaid"
               color="red"
-              highlight={allTime.overdueAmount > 0}
-              onClick={() => onNavigateToCustomers("overdue")}
+              highlight={displayStats.overdueMoney > 0}
+              // Navigate to Customers > Overdue
+              onClick={() => onNavigate("customers", "overdue")}
+              isClickable
             />
             <BigCard
               icon={<XCircle size={20} />}
               label="Total Expenses"
-              value={`PKR ${allTime.totalExpenses.toLocaleString()}`}
-              sub="All recorded expenses"
+              value={`PKR ${displayStats.totalExpenses.toLocaleString()}`}
+              sub="Recorded expenses"
               color="red"
             />
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* CLICKABLE OVERDUE COUNT CARD */}
+          {/* Bottom Row: 4 Columns */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <BigCard
               icon={<Users size={20} />}
               label="Overdue Customers"
-              value={allTime.overdueCount}
+              value={displayStats.overdueCount}
               sub="Count of customers overdue"
               color="red"
-              highlight={allTime.overdueCount > 0}
-              onClick={() => onNavigateToCustomers("overdue")}
+              highlight={displayStats.overdueCount > 0}
             />
             <BigCard
               icon={<RefreshCw size={20} />}
               label="Needs Renewal"
-              value={allTime.renewalCount}
+              value={displayStats.renewalCount}
               sub="Cycle expired, renew now"
               color="red"
-              highlight={allTime.renewalCount > 0}
+              highlight={displayStats.renewalCount > 0}
             />
             <BigCard
               icon={<Activity size={20} />}
               label="Expiring in 5 Days"
-              value={allTime.expiringCount}
+              value={displayStats.expiringCount}
               sub="Collect before cutoff"
               color="amber"
-              highlight={allTime.expiringCount > 0}
+              highlight={displayStats.expiringCount > 0}
             />
             <BigCard
               icon={<TrendingUp size={20} />}
               label="Net Income"
-              value={`PKR ${allTime.netIncome.toLocaleString()}`}
+              value={`PKR ${displayStats.netIncome.toLocaleString()}`}
               sub="Total collected − expenses"
-              color={allTime.netIncome >= 0 ? "green" : "red"}
-              isSensitive={true} // Hidden by default
-            />
-          </div>
-        </>
-      )}
-
-      {/* CARDS — MONTHLY (Unchanged mostly, pending remains grouped as snapshot) */}
-      {mode === "monthly" && (
-        <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <BigCard
-              icon={<CreditCard size={20} />}
-              label="Collected"
-              value={`PKR ${monthly.collected.toLocaleString()}`}
-              sub="Payments received"
-              color="green"
-              isSensitive={true}
-            />
-            <BigCard
-              icon={<Clock size={20} />}
-              label="Pending"
-              value={`PKR ${monthly.pending.toLocaleString()}`}
-              sub="Unpaid balances"
-              color="amber"
-            />
-            <BigCard
-              icon={<XCircle size={20} />}
-              label="Expenses"
-              value={`PKR ${monthly.totalExpenses.toLocaleString()}`}
-              sub="Recorded expenses"
-              color="red"
-            />
-            <BigCard
-              icon={<TrendingUp size={20} />}
-              label="Net Income"
-              value={`PKR ${monthly.netIncome.toLocaleString()}`}
-              sub="Collected − expenses"
-              color={monthly.netIncome >= 0 ? "green" : "red"}
+              color={displayStats.netIncome >= 0 ? "green" : "red"}
               isSensitive={true}
             />
           </div>
-          <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-            <BigCard
-              icon={<Users size={20} />}
-              label="New Customers"
-              value={monthly.newCustomers}
-              sub="Joined this month"
-              color="blue"
-            />
-            <BigCard
-              icon={<CheckCircle size={20} />}
-              label="Cleared Cycles"
-              value={monthly.clearedCount}
-              sub="Fully paid"
-              color="green"
-            />
-            <BigCard
-              icon={<AlertTriangle size={20} />}
-              label="Pending Cycles"
-              value={monthly.pendingCount}
-              sub="Unpaid cycles"
-              color="amber"
-              highlight={monthly.pendingCount > 0}
-            />
-          </div>
         </>
+      ) : (
+        /* Daily View */
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <BigCard
+            icon={<CreditCard size={20} />}
+            label="Collected Today"
+            value={`PKR ${daily.collected.toLocaleString()}`}
+            sub={`Payments received on ${formatDate(selDate)}`}
+            color="green"
+            isSensitive={true}
+          />
+          <BigCard
+            icon={<XCircle size={20} />}
+            label="Expenses Today"
+            value={`PKR ${daily.totalExpenses.toLocaleString()}`}
+            sub={`Expenses recorded on ${formatDate(selDate)}`}
+            color="red"
+          />
+          <BigCard
+            icon={<TrendingUp size={20} />}
+            label="Daily Net Income"
+            value={`PKR ${daily.netIncome.toLocaleString()}`}
+            sub="Collected − expenses"
+            color={daily.netIncome >= 0 ? "green" : "red"}
+            isSensitive={true}
+          />
+          <BigCard
+            icon={<Users size={20} />}
+            label="New Customers"
+            value={daily.newCustomers}
+            sub="Joined today"
+            color="blue"
+          />
+        </div>
       )}
 
       {/* NEEDS ATTENTION TABLE */}
       <div>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-            <AlertTriangle size={18} className="text-red-500" />
-            Needs Attention
-            {baseUrgent.length > 0 && (
-              <span className="bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
-                {baseUrgent.length}
-              </span>
-            )}
-          </h2>
-
-          {/* Search Bar for this table */}
-          {baseUrgent.length > 0 && (
-            <div className="relative w-64">
-              <Search
-                size={14}
-                className="absolute left-2.5 top-2.5 text-gray-400"
-              />
-              <input
-                value={naSearch}
-                onChange={(e) => setNaSearch(e.target.value)}
-                placeholder="Search list..."
-                className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-            </div>
+        <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2 mb-3">
+          <AlertTriangle size={18} className="text-red-500" />
+          Needs Attention
+          {urgentCustomers.length > 0 && (
+            <span className="bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
+              {urgentCustomers.length}
+            </span>
           )}
-        </div>
+        </h2>
 
-        {baseUrgent.length === 0 ? (
+        {urgentCustomers.length === 0 ? (
           <div className="bg-green-50 border-2 border-green-200 rounded-xl px-5 py-4 flex items-center gap-3">
             <CheckCircle size={22} className="text-green-600" />
             <span className="text-green-800 font-semibold text-base">
@@ -512,214 +475,162 @@ export default function Dashboard({ onNavigateToCustomers }) {
             </span>
           </div>
         ) : (
-          <div className="bg-white border-2 border-gray-200 rounded-xl overflow-hidden">
-            <div className="max-h-[600px] overflow-y-auto">
-              <table className="w-full relative border-collapse">
-                <thead className="sticky top-0 z-10">
-                  <tr className="bg-gray-900 text-white text-left">
-                    <th
-                      onClick={() => requestSort("name")}
-                      className="px-4 py-3 text-sm font-semibold cursor-pointer hover:bg-gray-800 transition-colors whitespace-nowrap group"
-                    >
-                      <div className="flex items-center gap-1">
-                        Customer <SortIcon column="name" />
-                      </div>
-                    </th>
-                    <th
-                      onClick={() => requestSort("area")}
-                      className="px-4 py-3 text-sm font-semibold cursor-pointer hover:bg-gray-800 transition-colors whitespace-nowrap group"
-                    >
-                      <div className="flex items-center gap-1">
-                        Area <SortIcon column="area" />
-                      </div>
-                    </th>
-                    <th className="px-4 py-3 text-sm font-semibold whitespace-nowrap">
-                      Mobile
-                    </th>
-                    <th
-                      onClick={() => requestSort("date")}
-                      className="px-4 py-3 text-sm font-semibold cursor-pointer hover:bg-gray-800 transition-colors whitespace-nowrap group"
-                    >
-                      <div className="flex items-center gap-1">
-                        Cycle Ended <SortIcon column="date" />
-                      </div>
-                    </th>
-                    <th
-                      onClick={() => requestSort("days")}
-                      className="px-4 py-3 text-sm font-semibold cursor-pointer hover:bg-gray-800 transition-colors whitespace-nowrap group"
-                    >
-                      <div className="flex items-center gap-1">
-                        Days <SortIcon column="days" />
-                      </div>
-                    </th>
-                    <th
-                      onClick={() => requestSort("balance")}
-                      className="px-4 py-3 text-sm font-semibold cursor-pointer hover:bg-gray-800 transition-colors whitespace-nowrap group"
-                    >
-                      <div className="flex items-center gap-1">
-                        Balance Due <SortIcon column="balance" />
-                      </div>
-                    </th>
-                    <th className="px-4 py-3 text-sm font-semibold whitespace-nowrap">
-                      Status
-                    </th>
-                    <th className="px-4 py-3 text-sm font-semibold whitespace-nowrap">
-                      Action
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedUrgent.map(({ customer, cycle }) => {
-                    if (!cycle)
-                      return (
-                        <tr
-                          key={customer.id}
-                          className="border-t border-gray-200 bg-gray-50"
+          <div className="bg-white border-2 border-gray-200 rounded-xl overflow-hidden overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-gray-900 text-white text-left">
+                  <th className="px-4 py-3 text-sm font-semibold">Customer</th>
+                  <th className="px-4 py-3 text-sm font-semibold">Area</th>
+                  <th className="px-4 py-3 text-sm font-semibold">Mobile</th>
+                  <th className="px-4 py-3 text-sm font-semibold">
+                    Cycle Ended
+                  </th>
+                  <th className="px-4 py-3 text-sm font-semibold">Days</th>
+                  <th className="px-4 py-3 text-sm font-semibold">
+                    Balance Due
+                  </th>
+                  <th className="px-4 py-3 text-sm font-semibold">Status</th>
+                  <th className="px-4 py-3 text-sm font-semibold">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {urgentCustomers.map(({ customer, cycle }) => {
+                  if (!cycle)
+                    return (
+                      <tr
+                        key={customer.id}
+                        className="border-t border-gray-200 bg-gray-50"
+                      >
+                        <td className="px-4 py-3 font-bold text-gray-900">
+                          {customer.fullName}
+                        </td>
+                        <td
+                          colSpan={6}
+                          className="px-4 py-3 text-sm text-gray-500"
                         >
-                          <td className="px-4 py-3 font-bold text-gray-900">
-                            {customer.fullName}
-                          </td>
-                          <td
-                            colSpan={6}
-                            className="px-4 py-3 text-sm text-gray-500"
+                          No billing cycle — needs setup
+                        </td>
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() => setPayCustomer(customer)}
+                            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700"
                           >
-                            No billing cycle — needs setup
-                          </td>
-                          <td className="px-4 py-3">
+                            Pay Now
+                          </button>
+                        </td>
+                      </tr>
+                    );
+
+                  const days = daysUntil(cycle.cycleEndDate);
+                  const isExpiredUnpaid = days < 0 && cycle.amountPending > 0;
+                  const isExpiredPaid = days < 0 && cycle.amountPending === 0;
+                  const isExpiringSoon = days >= 0 && days <= 5;
+
+                  let waMessage = "";
+                  if (isExpiredUnpaid) {
+                    waMessage = MESSAGE_TEMPLATES.paymentOverdue(
+                      customer,
+                      cycle,
+                    );
+                  } else if (cycle.amountPending > 0) {
+                    waMessage = MESSAGE_TEMPLATES.paymentDue(customer, cycle);
+                  } else {
+                    waMessage = MESSAGE_TEMPLATES.expiryReminder(
+                      customer,
+                      cycle,
+                    );
+                  }
+
+                  const showPayButton =
+                    cycle.amountPending > 0 || isExpiredPaid;
+
+                  const rowBg = isExpiredUnpaid
+                    ? "bg-red-50"
+                    : isExpiredPaid
+                      ? "bg-orange-50"
+                      : "bg-yellow-50";
+
+                  return (
+                    <tr
+                      key={customer.id}
+                      className={`border-t border-gray-200 ${rowBg}`}
+                    >
+                      <td className="px-4 py-3">
+                        <div className="font-bold text-gray-900 text-sm">
+                          {customer.fullName}
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          {customer.userName}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-800">
+                        {customer.mainArea || "—"}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-800">
+                        {customer.mobileNo || "—"}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-800">
+                        {formatDate(cycle.cycleEndDate)}
+                      </td>
+                      <td className="px-4 py-3">
+                        {isExpiredUnpaid && (
+                          <span className="text-sm font-bold text-red-700">
+                            {-days}d overdue
+                          </span>
+                        )}
+                        {isExpiredPaid && (
+                          <span className="text-sm font-bold text-orange-700">
+                            {-days}d ago — needs renewal
+                          </span>
+                        )}
+                        {isExpiringSoon && (
+                          <span className="text-sm font-bold text-yellow-700">
+                            {days}d left
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {cycle.amountPending > 0 ? (
+                          <span className="text-sm font-bold text-red-700">
+                            PKR {Number(cycle.amountPending).toLocaleString()}
+                          </span>
+                        ) : (
+                          <span className="text-sm font-semibold text-green-700">
+                            Paid ✓
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {isExpiredUnpaid && <Badge status="overdue" />}
+                        {isExpiredPaid && (
+                          <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
+                            Renewal Due
+                          </span>
+                        )}
+                        {isExpiringSoon && <Badge status="pending" />}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          {showPayButton && (
                             <button
                               onClick={() => setPayCustomer(customer)}
                               className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700"
                             >
-                              Pay Now
+                              {isExpiredPaid ? "Renew" : "Pay Now"}
                             </button>
-                          </td>
-                        </tr>
-                      );
-
-                    const days = daysUntil(cycle.cycleEndDate);
-                    const isExpiredUnpaid = days < 0 && cycle.amountPending > 0;
-                    const isExpiredPaid = days < 0 && cycle.amountPending === 0;
-                    const isExpiringSoon = days >= 0 && days <= 5;
-
-                    let waMessage = "";
-                    if (isExpiredUnpaid) {
-                      waMessage = MESSAGE_TEMPLATES.paymentOverdue(
-                        customer,
-                        cycle,
-                      );
-                    } else if (cycle.amountPending > 0) {
-                      waMessage = MESSAGE_TEMPLATES.paymentDue(customer, cycle);
-                    } else {
-                      waMessage = MESSAGE_TEMPLATES.expiryReminder(
-                        customer,
-                        cycle,
-                      );
-                    }
-
-                    const showPayButton =
-                      cycle.amountPending > 0 || isExpiredPaid;
-
-                    const rowBg = isExpiredUnpaid
-                      ? "bg-red-50"
-                      : isExpiredPaid
-                        ? "bg-orange-50"
-                        : "bg-yellow-50";
-
-                    return (
-                      <tr
-                        key={customer.id}
-                        className={`border-t border-gray-200 ${rowBg}`}
-                      >
-                        <td className="px-4 py-3">
-                          <div className="font-bold text-gray-900 text-sm">
-                            {customer.fullName}
-                          </div>
-                          <div className="text-xs text-gray-500">
-                            {customer.userName}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-800">
-                          {customer.mainArea || "—"}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-800">
-                          {customer.mobileNo || "—"}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-800">
-                          {formatDate(cycle.cycleEndDate)}
-                        </td>
-                        <td className="px-4 py-3">
-                          {isExpiredUnpaid && (
-                            <span className="text-sm font-bold text-red-700">
-                              {-days}d overdue
-                            </span>
                           )}
-                          {isExpiredPaid && (
-                            <span className="text-sm font-bold text-orange-700">
-                              {-days}d ago — needs renewal
-                            </span>
-                          )}
-                          {isExpiringSoon && (
-                            <span className="text-sm font-bold text-yellow-700">
-                              {days === 0
-                                ? "Expires today"
-                                : `${days + 1}d left`}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {cycle.amountPending > 0 ? (
-                            <span className="text-sm font-bold text-red-700">
-                              PKR {Number(cycle.amountPending).toLocaleString()}
-                            </span>
-                          ) : (
-                            <span className="text-sm font-semibold text-green-700">
-                              Paid ✓
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {isExpiredUnpaid && <Badge status="overdue" />}
-                          {isExpiredPaid && (
-                            <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
-                              Renewal Due
-                            </span>
-                          )}
-                          {isExpiringSoon && <Badge status="pending" />}
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            {showPayButton && (
-                              <button
-                                onClick={() => setPayCustomer(customer)}
-                                className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700"
-                              >
-                                {isExpiredPaid ? "Renew" : "Pay Now"}
-                              </button>
-                            )}
-                            <WhatsAppButton
-                              mobileNo={customer.mobileNo}
-                              message={waMessage}
-                              label="WhatsApp"
-                            />
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-
-                  {sortedUrgent.length === 0 && (
-                    <tr>
-                      <td
-                        colSpan={8}
-                        className="px-4 py-8 text-center text-gray-400 bg-white"
-                      >
-                        No matches found for "{naSearch}"
+                          <WhatsAppButton
+                            mobileNo={customer.mobileNo}
+                            message={waMessage}
+                            label="WhatsApp"
+                          />
+                        </div>
                       </td>
                     </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
@@ -773,19 +684,16 @@ function BigCard({
   color,
   highlight = false,
   isSensitive = false,
-  onClick = null,
+  onClick,
+  isClickable = false,
 }) {
   const c = colorMap[color] || colorMap.blue;
   const [revealed, setRevealed] = useState(false);
-  const isClickable = !!onClick;
 
   return (
     <div
-      onClick={onClick}
-      className={`rounded-xl p-5 ${c.bg} flex flex-col justify-between 
-        ${highlight ? "ring-2 ring-offset-1 ring-red-300" : ""}
-        ${isClickable ? "cursor-pointer hover:shadow-md transition-shadow active:scale-[0.99]" : ""}
-      `}
+      onClick={isClickable ? onClick : undefined}
+      className={`rounded-xl p-5 ${c.bg} flex flex-col justify-between ${highlight ? "ring-2 ring-offset-1 ring-red-300" : ""} ${isClickable ? "cursor-pointer hover:shadow-md transition-shadow active:scale-95" : ""}`}
     >
       <div>
         <div className="flex items-center justify-between mb-3">

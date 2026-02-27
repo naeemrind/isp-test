@@ -15,23 +15,8 @@ import PaymentForm from "../Payments/PaymentForm";
 import useCustomerStore from "../../store/useCustomerStore";
 import usePaymentStore from "../../store/usePaymentStore";
 import { formatDate, daysUntil } from "../../utils/dateUtils";
-import HistoryModal from "../../components/ui/HistoryModal";
 
-// Defined OUTSIDE the component to prevent re-creation on every render
-const FilterButton = ({ id, label, currentFilter, setFilter }) => (
-  <button
-    onClick={() => setFilter(id)}
-    className={`px-3 py-1.5 text-xs rounded capitalize transition-colors ${
-      currentFilter === id
-        ? "bg-gray-800 text-white shadow-sm"
-        : "border border-gray-300 text-gray-600 hover:bg-gray-50"
-    }`}
-  >
-    {label}
-  </button>
-);
-
-export default function Customers({ filterRequest }) {
+export default function Customers({ initialFilter }) {
   const customers = useCustomerStore((s) => s.customers);
   const archiveCustomer = useCustomerStore((s) => s.archiveCustomer);
   const restoreCustomer = useCustomerStore((s) => s.restoreCustomer);
@@ -44,7 +29,7 @@ export default function Customers({ filterRequest }) {
   const [view, setView] = useState("active");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
-  const [sortBy, setSortBy] = useState("newest"); // Default sort
+  const [sortBy, setSortBy] = useState("newest");
 
   const [showAdd, setShowAdd] = useState(false);
   const [editCustomer, setEditCustomer] = useState(null);
@@ -52,21 +37,19 @@ export default function Customers({ filterRequest }) {
   const [archiveTarget, setArchiveTarget] = useState(null);
   const [restoreTarget, setRestoreTarget] = useState(null);
   const [purgeTarget, setPurgeTarget] = useState(null);
-  const [historyCustomer, setHistoryCustomer] = useState(null);
+
+  // Sync prop filter to local state when prop changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (initialFilter) {
+        setFilter(initialFilter);
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [initialFilter]);
 
   const activeCustomers = customers.filter((c) => !c.isArchived);
   const archivedCustomers = customers.filter((c) => c.isArchived);
-
-  // Effect to listen to requests from Dashboard (via App.jsx)
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (filterRequest) {
-        setView("active");
-        setFilter(filterRequest.type);
-      }
-      return () => clearTimeout(timer);
-    }, 0);
-  }, [filterRequest]);
 
   // 1. FILTERING
   const q = search.toLowerCase();
@@ -78,31 +61,30 @@ export default function Customers({ filterRequest }) {
     c.mainArea?.toLowerCase().includes(q);
 
   const filteredActive = activeCustomers.filter((c) => {
-    const cycle = getActiveCycle(c.id);
-    const days = cycle ? daysUntil(cycle.cycleEndDate) : 0;
-
-    // Search Filter
+    // Check search first
     if (!matchSearch(c)) return false;
 
-    // Logic for Buttons
-    switch (filter) {
-      case "all":
-        return true;
-      case "active":
-        return c.status === "active";
-      case "suspended":
-        return c.status === "suspended";
-      case "terminated":
-        return c.status === "terminated";
-      case "pending":
-        // Shows active customer with pending balance BUT NOT overdue yet
-        return cycle && cycle.amountPending > 0 && days >= 0;
-      case "overdue":
-        // Shows active customers with pending balance AND expired date
-        return cycle && cycle.amountPending > 0 && days < 0;
-      default:
-        return true;
+    // Check Filter
+    if (filter === "all") return true;
+    if (filter === "active") return c.status === "active";
+    if (filter === "suspended") return c.status === "suspended";
+    if (filter === "terminated") return c.status === "terminated";
+
+    // New filters based on payment status
+    const cycle = getActiveCycle(c.id);
+    const days = cycle ? daysUntil(cycle.cycleEndDate) : 0;
+    const pending = cycle ? cycle.amountPending : 0;
+
+    if (filter === "overdue") {
+      // Must be active AND have pending balance AND be overdue (days < 0)
+      return c.status === "active" && pending > 0 && days < 0;
     }
+    if (filter === "pending") {
+      // Must be active AND have pending balance BUT NOT overdue (days >= 0)
+      return c.status === "active" && pending > 0 && days >= 0;
+    }
+
+    return true;
   });
 
   // 2. SORTING
@@ -120,19 +102,26 @@ export default function Customers({ filterRequest }) {
 
       case "expiring":
         // Soonest expiry date first.
-        // If no cycle (e.g. new/terminated), push to bottom.
         if (!cycleA) return 1;
         if (!cycleB) return -1;
         return new Date(cycleA.cycleEndDate) - new Date(cycleB.cycleEndDate);
 
       case "newest":
       default:
-        // IDs are auto-incrementing, so higher ID = newer
+        // IDs are auto-incrementing
         return b.id - a.id;
     }
   });
 
   const filteredArchived = archivedCustomers.filter(matchSearch);
+
+  const filterOptions = [
+    { id: "all", label: "All" },
+    { id: "active", label: "Active" },
+    { id: "pending", label: "Pending" }, // Added
+    { id: "overdue", label: "Overdue" }, // Added
+    { id: "suspended", label: "Suspended" },
+  ];
 
   return (
     <div className="p-4 space-y-3">
@@ -187,8 +176,8 @@ export default function Customers({ filterRequest }) {
       {/* SEARCH + FILTER + SORT */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         {/* Left Side: Search & Status Filters */}
-        <div className="flex items-center gap-2 flex-1 min-w-62.5 overflow-x-auto pb-1 md:pb-0">
-          <div className="relative min-w-[140px] max-w-xs">
+        <div className="flex items-center gap-2 flex-1 min-w-62.5">
+          <div className="relative flex-1 max-w-xs">
             <Search
               size={14}
               className="absolute left-2.5 top-2 text-gray-400"
@@ -202,37 +191,19 @@ export default function Customers({ filterRequest }) {
           </div>
           {view === "active" && (
             <div className="flex gap-1">
-              <FilterButton
-                id="all"
-                label="All"
-                currentFilter={filter}
-                setFilter={setFilter}
-              />
-              <FilterButton
-                id="active"
-                label="Active"
-                currentFilter={filter}
-                setFilter={setFilter}
-              />
-              <FilterButton
-                id="suspended"
-                label="Suspended"
-                currentFilter={filter}
-                setFilter={setFilter}
-              />
-              {/* Added Pending and Overdue Buttons */}
-              <FilterButton
-                id="pending"
-                label="Pending"
-                currentFilter={filter}
-                setFilter={setFilter}
-              />
-              <FilterButton
-                id="overdue"
-                label="Overdue"
-                currentFilter={filter}
-                setFilter={setFilter}
-              />
+              {filterOptions.map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => setFilter(f.id)}
+                  className={`px-3 py-1.5 text-xs rounded capitalize transition-colors ${
+                    filter === f.id
+                      ? "bg-gray-800 text-white"
+                      : "border border-gray-300 text-gray-600 hover:bg-gray-50"
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
             </div>
           )}
         </div>
@@ -266,11 +237,10 @@ export default function Customers({ filterRequest }) {
         <div className="bg-white border border-gray-200 rounded overflow-hidden">
           <CustomerTable
             customers={sortedActive}
-            searchQuery={""}
+            searchQuery={""} // Search handled above
             onEdit={(c) => setEditCustomer(c)}
             onPay={(c) => setPayCustomer(c)}
             onDelete={(c) => setArchiveTarget(c)}
-            onHistory={(c) => setHistoryCustomer(c)}
           />
         </div>
       )}
@@ -411,11 +381,6 @@ export default function Customers({ filterRequest }) {
           />
         )}
       </Modal>
-
-      <HistoryModal
-        customer={historyCustomer}
-        onClose={() => setHistoryCustomer(null)}
-      />
 
       {/* Archive dialog */}
       <ConfirmDialog
