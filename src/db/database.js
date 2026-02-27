@@ -1,16 +1,15 @@
 /**
- * database.js — File-based storage via Vite dev server API
- * Replaces IndexedDB/Dexie entirely.
- * Data is stored in galaxy-data.json at the project root.
- * All Chrome profiles, all browsers on the same machine share the same file.
+ * database.js — Modified for Vercel / LocalStorage
  */
 
+// ------------------------------------------------------------------
+// PART 1: ORIGINAL CODE (COMMENTED OUT)
+// ------------------------------------------------------------------
+/*
 const API = "/api/data";
 
 // In-memory cache so we don't hit the file on every single read
 let _cache = null;
-
-// Replace your existing readAll and writeAll in src/db/database.js with these:
 
 async function readAll() {
   if (_cache) return _cache;
@@ -45,11 +44,55 @@ async function writeAll(data) {
   });
   if (!res.ok) throw new Error("Failed to write data file");
 }
-// Invalidate cache (called after writes so next read is fresh)
+
 function invalidate() {
   _cache = null;
 }
+*/
 
+// ------------------------------------------------------------------
+// PART 2: NEW CODE (FOR VERCEL / LOCALSTORAGE)
+// ------------------------------------------------------------------
+
+// This key is where your data lives in the browser
+const DB_KEY = "galaxy_isp_data_v1";
+
+// New readAll function
+async function readAll() {
+  // 1. Try to get data from Chrome/Browser LocalStorage
+  const rawData = localStorage.getItem(DB_KEY);
+
+  // 2. If data exists, parse it into JSON and return it
+  if (rawData) {
+    return JSON.parse(rawData);
+  }
+
+  // 3. If NO data exists (first time loading), return an empty structure.
+  // This prevents "undefined" errors in the rest of your app.
+  return {
+    customers: [],
+    paymentCycles: [],
+    packages: [],
+    inventory: [],
+    expenses: [],
+    settings: {},
+  };
+}
+
+// New writeAll function
+async function writeAll(data) {
+  // Save the data object as a string in LocalStorage
+  localStorage.setItem(DB_KEY, JSON.stringify(data));
+}
+
+// New invalidate function (does nothing, but prevents errors)
+function invalidate() {
+  // No cache to clear in LocalStorage mode
+}
+
+// ------------------------------------------------------------------
+// PART 3: EXISTING LOGIC (KEEP EVERYTHING BELOW THIS LINE AS IS)
+// ------------------------------------------------------------------
 // ── Generic table operations ─────────────────────────────────────
 
 async function getTable(table) {
