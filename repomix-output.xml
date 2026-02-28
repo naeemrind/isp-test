@@ -609,475 +609,6 @@ setupDevTools(); // <-- Add this
 createRoot(document.getElementById("root")).render(<App />);
 </file>
 
-<file path="src/pages/Customers/CustomerForm.jsx">
-import { useState, useEffect, useCallback } from "react";
-import { checkDuplicate } from "../../utils/duplicateCheck";
-import { today } from "../../utils/dateUtils";
-import usePackageStore from "../../store/usePackageStore";
-import useCustomerStore from "../../store/useCustomerStore";
-import usePaymentStore from "../../store/usePaymentStore";
-import db from "../../db/database";
-
-const INITIAL = {
-  fullName: "",
-  userName: "",
-  mobileNo: "",
-  mainArea: "",
-  recoveryAgent: "",
-  packageId: "",
-  status: "active",
-  notes: "",
-  startDate: today(),
-};
-
-const PAYMENT_INITIAL = {
-  recordPayment: false,
-  amountPaid: "",
-  paymentDate: today(),
-  paymentNote: "",
-};
-
-export default function CustomerForm({ customer, onClose }) {
-  const addCustomer = useCustomerStore((s) => s.addCustomer);
-  const updateCustomer = useCustomerStore((s) => s.updateCustomer);
-  const createInitialCycle = usePaymentStore((s) => s.createInitialCycle);
-  const addInstallment = usePaymentStore((s) => s.addInstallment);
-  const allPackages = usePackageStore((s) => s.packages);
-  const packages = allPackages.filter((p) => p.isActive !== false);
-  const isEdit = !!customer;
-
-  const [form, setFormState] = useState(
-    isEdit ? { ...customer, startDate: today() } : INITIAL,
-  );
-  const [payment, setPaymentState] = useState(PAYMENT_INITIAL);
-  const [errors, setErrors] = useState({});
-  const [dupWarning, setDupWarning] = useState(null);
-  const [areas, setAreas] = useState([]);
-  const [agents, setAgents] = useState([]);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    db.settings.get("areas").then((r) => setAreas(r?.value || []));
-    db.settings.get("agents").then((r) => setAgents(r?.value || []));
-  }, []);
-
-  // When package changes, auto-fill amountPaid with full price as default
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (!isEdit && form.packageId) {
-        const pkg = packages.find(
-          (p) => Number(p.id) === Number(form.packageId),
-        );
-        if (pkg && !payment.amountPaid) {
-          setPaymentState((p) => ({ ...p, amountPaid: String(pkg.price) }));
-        }
-      }
-    }, 0);
-    return clearTimeout(timer);
-  }, [form.packageId, isEdit, packages, payment]);
-
-  const setField = (field, value) => {
-    setFormState((f) => ({ ...f, [field]: value }));
-    setErrors((e) => ({ ...e, [field]: "" }));
-  };
-
-  const setPayField = (field, value) => {
-    setPaymentState((p) => ({ ...p, [field]: value }));
-    setErrors((e) => ({ ...e, [field]: "" }));
-  };
-
-  const checkDup = useCallback(
-    async (field, value) => {
-      if (!value) return setDupWarning(null);
-      const result = await checkDuplicate(
-        field === "userName" ? value : form.userName,
-        field === "mobileNo" ? value : form.mobileNo,
-        isEdit ? customer.id : null,
-      );
-      if (result.hasDuplicate) {
-        setDupWarning(
-          `${field === "userName" ? "Username" : "Mobile"} already used by: ${result.existing.fullName}`,
-        );
-      } else {
-        setDupWarning(null);
-      }
-    },
-    [form.userName, form.mobileNo, isEdit, customer],
-  );
-
-  const validate = () => {
-    const e = {};
-    if (!form.fullName.trim()) e.fullName = "Required";
-    if (!form.userName.trim()) e.userName = "Required";
-    if (!form.packageId) e.packageId = "Select a package";
-    if (!form.mainArea) e.mainArea = "Select an area";
-    if (form.mobileNo && String(form.mobileNo).replace(/\D/g, "").length < 10)
-      e.mobileNo = "Must be at least 10 digits";
-
-    // Validate payment section only if enabled
-    if (!isEdit && payment.recordPayment) {
-      const amt = Number(payment.amountPaid);
-      if (!payment.amountPaid || amt <= 0)
-        e.amountPaid = "Enter a valid amount";
-      const pkg = packages.find((p) => Number(p.id) === Number(form.packageId));
-      if (pkg && amt > pkg.price)
-        e.amountPaid = `Cannot exceed PKR ${pkg.price} (package price)`;
-      if (!payment.paymentDate) e.paymentDate = "Required";
-    }
-    return e;
-  };
-
-  const handleSubmit = async () => {
-    const e = validate();
-    if (Object.keys(e).length) {
-      setErrors(e);
-      return;
-    }
-    if (dupWarning) return;
-
-    setSaving(true);
-    try {
-      const pkgId = Number(form.packageId);
-      const pkg = packages.find((p) => Number(p.id) === pkgId);
-      const lockedPrice = pkg ? Number(pkg.price) : 0;
-
-      if (isEdit) {
-        await updateCustomer(customer.id, {
-          fullName: form.fullName.trim(),
-          userName: form.userName.trim(),
-          mobileNo: form.mobileNo,
-          mainArea: form.mainArea,
-          recoveryAgent: form.recoveryAgent,
-          packageId: pkgId,
-          lockedPackagePrice: lockedPrice,
-          status: form.status,
-          notes: form.notes,
-        });
-      } else {
-        const newCustomer = await addCustomer({
-          fullName: form.fullName.trim(),
-          userName: form.userName.trim(),
-          mobileNo: form.mobileNo,
-          mainArea: form.mainArea,
-          recoveryAgent: form.recoveryAgent,
-          packageId: pkgId,
-          lockedPackagePrice: lockedPrice,
-          status: "active",
-          notes: form.notes,
-        });
-
-        // Always create the billing cycle first
-        const newCycle = await createInitialCycle(
-          newCustomer.id,
-          form.startDate,
-          lockedPrice,
-        );
-
-        // If staff also entered a payment, record it immediately
-        if (payment.recordPayment && Number(payment.amountPaid) > 0) {
-          await addInstallment(
-            newCycle.id,
-            Number(payment.amountPaid),
-            payment.paymentDate,
-            payment.paymentNote || "",
-          );
-        }
-      }
-      onClose();
-    } catch (err) {
-      alert("Error saving: " + err.message);
-    }
-    setSaving(false);
-  };
-
-  // Derived: selected package price for display
-  const selectedPkg = packages.find(
-    (p) => Number(p.id) === Number(form.packageId),
-  );
-  const packagePrice = selectedPkg ? Number(selectedPkg.price) : 0;
-  const amountPaidNum = Number(payment.amountPaid) || 0;
-  const remaining = packagePrice - amountPaidNum;
-
-  return (
-    <div className="space-y-5">
-      {/* ── DUPLICATE WARNING ── */}
-      {dupWarning && (
-        <div className="bg-red-50 border border-red-300 text-red-700 text-sm px-3 py-2 rounded-lg">
-          ⚠ Duplicate detected: {dupWarning}
-        </div>
-      )}
-
-      {/* ── CUSTOMER INFO ── */}
-      <div>
-        <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-3">
-          Customer Information
-        </p>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Full Name *" error={errors.fullName}>
-            <input
-              className={inp(errors.fullName)}
-              value={form.fullName}
-              onChange={(e) => setField("fullName", e.target.value)}
-              placeholder="e.g. Muhammad Qasim"
-            />
-          </Field>
-
-          <Field label="Username *" error={errors.userName}>
-            <input
-              className={inp(errors.userName)}
-              value={form.userName}
-              onChange={(e) => {
-                setField("userName", e.target.value);
-                checkDup("userName", e.target.value);
-              }}
-              placeholder="e.g. Qasim6655"
-            />
-          </Field>
-
-          <Field label="Mobile No" error={errors.mobileNo}>
-            <input
-              className={inp(errors.mobileNo)}
-              value={form.mobileNo}
-              onChange={(e) => {
-                setField("mobileNo", e.target.value);
-                checkDup("mobileNo", e.target.value);
-              }}
-              placeholder="e.g. 3001234567"
-              type="tel"
-            />
-          </Field>
-
-          <Field label="Package *" error={errors.packageId}>
-            <select
-              className={inp(errors.packageId)}
-              value={form.packageId}
-              onChange={(e) => {
-                setField("packageId", e.target.value);
-                // Reset payment amount so it auto-fills with new price
-                setPaymentState((p) => ({ ...p, amountPaid: "" }));
-              }}
-            >
-              <option value="">— Select Package —</option>
-              {packages.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} — PKR {Number(p.price).toLocaleString()}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <Field label="Main Area *" error={errors.mainArea}>
-            <select
-              className={inp(errors.mainArea)}
-              value={form.mainArea}
-              onChange={(e) => setField("mainArea", e.target.value)}
-            >
-              <option value="">— Select Area —</option>
-              {areas.map((a) => (
-                <option key={a} value={a}>
-                  {a}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <Field label="Recovery Agent">
-            <select
-              className={inp()}
-              value={form.recoveryAgent}
-              onChange={(e) => setField("recoveryAgent", e.target.value)}
-            >
-              <option value="">— Select Agent —</option>
-              {agents.map((a) => (
-                <option key={a} value={a}>
-                  {a}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          {!isEdit && (
-            <Field label="Subscription Start Date *">
-              <input
-                type="date"
-                className={inp()}
-                value={form.startDate}
-                max={today()}
-                onChange={(e) => setField("startDate", e.target.value)}
-              />
-            </Field>
-          )}
-
-          {isEdit && (
-            <Field label="Status">
-              <select
-                className={inp()}
-                value={form.status}
-                onChange={(e) => setField("status", e.target.value)}
-              >
-                <option value="active">Active</option>
-                <option value="suspended">Suspended</option>
-                <option value="terminated">Terminated</option>
-              </select>
-            </Field>
-          )}
-        </div>
-
-        <div className="mt-4">
-          <Field label="Notes">
-            <textarea
-              className={inp() + " resize-none"}
-              rows={2}
-              value={form.notes}
-              onChange={(e) => setField("notes", e.target.value)}
-              placeholder="Optional notes..."
-            />
-          </Field>
-        </div>
-      </div>
-
-      {/* ── PAYMENT SECTION (Add mode only) ── */}
-      {!isEdit && (
-        <div className="border-t border-gray-200 pt-4">
-          {/* Toggle */}
-          <label className="flex items-center gap-3 cursor-pointer select-none mb-4">
-            <div
-              onClick={() =>
-                setPayField("recordPayment", !payment.recordPayment)
-              }
-              className={`relative w-11 h-6 rounded-full transition-colors ${
-                payment.recordPayment ? "bg-blue-600" : "bg-gray-300"
-              }`}
-            >
-              <div
-                className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                  payment.recordPayment ? "translate-x-5" : "translate-x-0"
-                }`}
-              />
-            </div>
-            <div>
-              <span className="text-sm font-bold text-gray-800">
-                Record First Payment Now
-              </span>
-              <p className="text-xs text-gray-400">
-                Optionally log a payment while adding the customer
-              </p>
-            </div>
-          </label>
-
-          {payment.recordPayment && (
-            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-4">
-              {/* Package price hint */}
-              {selectedPkg && (
-                <div className="flex items-center justify-between bg-white border border-blue-100 rounded-lg px-4 py-2 text-sm">
-                  <span className="text-gray-500">Package Total</span>
-                  <span className="font-bold text-gray-800">
-                    PKR {packagePrice.toLocaleString()}
-                  </span>
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-4">
-                <Field label="Amount Paid *" error={errors.amountPaid}>
-                  <input
-                    type="number"
-                    min="1"
-                    max={packagePrice || undefined}
-                    className={inp(errors.amountPaid)}
-                    value={payment.amountPaid}
-                    onChange={(e) => setPayField("amountPaid", e.target.value)}
-                    placeholder={`Max PKR ${packagePrice.toLocaleString()}`}
-                  />
-                </Field>
-
-                <Field label="Payment Date *" error={errors.paymentDate}>
-                  <input
-                    type="date"
-                    className={inp(errors.paymentDate)}
-                    value={payment.paymentDate}
-                    max={today()}
-                    onChange={(e) => setPayField("paymentDate", e.target.value)}
-                  />
-                </Field>
-              </div>
-
-              <Field label="Payment Note (optional)">
-                <input
-                  className={inp()}
-                  value={payment.paymentNote}
-                  onChange={(e) => setPayField("paymentNote", e.target.value)}
-                  placeholder="e.g. Cash received, Bank transfer..."
-                />
-              </Field>
-
-              {/* Live remaining balance */}
-              {selectedPkg && amountPaidNum > 0 && (
-                <div
-                  className={`flex items-center justify-between rounded-lg px-4 py-2 text-sm font-semibold ${
-                    remaining <= 0
-                      ? "bg-green-100 text-green-800"
-                      : "bg-yellow-100 text-yellow-800"
-                  }`}
-                >
-                  <span>
-                    {remaining <= 0 ? "✓ Fully Paid" : "Remaining Balance"}
-                  </span>
-                  <span>
-                    {remaining <= 0
-                      ? "PKR 0"
-                      : `PKR ${remaining.toLocaleString()}`}
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── FOOTER BUTTONS ── */}
-      <div className="flex justify-end gap-3 pt-1">
-        <button
-          onClick={onClose}
-          className="px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={handleSubmit}
-          disabled={saving || !!dupWarning}
-          className="px-5 py-2 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50"
-        >
-          {saving
-            ? "Saving..."
-            : isEdit
-              ? "Save Changes"
-              : payment.recordPayment
-                ? "Add Customer & Record Payment"
-                : "Add Customer"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-const inp = (err) =>
-  `w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-    err ? "border-red-400 bg-red-50" : "border-gray-300 bg-white"
-  }`;
-
-function Field({ label, error, children }) {
-  return (
-    <div>
-      <label className="block text-xs font-semibold text-gray-600 mb-1.5">
-        {label}
-      </label>
-      {children}
-      {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
-    </div>
-  );
-}
-</file>
-
 <file path="src/pages/Expenses/ExpenseForm.jsx">
 import { useState } from "react";
 import { today } from "../../utils/dateUtils";
@@ -2723,121 +2254,6 @@ const usePackageStore = create((set) => ({
 export default usePackageStore;
 </file>
 
-<file path="src/store/usePaymentStore.js">
-import { create } from "zustand";
-import db from "../db/database";
-import { addDays } from "../utils/dateUtils";
-
-const usePaymentStore = create((set, get) => ({
-  cycles: [],
-
-  loadCycles: async () => {
-    const cycles = await db.paymentCycles.toArray();
-    set({ cycles });
-  },
-
-  // Create the FIRST cycle when a new customer is added
-  createInitialCycle: async (customerId, startDate, totalAmount) => {
-    const cycleData = {
-      customerId,
-      cycleStartDate: startDate,
-      // FIXED: Changed from 30 to 29.
-      // 30 days inclusive = Start Date + 29 days.
-      cycleEndDate: addDays(startDate, 29),
-      totalAmount,
-      amountPaid: 0,
-      amountPending: totalAmount,
-      status: "pending",
-      installments: [],
-      createdAt: new Date().toISOString(),
-    };
-    const id = await db.paymentCycles.add(cycleData);
-    const cycle = await db.paymentCycles.get(id);
-    set((s) => ({ cycles: [...s.cycles, cycle] }));
-    return cycle;
-  },
-
-  // Add a payment (full or partial installment) to an existing cycle
-  addInstallment: async (cycleId, amountPaid, datePaid, note = "") => {
-    const cycle = await db.paymentCycles.get(cycleId);
-    if (!cycle) throw new Error("Cycle not found");
-
-    const installment = {
-      id: crypto.randomUUID(),
-      amountPaid: Number(amountPaid),
-      datePaid,
-      note,
-      createdAt: new Date().toISOString(),
-    };
-
-    const updatedInstallments = [...(cycle.installments || []), installment];
-    const totalPaid = updatedInstallments.reduce(
-      (sum, i) => sum + i.amountPaid,
-      0,
-    );
-    const amountPending = Math.max(0, cycle.totalAmount - totalPaid);
-    const status = amountPending === 0 ? "clear" : "pending";
-
-    const updates = {
-      installments: updatedInstallments,
-      amountPaid: totalPaid,
-      amountPending,
-      status,
-    };
-
-    await db.paymentCycles.update(cycleId, updates);
-    set((s) => ({
-      cycles: s.cycles.map((c) =>
-        c.id === cycleId ? { ...c, ...updates } : c,
-      ),
-    }));
-  },
-
-  // Start a new billing cycle for renewal (after expiry or late payment)
-  renewCycle: async (customerId, startDate, totalAmount) => {
-    const cycleData = {
-      customerId,
-      cycleStartDate: startDate,
-      // FIXED: Changed from 30 to 29.
-      // 30 days inclusive = Start Date + 29 days.
-      cycleEndDate: addDays(startDate, 29),
-      totalAmount,
-      amountPaid: 0,
-      amountPending: totalAmount,
-      status: "pending",
-      installments: [],
-      isRenewal: true,
-      createdAt: new Date().toISOString(),
-    };
-    const id = await db.paymentCycles.add(cycleData);
-    const cycle = await db.paymentCycles.get(id);
-    set((s) => ({ cycles: [...s.cycles, cycle] }));
-    return cycle;
-  },
-
-  // Get the active/latest cycle for a customer
-  getActiveCycle: (customerId) => {
-    const all = get()
-      .cycles.filter((c) => c.customerId === customerId)
-      .sort((a, b) => new Date(b.cycleStartDate) - new Date(a.cycleStartDate));
-    return all[0] || null;
-  },
-
-  getCyclesForCustomer: (customerId) => {
-    return get()
-      .cycles.filter((c) => c.customerId === customerId)
-      .sort((a, b) => new Date(b.cycleStartDate) - new Date(a.cycleStartDate));
-  },
-
-  deleteCycle: async (cycleId) => {
-    await db.paymentCycles.delete(cycleId);
-    set((s) => ({ cycles: s.cycles.filter((c) => c.id !== cycleId) }));
-  },
-}));
-
-export default usePaymentStore;
-</file>
-
 <file path="src/utils/backup.js">
 import { readAll, writeAll } from "../db/database";
 
@@ -3268,126 +2684,6 @@ export default defineConfig({
 });
 </file>
 
-<file path="src/App.jsx">
-import { useEffect, useState } from "react";
-import Navbar from "./components/layout/Navbar";
-import BackupBanner from "./components/ui/BackupBanner";
-import Dashboard from "./pages/Dashboard";
-import Customers from "./pages/Customers/Customers";
-import Inventory from "./pages/Inventory/Inventory";
-import Expenses from "./pages/Expenses/Expenses";
-import Settings from "./pages/Settings";
-import Login from "./pages/Login";
-
-// Stores
-import useCustomerStore from "./store/useCustomerStore";
-import usePaymentStore from "./store/usePaymentStore";
-import usePackageStore from "./store/usePackageStore";
-import useInventoryStore from "./store/useInventoryStore";
-import useExpenseStore from "./store/useExpenseStore";
-
-// Developer Tools
-import { setupDevTools } from "./utils/devTools.js";
-setupDevTools();
-
-export default function App() {
-  // Check if previously logged in during this session
-  const [isAuthenticated, setIsAuthenticated] = useState(
-    () => sessionStorage.getItem("galaxy_auth") === "true",
-  );
-
-  const [tab, setTab] = useState("dashboard");
-  const [loading, setLoading] = useState(false);
-  const [dataLoaded, setDataLoaded] = useState(false);
-
-  // State to handle filter requests from Dashboard to Customers page
-  // We use an object with a timestamp to ensure the useEffect in Customers fires even if the filter is the same
-  const [filterRequest, setFilterRequest] = useState(null);
-
-  // Function to load data only AFTER login
-  const loadApplicationData = async () => {
-    setLoading(true);
-    try {
-      await Promise.all([
-        useCustomerStore.getState().loadCustomers(),
-        usePaymentStore.getState().loadCycles(),
-        usePackageStore.getState().loadPackages(),
-        useInventoryStore.getState().loadInventory(),
-        useExpenseStore.getState().loadExpenses(),
-      ]);
-      setDataLoaded(true);
-    } catch (error) {
-      console.error("Failed to load data", error);
-    }
-    setLoading(false);
-  };
-
-  // Effect: Trigger data load if authenticated but data not yet loaded
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (isAuthenticated && !dataLoaded) {
-        loadApplicationData();
-      }
-    }, 0);
-
-    return () => clearTimeout(timer);
-  }, [isAuthenticated, dataLoaded]);
-
-  const handleLogin = () => {
-    sessionStorage.setItem("galaxy_auth", "true");
-    setIsAuthenticated(true);
-  };
-
-  // Function to handle navigation with specific filter (called from Dashboard)
-  const navigateToCustomers = (filterType) => {
-    setFilterRequest({ type: filterType, timestamp: Date.now() });
-    setTab("customers");
-  };
-
-  // 1. Show Login Screen if not authenticated
-  if (!isAuthenticated) {
-    return <Login onLogin={handleLogin} />;
-  }
-
-  // 2. Show Loading Screen while fetching data
-  if (loading || !dataLoaded) {
-    return (
-      <div className="h-screen flex flex-col items-center justify-center bg-gray-50">
-        <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
-        <div className="text-gray-500 text-sm font-medium">
-          Loading Galaxy ISP...
-        </div>
-      </div>
-    );
-  }
-
-  // 3. Show Main App
-  return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
-      <Navbar activeTab={tab} onTabChange={setTab} />
-      <BackupBanner />
-      <main className="flex-1 overflow-auto">
-        <div style={{ display: tab === "dashboard" ? "block" : "none" }}>
-          <Dashboard onNavigateToCustomers={navigateToCustomers} />
-        </div>
-        <div style={{ display: tab === "customers" ? "block" : "none" }}>
-          <Customers filterRequest={filterRequest} />
-        </div>
-        <div style={{ display: tab === "inventory" ? "block" : "none" }}>
-          <Inventory />
-        </div>
-        <div style={{ display: tab === "expenses" ? "block" : "none" }}>
-          <Expenses />
-        </div>
-        <div style={{ display: tab === "settings" ? "block" : "none" }}>
-          <Settings />
-        </div>
-      </main>
-    </div>
-  );
-}
-</file>
-
 <file path="src/components/ui/HistoryModal.jsx">
 import {
   Calendar,
@@ -3713,1879 +3009,718 @@ export default function HistoryModal({ customer, onClose }) {
 }
 </file>
 
-<file path="src/pages/Customers/Customers.jsx">
-import { useState, useEffect } from "react";
-import {
-  Plus,
-  Search,
-  Archive,
-  ArchiveRestore,
-  Trash2,
-  ArrowUpDown,
-} from "lucide-react";
-import Modal from "../../components/ui/Modal";
-import ConfirmDialog from "../../components/ui/ConfirmDialog";
-import CustomerTable from "./CustomerTable";
-import CustomerForm from "./CustomerForm";
-import PaymentForm from "../Payments/PaymentForm";
+<file path="src/pages/Customers/CustomerForm.jsx">
+import { useState, useEffect, useCallback } from "react";
+import { checkDuplicate } from "../../utils/duplicateCheck";
+import { today } from "../../utils/dateUtils";
+import usePackageStore from "../../store/usePackageStore";
 import useCustomerStore from "../../store/useCustomerStore";
 import usePaymentStore from "../../store/usePaymentStore";
-import { formatDate, daysUntil } from "../../utils/dateUtils";
-import HistoryModal from "../../components/ui/HistoryModal";
-
-// Defined OUTSIDE the component to prevent re-creation on every render
-const FilterButton = ({ id, label, currentFilter, setFilter }) => (
-  <button
-    onClick={() => setFilter(id)}
-    className={`px-3 py-1.5 text-xs rounded capitalize transition-colors ${
-      currentFilter === id
-        ? "bg-gray-800 text-white shadow-sm"
-        : "border border-gray-300 text-gray-600 hover:bg-gray-50"
-    }`}
-  >
-    {label}
-  </button>
-);
-
-export default function Customers({ filterRequest }) {
-  const customers = useCustomerStore((s) => s.customers);
-  const archiveCustomer = useCustomerStore((s) => s.archiveCustomer);
-  const restoreCustomer = useCustomerStore((s) => s.restoreCustomer);
-  const permanentlyDeleteCustomer = useCustomerStore(
-    (s) => s.permanentlyDeleteCustomer,
-  );
-  const getCyclesForCustomer = usePaymentStore((s) => s.getCyclesForCustomer);
-  const getActiveCycle = usePaymentStore((s) => s.getActiveCycle);
-
-  const [view, setView] = useState("active");
-  const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState("all");
-  const [sortBy, setSortBy] = useState("newest"); // Default sort
-
-  const [showAdd, setShowAdd] = useState(false);
-  const [editCustomer, setEditCustomer] = useState(null);
-  const [payCustomer, setPayCustomer] = useState(null);
-  const [archiveTarget, setArchiveTarget] = useState(null);
-  const [restoreTarget, setRestoreTarget] = useState(null);
-  const [purgeTarget, setPurgeTarget] = useState(null);
-  const [historyCustomer, setHistoryCustomer] = useState(null);
-
-  const activeCustomers = customers.filter((c) => !c.isArchived);
-  const archivedCustomers = customers.filter((c) => c.isArchived);
-
-  // Effect to listen to requests from Dashboard (via App.jsx)
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (filterRequest) {
-        setView("active");
-        setFilter(filterRequest.type);
-      }
-      return () => clearTimeout(timer);
-    }, 0);
-  }, [filterRequest]);
-
-  // 1. FILTERING
-  const q = search.toLowerCase();
-  const matchSearch = (c) =>
-    !search ||
-    c.fullName?.toLowerCase().includes(q) ||
-    c.userName?.toLowerCase().includes(q) ||
-    c.mobileNo?.includes(q) ||
-    c.mainArea?.toLowerCase().includes(q);
-
-  const filteredActive = activeCustomers.filter((c) => {
-    const cycle = getActiveCycle(c.id);
-    const days = cycle ? daysUntil(cycle.cycleEndDate) : 0;
-
-    // Search Filter
-    if (!matchSearch(c)) return false;
-
-    // Logic for Buttons
-    switch (filter) {
-      case "all":
-        return true;
-      case "active":
-        return c.status === "active";
-      case "suspended":
-        return c.status === "suspended";
-      case "terminated":
-        return c.status === "terminated";
-      case "pending":
-        // Shows active customer with pending balance BUT NOT overdue yet
-        return cycle && cycle.amountPending > 0 && days >= 0;
-      case "overdue":
-        // Shows active customers with pending balance AND expired date
-        return cycle && cycle.amountPending > 0 && days < 0;
-      default:
-        return true;
-    }
-  });
-
-  // 2. SORTING
-  const sortedActive = [...filteredActive].sort((a, b) => {
-    const cycleA = getActiveCycle(a.id);
-    const cycleB = getActiveCycle(b.id);
-
-    switch (sortBy) {
-      case "name":
-        return a.fullName.localeCompare(b.fullName);
-
-      case "pending":
-        // Highest balance first
-        return (cycleB?.amountPending || 0) - (cycleA?.amountPending || 0);
-
-      case "expiring":
-        // Soonest expiry date first.
-        // If no cycle (e.g. new/terminated), push to bottom.
-        if (!cycleA) return 1;
-        if (!cycleB) return -1;
-        return new Date(cycleA.cycleEndDate) - new Date(cycleB.cycleEndDate);
-
-      case "newest":
-      default:
-        // IDs are auto-incrementing, so higher ID = newer
-        return b.id - a.id;
-    }
-  });
-
-  const filteredArchived = archivedCustomers.filter(matchSearch);
-
-  return (
-    <div className="p-4 space-y-3">
-      {/* HEADER */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h1 className="text-base font-semibold text-gray-800">Customers</h1>
-
-          {/* Active / Archived tab switcher */}
-          <div className="flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5">
-            <button
-              onClick={() => setView("active")}
-              className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
-                view === "active"
-                  ? "bg-white text-gray-900 shadow-sm"
-                  : "text-gray-500 hover:text-gray-700"
-              }`}
-            >
-              Active
-              <span className="ml-1.5 bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full text-xs">
-                {activeCustomers.length}
-              </span>
-            </button>
-            <button
-              onClick={() => setView("archived")}
-              className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
-                view === "archived"
-                  ? "bg-white text-gray-900 shadow-sm"
-                  : "text-gray-500 hover:text-gray-700"
-              }`}
-            >
-              Archived
-              {archivedCustomers.length > 0 && (
-                <span className="ml-1.5 bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full text-xs">
-                  {archivedCustomers.length}
-                </span>
-              )}
-            </button>
-          </div>
-        </div>
-
-        {view === "active" && (
-          <button
-            onClick={() => setShowAdd(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
-          >
-            <Plus size={14} /> Add Customer
-          </button>
-        )}
-      </div>
-
-      {/* SEARCH + FILTER + SORT */}
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        {/* Left Side: Search & Status Filters */}
-        <div className="flex items-center gap-2 flex-1 min-w-62.5 overflow-x-auto pb-1 md:pb-0">
-          <div className="relative min-w-[140px] max-w-xs">
-            <Search
-              size={14}
-              className="absolute left-2.5 top-2 text-gray-400"
-            />
-            <input
-              className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-              placeholder="Search..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
-          {view === "active" && (
-            <div className="flex gap-1">
-              <FilterButton
-                id="all"
-                label="All"
-                currentFilter={filter}
-                setFilter={setFilter}
-              />
-              <FilterButton
-                id="active"
-                label="Active"
-                currentFilter={filter}
-                setFilter={setFilter}
-              />
-              <FilterButton
-                id="suspended"
-                label="Suspended"
-                currentFilter={filter}
-                setFilter={setFilter}
-              />
-              {/* Added Pending and Overdue Buttons */}
-              <FilterButton
-                id="pending"
-                label="Pending"
-                currentFilter={filter}
-                setFilter={setFilter}
-              />
-              <FilterButton
-                id="overdue"
-                label="Overdue"
-                currentFilter={filter}
-                setFilter={setFilter}
-              />
-            </div>
-          )}
-        </div>
-
-        {/* Right Side: Sorting Dropdown */}
-        {view === "active" && (
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-500 font-medium">Sort by:</span>
-            <div className="relative">
-              <ArrowUpDown
-                size={14}
-                className="absolute left-2.5 top-2 text-gray-500 pointer-events-none"
-              />
-              <select
-                className="pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white text-gray-700 cursor-pointer appearance-none min-w-35"
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value)}
-              >
-                <option value="newest">Newest First</option>
-                <option value="name">Name (A-Z)</option>
-                <option value="expiring">Expiring Soon</option>
-                <option value="pending">Highest Debt</option>
-              </select>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* ACTIVE TABLE */}
-      {view === "active" && (
-        <div className="bg-white border border-gray-200 rounded overflow-hidden">
-          <CustomerTable
-            customers={sortedActive}
-            searchQuery={""}
-            onEdit={(c) => setEditCustomer(c)}
-            onPay={(c) => setPayCustomer(c)}
-            onDelete={(c) => setArchiveTarget(c)}
-            onHistory={(c) => setHistoryCustomer(c)}
-          />
-        </div>
-      )}
-
-      {/* ARCHIVED TABLE */}
-      {view === "archived" && (
-        <div className="bg-white border border-gray-200 rounded overflow-hidden">
-          {filteredArchived.length === 0 ? (
-            <div className="py-16 flex flex-col items-center gap-2 text-gray-400">
-              <Archive size={36} className="text-gray-300" />
-              <p className="text-sm font-medium">No archived customers</p>
-              <p className="text-xs text-gray-300">
-                Deleted customers appear here — nothing is ever lost.
-              </p>
-            </div>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-gray-800 text-white text-left text-xs">
-                  <th className="px-4 py-2.5 font-medium">Customer</th>
-                  <th className="px-4 py-2.5 font-medium">Area</th>
-                  <th className="px-4 py-2.5 font-medium">Archived On</th>
-                  <th className="px-4 py-2.5 font-medium">Reason</th>
-                  <th className="px-4 py-2.5 font-medium">Total Ever Paid</th>
-                  <th className="px-4 py-2.5 font-medium">Cycles</th>
-                  <th className="px-4 py-2.5 font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredArchived.map((c) => {
-                  const cycles = getCyclesForCustomer(c.id);
-                  const totalPaid = cycles.reduce(
-                    (sum, cy) =>
-                      sum +
-                      (cy.installments || []).reduce(
-                        (s, i) => s + (i.amountPaid || 0),
-                        0,
-                      ),
-                    0,
-                  );
-                  return (
-                    <tr
-                      key={c.id}
-                      className="border-t border-gray-100 hover:bg-gray-50"
-                    >
-                      <td className="px-4 py-3">
-                        <div className="font-medium text-gray-800">
-                          {c.fullName}
-                        </div>
-                        <div className="text-xs text-gray-400">
-                          {c.userName}
-                        </div>
-                        {c.mobileNo && (
-                          <div className="text-xs text-gray-400">
-                            {c.mobileNo}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-gray-500">
-                        {c.mainArea || "—"}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-gray-500">
-                        {c.archivedAt ? formatDate(c.archivedAt) : "—"}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-gray-500 max-w-50">
-                        {c.archiveReason || (
-                          <span className="text-gray-300 italic">
-                            No reason given
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 font-semibold text-gray-800">
-                        PKR {totalPaid.toLocaleString()}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-gray-500">
-                        {cycles.length}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            onClick={() => setRestoreTarget(c)}
-                            className="flex items-center gap-1 px-2.5 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 font-medium"
-                          >
-                            <ArchiveRestore size={12} /> Restore
-                          </button>
-                          <button
-                            onClick={() => setPurgeTarget(c)}
-                            title="Permanently delete all data"
-                            className="flex items-center gap-1 px-2.5 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 font-medium"
-                          >
-                            <Trash2 size={12} /> Purge
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
-
-      {/* MODALS */}
-      <Modal
-        isOpen={showAdd}
-        onClose={() => setShowAdd(false)}
-        title="Add New Customer"
-        size="lg"
-      >
-        <CustomerForm onClose={() => setShowAdd(false)} />
-      </Modal>
-
-      <Modal
-        isOpen={!!editCustomer}
-        onClose={() => setEditCustomer(null)}
-        title="Edit Customer"
-        size="lg"
-      >
-        {editCustomer && (
-          <CustomerForm
-            customer={editCustomer}
-            onClose={() => setEditCustomer(null)}
-          />
-        )}
-      </Modal>
-
-      <Modal
-        isOpen={!!payCustomer}
-        onClose={() => setPayCustomer(null)}
-        title="Record Payment"
-        size="md"
-      >
-        {payCustomer && (
-          <PaymentForm
-            customer={payCustomer}
-            onClose={() => setPayCustomer(null)}
-          />
-        )}
-      </Modal>
-
-      <HistoryModal
-        customer={historyCustomer}
-        onClose={() => setHistoryCustomer(null)}
-      />
-
-      {/* Archive dialog */}
-      <ConfirmDialog
-        isOpen={!!archiveTarget}
-        onClose={() => setArchiveTarget(null)}
-        onConfirm={(reason) => archiveCustomer(archiveTarget.id, reason)}
-        title="Archive Customer"
-        message={`"${archiveTarget?.fullName}" will be moved to the Archived tab. All payment history is preserved and you can restore them at any time.`}
-        confirmLabel="Archive Customer"
-        confirmText={archiveTarget?.fullName}
-        showReason
-        reasonLabel="Reason for archiving (optional)"
-        danger
-      />
-
-      {/* Restore dialog */}
-      <ConfirmDialog
-        isOpen={!!restoreTarget}
-        onClose={() => setRestoreTarget(null)}
-        onConfirm={() => restoreCustomer(restoreTarget.id)}
-        title="Restore Customer"
-        message={`Restore "${restoreTarget?.fullName}" back to Active customers? Their full payment history will remain intact.`}
-        confirmLabel="Yes, Restore"
-        danger={false}
-      />
-
-      {/* Purge dialog */}
-      <ConfirmDialog
-        isOpen={!!purgeTarget}
-        onClose={() => setPurgeTarget(null)}
-        onConfirm={() => permanentlyDeleteCustomer(purgeTarget.id)}
-        title="Permanently Delete"
-        message={`This will PERMANENTLY delete "${purgeTarget?.fullName}" and every payment record forever. This cannot be undone.`}
-        confirmLabel="Permanently Delete"
-        confirmText={purgeTarget?.fullName}
-        requirePassword
-        danger
-      />
-    </div>
-  );
-}
-</file>
-
-<file path="src/pages/Customers/CustomerTable.jsx">
-import { Pencil, Trash2, CreditCard, History } from "lucide-react";
-import Badge from "../../components/ui/Badge";
-import WhatsAppButton from "../../components/shared/WhatsAppButton";
-import { formatDate, daysUntil } from "../../utils/dateUtils";
-import { MESSAGE_TEMPLATES } from "../../config/messageTemplates";
-import usePaymentStore from "../../store/usePaymentStore";
-import usePackageStore from "../../store/usePackageStore";
-
-export default function CustomerTable({
-  customers,
-  onEdit,
-  onPay,
-  onDelete,
-  onHistory,
-  searchQuery,
-}) {
-  const getActiveCycle = usePaymentStore((s) => s.getActiveCycle);
-  const packages = usePackageStore((s) => s.packages);
-
-  const filtered = customers.filter((c) => {
-    if (!searchQuery) return true;
-    const q = searchQuery.toLowerCase();
-    return (
-      c.fullName?.toLowerCase().includes(q) ||
-      c.userName?.toLowerCase().includes(q) ||
-      c.mobileNo?.includes(q) ||
-      c.mainArea?.toLowerCase().includes(q)
-    );
-  });
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm border-collapse">
-        <thead>
-          <tr className="bg-gray-100 text-gray-600 text-left">
-            <th className="px-3 py-2 font-medium">Customer</th>
-            <th className="px-3 py-2 font-medium">Area</th>
-            <th className="px-3 py-2 font-medium">Package</th>
-            <th className="px-3 py-2 font-medium">Expires</th>
-            <th className="px-3 py-2 font-medium">Pending</th>
-            <th className="px-3 py-2 font-medium">Status</th>
-            <th className="px-3 py-2 font-medium">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {filtered.map((customer) => {
-            const cycle = getActiveCycle(customer.id);
-            const pkg = packages.find((p) => p.id === customer.packageId);
-            const days = cycle ? daysUntil(cycle.cycleEndDate) : null;
-
-            let rowBg = "";
-            let cycleStatus = cycle ? cycle.status : "pending";
-            if (cycle) {
-              if (days !== null && days < 0 && cycleStatus !== "clear") {
-                cycleStatus = "overdue";
-                rowBg = "bg-red-50";
-              } else if (
-                days !== null &&
-                days <= 3 &&
-                cycleStatus !== "clear"
-              ) {
-                rowBg = "bg-yellow-50";
-              } else if (cycleStatus === "clear") {
-                rowBg = "";
-              }
-            }
-
-            const waMessage =
-              cycle && cycle.amountPending > 0
-                ? MESSAGE_TEMPLATES.paymentDue(customer, cycle)
-                : cycle
-                  ? MESSAGE_TEMPLATES.expiryReminder(customer, cycle)
-                  : "";
-
-            return (
-              <tr
-                key={customer.id}
-                className={`border-b border-gray-100 ${rowBg} hover:bg-gray-50`}
-              >
-                <td className="px-3 py-2">
-                  <div className="font-medium text-gray-800">
-                    {customer.fullName}
-                  </div>
-                  <div className="text-xs text-gray-400">
-                    {customer.userName}
-                  </div>
-                  {customer.mobileNo && (
-                    <div className="text-xs text-gray-400">
-                      {customer.mobileNo}
-                    </div>
-                  )}
-                </td>
-                <td className="px-3 py-2 text-gray-600">
-                  {customer.mainArea || "-"}
-                </td>
-                <td className="px-3 py-2">
-                  <div className="text-gray-800 font-medium">
-                    {pkg ? pkg.name : "-"}
-                  </div>
-                  {customer.lockedPackagePrice > 0 && (
-                    <div className="text-xs text-gray-400">
-                      PKR {customer.lockedPackagePrice.toLocaleString()}
-                    </div>
-                  )}
-                </td>
-                <td className="px-3 py-2">
-                  {cycle ? (
-                    <div>
-                      <div className="text-xs font-semibold text-gray-700">
-                        {formatDate(cycle.cycleEndDate)}
-                      </div>
-                      <div
-                        className={`text-xs ${days < 0 ? "text-red-600 font-bold" : days <= 3 ? "text-yellow-700 font-bold" : "text-gray-400"}`}
-                      >
-                        {days < 0
-                          ? `${Math.abs(days)}d overdue`
-                          : days === 0
-                            ? "Expires today"
-                            : `${days + 1}d left`}{" "}
-                        {/* Added +1 for Inclusive Count */}
-                      </div>
-                    </div>
-                  ) : (
-                    "-"
-                  )}
-                </td>
-                <td className="px-3 py-2">
-                  {cycle && cycle.amountPending > 0 ? (
-                    <span className="text-red-600 font-medium">
-                      PKR {cycle.amountPending.toLocaleString()}
-                    </span>
-                  ) : (
-                    <span className="text-green-600 text-xs font-bold">
-                      Paid
-                    </span>
-                  )}
-                </td>
-                <td className="px-3 py-2">
-                  <Badge
-                    status={
-                      customer.status === "active"
-                        ? cycleStatus
-                        : customer.status
-                    }
-                  />
-                </td>
-                <td className="px-3 py-2">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <button
-                      onClick={() => onPay(customer)}
-                      className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-blue-50 text-blue-700 rounded hover:bg-blue-100 border border-blue-200 transition-colors"
-                      title="Record Payment"
-                    >
-                      <CreditCard size={13} /> Pay
-                    </button>
-
-                    <button
-                      onClick={() => onEdit(customer)}
-                      className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-white text-gray-700 rounded hover:bg-gray-50 border border-gray-300 transition-colors"
-                      title="Edit Customer"
-                    >
-                      <Pencil size={13} /> Edit
-                    </button>
-
-                    <button
-                      onClick={() => onDelete(customer)}
-                      className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-white text-red-600 rounded hover:bg-red-50 border border-gray-200 transition-colors"
-                      title="Delete Customer"
-                    >
-                      <Trash2 size={13} />
-                    </button>
-
-                    {customer.mobileNo && (
-                      <WhatsAppButton
-                        mobileNo={customer.mobileNo}
-                        message={waMessage}
-                        label="Send"
-                      />
-                    )}
-
-                    <button
-                      onClick={() => onHistory(customer)}
-                      className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-gray-100 text-gray-700 rounded hover:bg-gray-200 border border-gray-300 transition-colors"
-                      title="View Payment History"
-                    >
-                      <History size={13} />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            );
-          })}
-          {filtered.length === 0 && (
-            <tr>
-              <td
-                colSpan={7}
-                className="px-3 py-8 text-center text-gray-400 text-sm"
-              >
-                No customers found.
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-</file>
-
-<file path="src/pages/Dashboard.jsx">
-import { useState } from "react";
-import {
-  Users,
-  TrendingUp,
-  Clock,
-  AlertTriangle,
-  CheckCircle,
-  XCircle,
-  Calendar,
-  CreditCard,
-  Activity,
-  ChevronLeft,
-  ChevronRight,
-  RefreshCw,
-  Eye,
-  EyeOff,
-  Search,
-  ArrowUp,
-  ArrowDown,
-} from "lucide-react";
-import useCustomerStore from "../store/useCustomerStore";
-import usePaymentStore from "../store/usePaymentStore";
-import useExpenseStore from "../store/useExpenseStore";
-import { daysUntil, formatDate, today } from "../utils/dateUtils";
-import Badge from "../components/ui/Badge";
-import Modal from "../components/ui/Modal";
-import PaymentForm from "./Payments/PaymentForm";
-import WhatsAppButton from "../components/shared/WhatsAppButton";
-import { MESSAGE_TEMPLATES } from "../config/messageTemplates";
-
-const MONTH_NAMES = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-];
-
-function getLatestCycle(cycles, customerId) {
-  return (
-    cycles
-      .filter((c) => c.customerId === customerId)
-      .sort(
-        (a, b) => new Date(b.cycleStartDate) - new Date(a.cycleStartDate),
-      )[0] || null
-  );
-}
-
-export default function Dashboard({ onNavigateToCustomers }) {
-  const customers = useCustomerStore((s) => s.customers);
-  const cycles = usePaymentStore((s) => s.cycles);
-  const expenses = useExpenseStore((s) => s.expenses);
-
-  const [payCustomer, setPayCustomer] = useState(null);
-  const [mode, setMode] = useState("alltime");
-
-  // New State for Needs Attention Table
-  const [naSearch, setNaSearch] = useState("");
-  const [sortConfig, setSortConfig] = useState({
-    key: "days",
-    direction: "asc",
-  });
-
-  const now = new Date();
-  const [selYear, setSelYear] = useState(now.getFullYear());
-  const [selMonth, setSelMonth] = useState(now.getMonth());
-
-  const prevMonth = () => {
-    if (selMonth === 0) {
-      setSelMonth(11);
-      setSelYear((y) => y - 1);
-    } else setSelMonth((m) => m - 1);
-  };
-  const nextMonth = () => {
-    if (selYear === now.getFullYear() && selMonth === now.getMonth()) return;
-    if (selMonth === 11) {
-      setSelMonth(0);
-      setSelYear((y) => y + 1);
-    } else setSelMonth((m) => m + 1);
-  };
-  const isCurrentMonth =
-    selYear === now.getFullYear() && selMonth === now.getMonth();
-
-  // ── Stats (computed inline — no useMemo, always fresh) ──────────
-  const activeCustomers = customers.filter((c) => !c.isArchived);
-
-  // Stats Variables
-  let at_collected = 0;
-  let at_pendingActiveAmount = 0; // Only non-expired pending
-  let at_overdueAmount = 0; // Only expired pending
-  let at_overdueCount = 0;
-  let at_expiringCount = 0;
-  let at_renewalCount = 0;
-  let at_activeCount = 0;
-  let at_suspendedCount = 0;
-  let at_totalEver = 0;
-
-  activeCustomers.forEach((c) => {
-    if (c.status === "active") at_activeCount++;
-    if (c.status === "suspended") at_suspendedCount++;
-
-    const cycle = getLatestCycle(cycles, c.id);
-    if (!cycle) return;
-
-    at_collected += cycle.amountPaid || 0;
-
-    // Split Pending Amount Logic
-    const pending = cycle.amountPending || 0;
-    const days = daysUntil(cycle.cycleEndDate);
-
-    if (pending > 0) {
-      if (days < 0) {
-        // Expired
-        at_overdueAmount += pending;
-        at_overdueCount++;
-      } else {
-        // Active (Not Expired)
-        at_pendingActiveAmount += pending;
-      }
-    }
-
-    if (days >= 0 && days <= 5) at_expiringCount++;
-    if (days < 0) at_renewalCount++;
-  });
-
-  cycles.forEach((cy) => {
-    (cy.installments || []).forEach((inst) => {
-      at_totalEver += inst.amountPaid || 0;
-    });
-  });
-
-  const at_totalExpenses = expenses.reduce(
-    (s, e) => s + (Number(e.amount) || 0),
-    0,
-  );
-
-  const allTime = {
-    totalCustomers: activeCustomers.length,
-    activeCount: at_activeCount,
-    suspendedCount: at_suspendedCount,
-    collected: at_collected,
-    pendingActive: at_pendingActiveAmount, // Updated key
-    overdueAmount: at_overdueAmount, // New key
-    totalEverCollected: at_totalEver,
-    overdueCount: at_overdueCount,
-    expiringCount: at_expiringCount,
-    renewalCount: at_renewalCount,
-    totalExpenses: at_totalExpenses,
-    netIncome: at_totalEver - at_totalExpenses,
-  };
-
-  // Monthly stats (Simpler logic: Pending = Any pending balance falling in this month's window)
-  const monthStart = new Date(selYear, selMonth, 1);
-  const monthEnd = new Date(selYear, selMonth + 1, 0, 23, 59, 59);
-  let mo_collected = 0,
-    mo_pending = 0,
-    mo_newCustomers = 0;
-  let mo_clearedCount = 0,
-    mo_pendingCount = 0;
-
-  cycles.forEach((cy) => {
-    (cy.installments || []).forEach((inst) => {
-      const d = new Date(inst.datePaid);
-      if (d >= monthStart && d <= monthEnd)
-        mo_collected += inst.amountPaid || 0;
-    });
-    const cStart = new Date(cy.cycleStartDate);
-    const cEnd = new Date(cy.cycleEndDate);
-    if (cStart <= monthEnd && cEnd >= monthStart) {
-      mo_pending += cy.amountPending || 0;
-      if (cy.status === "clear") mo_clearedCount++;
-      else mo_pendingCount++;
-    }
-  });
-
-  activeCustomers.forEach((c) => {
-    const d = new Date(c.createdAt);
-    if (d >= monthStart && d <= monthEnd) mo_newCustomers++;
-  });
-
-  const mo_expenses = expenses
-    .filter((e) => {
-      const d = new Date(e.date);
-      return d >= monthStart && d <= monthEnd;
-    })
-    .reduce((s, e) => s + (Number(e.amount) || 0), 0);
-
-  const monthly = {
-    collected: mo_collected,
-    pending: mo_pending,
-    newCustomers: mo_newCustomers,
-    clearedCount: mo_clearedCount,
-    pendingCount: mo_pendingCount,
-    totalExpenses: mo_expenses,
-    netIncome: mo_collected - mo_expenses,
-  };
-
-  // ── Logic for "Needs Attention" Table ──
-
-  // 1. Base List: Get everyone who needs attention
-  const baseUrgent = activeCustomers
-    .map((c) => ({ customer: c, cycle: getLatestCycle(cycles, c.id) }))
-    .filter(({ cycle }) => {
-      if (!cycle) return true; // No cycle = Needs setup
-      const days = daysUntil(cycle.cycleEndDate);
-      return days < 0 || days <= 5;
-    });
-
-  // 2. Search Filter
-  const filteredUrgent = baseUrgent.filter(({ customer }) => {
-    const q = naSearch.toLowerCase();
-    return (
-      customer.fullName.toLowerCase().includes(q) ||
-      customer.userName.toLowerCase().includes(q) ||
-      (customer.mobileNo && customer.mobileNo.includes(q)) ||
-      (customer.mainArea && customer.mainArea.toLowerCase().includes(q))
-    );
-  });
-
-  // 3. Sorting
-  const sortedUrgent = [...filteredUrgent].sort((a, b) => {
-    const { key, direction } = sortConfig;
-    const modifier = direction === "asc" ? 1 : -1;
-
-    // Helper for days (handle missing cycle)
-    const getDays = (item) =>
-      item.cycle ? daysUntil(item.cycle.cycleEndDate) : -9999;
-
-    switch (key) {
-      case "name":
-        return (
-          modifier * a.customer.fullName.localeCompare(b.customer.fullName)
-        );
-      case "area":
-        return (
-          modifier *
-          (a.customer.mainArea || "").localeCompare(b.customer.mainArea || "")
-        );
-      case "date": {
-        const dateA = a.cycle ? new Date(a.cycle.cycleEndDate) : new Date(0);
-        const dateB = b.cycle ? new Date(b.cycle.cycleEndDate) : new Date(0);
-        return modifier * (dateA - dateB);
-      }
-      case "days":
-        return modifier * (getDays(a) - getDays(b));
-      case "balance": {
-        const balA = a.cycle ? a.cycle.amountPending : 0;
-        const balB = b.cycle ? b.cycle.amountPending : 0;
-        return modifier * (balA - balB);
-      }
-      default:
-        return 0;
-    }
-  });
-
-  const requestSort = (key) => {
-    let direction = "asc";
-    if (sortConfig.key === key && sortConfig.direction === "asc") {
-      direction = "desc";
-    }
-    setSortConfig({ key, direction });
-  };
-
-  const SortIcon = ({ column }) => {
-    if (sortConfig.key !== column) return <div className="w-3.5 h-3.5" />; // spacer
-    return sortConfig.direction === "asc" ? (
-      <ArrowUp size={14} />
-    ) : (
-      <ArrowDown size={14} />
-    );
-  };
-
-  return (
-    <div className="p-5 space-y-5 max-w-7xl mx-auto">
-      {/* HEADER */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-sm text-gray-500 mt-0.5">{today()}</p>
-        </div>
-        <div className="flex items-center gap-1 bg-gray-200 rounded-lg p-1">
-          <button
-            onClick={() => setMode("alltime")}
-            className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === "alltime" ? "bg-white text-gray-900 shadow" : "text-gray-500 hover:text-gray-800"}`}
-          >
-            All Time
-          </button>
-          <button
-            onClick={() => setMode("monthly")}
-            className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === "monthly" ? "bg-white text-gray-900 shadow" : "text-gray-500 hover:text-gray-800"}`}
-          >
-            Monthly
-          </button>
-        </div>
-      </div>
-
-      {/* MONTH NAVIGATOR */}
-      {mode === "monthly" && (
-        <div className="flex items-center gap-3 bg-white border-2 border-gray-200 rounded-xl px-4 py-3 w-fit">
-          <button
-            onClick={prevMonth}
-            className="p-1 rounded-lg hover:bg-gray-100 text-gray-700"
-          >
-            <ChevronLeft size={20} />
-          </button>
-          <div className="flex items-center gap-2 min-w-43 justify-center">
-            <Calendar size={17} className="text-blue-600" />
-            <span className="font-bold text-gray-900 text-lg">
-              {MONTH_NAMES[selMonth]} {selYear}
-            </span>
-          </div>
-          <button
-            onClick={nextMonth}
-            disabled={isCurrentMonth}
-            className="p-1 rounded-lg hover:bg-gray-100 text-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            <ChevronRight size={20} />
-          </button>
-        </div>
-      )}
-
-      {/* CARDS — ALL TIME */}
-      {mode === "alltime" && (
-        <>
-          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-            <BigCard
-              icon={<Users size={20} />}
-              label="Total Customers"
-              value={allTime.totalCustomers}
-              sub={`${allTime.activeCount} active · ${allTime.suspendedCount} suspended`}
-              color="blue"
-            />
-            <BigCard
-              icon={<CheckCircle size={20} />}
-              label="Total Collected"
-              value={`PKR ${allTime.totalEverCollected.toLocaleString()}`}
-              sub="All payments ever received"
-              color="green"
-              isSensitive={true} // Hidden by default
-            />
-            {/* CLICKABLE PENDING CARD (ACTIVE ONLY) */}
-            <BigCard
-              icon={<Clock size={20} />}
-              label="Currently Pending"
-              value={`PKR ${allTime.pendingActive.toLocaleString()}`}
-              sub="Active cycles (Not Overdue)"
-              color="amber"
-              onClick={() => onNavigateToCustomers("pending")}
-            />
-            {/* NEW: TOTAL OVERDUE CARD */}
-            <BigCard
-              icon={<AlertTriangle size={20} />}
-              label="Total Overdue"
-              value={`PKR ${allTime.overdueAmount.toLocaleString()}`}
-              sub="Expired cycles with balance"
-              color="red"
-              highlight={allTime.overdueAmount > 0}
-              onClick={() => onNavigateToCustomers("overdue")}
-            />
-            <BigCard
-              icon={<XCircle size={20} />}
-              label="Total Expenses"
-              value={`PKR ${allTime.totalExpenses.toLocaleString()}`}
-              sub="All recorded expenses"
-              color="red"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* CLICKABLE OVERDUE COUNT CARD */}
-            <BigCard
-              icon={<Users size={20} />}
-              label="Overdue Customers"
-              value={allTime.overdueCount}
-              sub="Count of customers overdue"
-              color="red"
-              highlight={allTime.overdueCount > 0}
-              onClick={() => onNavigateToCustomers("overdue")}
-            />
-            <BigCard
-              icon={<RefreshCw size={20} />}
-              label="Needs Renewal"
-              value={allTime.renewalCount}
-              sub="Cycle expired, renew now"
-              color="red"
-              highlight={allTime.renewalCount > 0}
-            />
-            <BigCard
-              icon={<Activity size={20} />}
-              label="Expiring in 5 Days"
-              value={allTime.expiringCount}
-              sub="Collect before cutoff"
-              color="amber"
-              highlight={allTime.expiringCount > 0}
-            />
-            <BigCard
-              icon={<TrendingUp size={20} />}
-              label="Net Income"
-              value={`PKR ${allTime.netIncome.toLocaleString()}`}
-              sub="Total collected − expenses"
-              color={allTime.netIncome >= 0 ? "green" : "red"}
-              isSensitive={true} // Hidden by default
-            />
-          </div>
-        </>
-      )}
-
-      {/* CARDS — MONTHLY (Unchanged mostly, pending remains grouped as snapshot) */}
-      {mode === "monthly" && (
-        <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <BigCard
-              icon={<CreditCard size={20} />}
-              label="Collected"
-              value={`PKR ${monthly.collected.toLocaleString()}`}
-              sub="Payments received"
-              color="green"
-              isSensitive={true}
-            />
-            <BigCard
-              icon={<Clock size={20} />}
-              label="Pending"
-              value={`PKR ${monthly.pending.toLocaleString()}`}
-              sub="Unpaid balances"
-              color="amber"
-            />
-            <BigCard
-              icon={<XCircle size={20} />}
-              label="Expenses"
-              value={`PKR ${monthly.totalExpenses.toLocaleString()}`}
-              sub="Recorded expenses"
-              color="red"
-            />
-            <BigCard
-              icon={<TrendingUp size={20} />}
-              label="Net Income"
-              value={`PKR ${monthly.netIncome.toLocaleString()}`}
-              sub="Collected − expenses"
-              color={monthly.netIncome >= 0 ? "green" : "red"}
-              isSensitive={true}
-            />
-          </div>
-          <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-            <BigCard
-              icon={<Users size={20} />}
-              label="New Customers"
-              value={monthly.newCustomers}
-              sub="Joined this month"
-              color="blue"
-            />
-            <BigCard
-              icon={<CheckCircle size={20} />}
-              label="Cleared Cycles"
-              value={monthly.clearedCount}
-              sub="Fully paid"
-              color="green"
-            />
-            <BigCard
-              icon={<AlertTriangle size={20} />}
-              label="Pending Cycles"
-              value={monthly.pendingCount}
-              sub="Unpaid cycles"
-              color="amber"
-              highlight={monthly.pendingCount > 0}
-            />
-          </div>
-        </>
-      )}
-
-      {/* NEEDS ATTENTION TABLE */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-            <AlertTriangle size={18} className="text-red-500" />
-            Needs Attention
-            {baseUrgent.length > 0 && (
-              <span className="bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
-                {baseUrgent.length}
-              </span>
-            )}
-          </h2>
-
-          {/* Search Bar for this table */}
-          {baseUrgent.length > 0 && (
-            <div className="relative w-64">
-              <Search
-                size={14}
-                className="absolute left-2.5 top-2.5 text-gray-400"
-              />
-              <input
-                value={naSearch}
-                onChange={(e) => setNaSearch(e.target.value)}
-                placeholder="Search list..."
-                className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-            </div>
-          )}
-        </div>
-
-        {baseUrgent.length === 0 ? (
-          <div className="bg-green-50 border-2 border-green-200 rounded-xl px-5 py-4 flex items-center gap-3">
-            <CheckCircle size={22} className="text-green-600" />
-            <span className="text-green-800 font-semibold text-base">
-              All accounts are in good standing.
-            </span>
-          </div>
-        ) : (
-          <div className="bg-white border-2 border-gray-200 rounded-xl overflow-hidden">
-            <div className="max-h-[600px] overflow-y-auto">
-              <table className="w-full relative border-collapse">
-                <thead className="sticky top-0 z-10">
-                  <tr className="bg-gray-900 text-white text-left">
-                    <th
-                      onClick={() => requestSort("name")}
-                      className="px-4 py-3 text-sm font-semibold cursor-pointer hover:bg-gray-800 transition-colors whitespace-nowrap group"
-                    >
-                      <div className="flex items-center gap-1">
-                        Customer <SortIcon column="name" />
-                      </div>
-                    </th>
-                    <th
-                      onClick={() => requestSort("area")}
-                      className="px-4 py-3 text-sm font-semibold cursor-pointer hover:bg-gray-800 transition-colors whitespace-nowrap group"
-                    >
-                      <div className="flex items-center gap-1">
-                        Area <SortIcon column="area" />
-                      </div>
-                    </th>
-                    <th className="px-4 py-3 text-sm font-semibold whitespace-nowrap">
-                      Mobile
-                    </th>
-                    <th
-                      onClick={() => requestSort("date")}
-                      className="px-4 py-3 text-sm font-semibold cursor-pointer hover:bg-gray-800 transition-colors whitespace-nowrap group"
-                    >
-                      <div className="flex items-center gap-1">
-                        Cycle Ended <SortIcon column="date" />
-                      </div>
-                    </th>
-                    <th
-                      onClick={() => requestSort("days")}
-                      className="px-4 py-3 text-sm font-semibold cursor-pointer hover:bg-gray-800 transition-colors whitespace-nowrap group"
-                    >
-                      <div className="flex items-center gap-1">
-                        Days <SortIcon column="days" />
-                      </div>
-                    </th>
-                    <th
-                      onClick={() => requestSort("balance")}
-                      className="px-4 py-3 text-sm font-semibold cursor-pointer hover:bg-gray-800 transition-colors whitespace-nowrap group"
-                    >
-                      <div className="flex items-center gap-1">
-                        Balance Due <SortIcon column="balance" />
-                      </div>
-                    </th>
-                    <th className="px-4 py-3 text-sm font-semibold whitespace-nowrap">
-                      Status
-                    </th>
-                    <th className="px-4 py-3 text-sm font-semibold whitespace-nowrap">
-                      Action
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedUrgent.map(({ customer, cycle }) => {
-                    if (!cycle)
-                      return (
-                        <tr
-                          key={customer.id}
-                          className="border-t border-gray-200 bg-gray-50"
-                        >
-                          <td className="px-4 py-3 font-bold text-gray-900">
-                            {customer.fullName}
-                          </td>
-                          <td
-                            colSpan={6}
-                            className="px-4 py-3 text-sm text-gray-500"
-                          >
-                            No billing cycle — needs setup
-                          </td>
-                          <td className="px-4 py-3">
-                            <button
-                              onClick={() => setPayCustomer(customer)}
-                              className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700"
-                            >
-                              Pay Now
-                            </button>
-                          </td>
-                        </tr>
-                      );
-
-                    const days = daysUntil(cycle.cycleEndDate);
-                    const isExpiredUnpaid = days < 0 && cycle.amountPending > 0;
-                    const isExpiredPaid = days < 0 && cycle.amountPending === 0;
-                    const isExpiringSoon = days >= 0 && days <= 5;
-
-                    let waMessage = "";
-                    if (isExpiredUnpaid) {
-                      waMessage = MESSAGE_TEMPLATES.paymentOverdue(
-                        customer,
-                        cycle,
-                      );
-                    } else if (cycle.amountPending > 0) {
-                      waMessage = MESSAGE_TEMPLATES.paymentDue(customer, cycle);
-                    } else {
-                      waMessage = MESSAGE_TEMPLATES.expiryReminder(
-                        customer,
-                        cycle,
-                      );
-                    }
-
-                    const showPayButton =
-                      cycle.amountPending > 0 || isExpiredPaid;
-
-                    const rowBg = isExpiredUnpaid
-                      ? "bg-red-50"
-                      : isExpiredPaid
-                        ? "bg-orange-50"
-                        : "bg-yellow-50";
-
-                    return (
-                      <tr
-                        key={customer.id}
-                        className={`border-t border-gray-200 ${rowBg}`}
-                      >
-                        <td className="px-4 py-3">
-                          <div className="font-bold text-gray-900 text-sm">
-                            {customer.fullName}
-                          </div>
-                          <div className="text-xs text-gray-500">
-                            {customer.userName}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-800">
-                          {customer.mainArea || "—"}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-800">
-                          {customer.mobileNo || "—"}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-800">
-                          {formatDate(cycle.cycleEndDate)}
-                        </td>
-                        <td className="px-4 py-3">
-                          {isExpiredUnpaid && (
-                            <span className="text-sm font-bold text-red-700">
-                              {-days}d overdue
-                            </span>
-                          )}
-                          {isExpiredPaid && (
-                            <span className="text-sm font-bold text-orange-700">
-                              {-days}d ago — needs renewal
-                            </span>
-                          )}
-                          {isExpiringSoon && (
-                            <span className="text-sm font-bold text-yellow-700">
-                              {days === 0
-                                ? "Expires today"
-                                : `${days + 1}d left`}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {cycle.amountPending > 0 ? (
-                            <span className="text-sm font-bold text-red-700">
-                              PKR {Number(cycle.amountPending).toLocaleString()}
-                            </span>
-                          ) : (
-                            <span className="text-sm font-semibold text-green-700">
-                              Paid ✓
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {isExpiredUnpaid && <Badge status="overdue" />}
-                          {isExpiredPaid && (
-                            <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
-                              Renewal Due
-                            </span>
-                          )}
-                          {isExpiringSoon && <Badge status="pending" />}
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            {showPayButton && (
-                              <button
-                                onClick={() => setPayCustomer(customer)}
-                                className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700"
-                              >
-                                {isExpiredPaid ? "Renew" : "Pay Now"}
-                              </button>
-                            )}
-                            <WhatsAppButton
-                              mobileNo={customer.mobileNo}
-                              message={waMessage}
-                              label="WhatsApp"
-                            />
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-
-                  {sortedUrgent.length === 0 && (
-                    <tr>
-                      <td
-                        colSpan={8}
-                        className="px-4 py-8 text-center text-gray-400 bg-white"
-                      >
-                        No matches found for "{naSearch}"
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-      </div>
-
-      <Modal
-        isOpen={!!payCustomer}
-        onClose={() => setPayCustomer(null)}
-        title="Record Payment"
-        size="md"
-      >
-        {payCustomer && (
-          <PaymentForm
-            customer={payCustomer}
-            onClose={() => setPayCustomer(null)}
-          />
-        )}
-      </Modal>
-    </div>
-  );
-}
-
-// Updated Colors: Softer backgrounds with borders and icons
-const colorMap = {
-  blue: {
-    bg: "bg-blue-50 border border-blue-200",
-    iconBox: "bg-blue-100",
-    icon: "text-blue-600",
-  },
-  green: {
-    bg: "bg-green-50 border border-green-200",
-    iconBox: "bg-green-100",
-    icon: "text-green-600",
-  },
-  amber: {
-    bg: "bg-amber-50 border border-amber-200",
-    iconBox: "bg-amber-100",
-    icon: "text-amber-600",
-  },
-  red: {
-    bg: "bg-red-50 border border-red-200",
-    iconBox: "bg-red-100",
-    icon: "text-red-600",
-  },
+import db from "../../db/database";
+
+const INITIAL = {
+  fullName: "",
+  userName: "",
+  mobileNo: "",
+  cnic: "", // New CNIC field
+  mainArea: "",
+  recoveryAgent: "",
+  packageId: "",
+  status: "active",
+  notes: "",
+  startDate: today(),
 };
 
-function BigCard({
-  icon,
-  label,
-  value,
-  sub,
-  color,
-  highlight = false,
-  isSensitive = false,
-  onClick = null,
-}) {
-  const c = colorMap[color] || colorMap.blue;
-  const [revealed, setRevealed] = useState(false);
-  const isClickable = !!onClick;
+const PAYMENT_INITIAL = {
+  recordPayment: false,
+  amountPaid: "",
+  paymentDate: today(),
+  paymentNote: "",
+};
 
-  return (
-    <div
-      onClick={onClick}
-      className={`rounded-xl p-5 ${c.bg} flex flex-col justify-between 
-        ${highlight ? "ring-2 ring-offset-1 ring-red-300" : ""}
-        ${isClickable ? "cursor-pointer hover:shadow-md transition-shadow active:scale-[0.99]" : ""}
-      `}
-    >
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <div
-            className={`w-10 h-10 rounded-lg flex items-center justify-center ${c.iconBox} ${c.icon}`}
-          >
-            {icon}
-          </div>
-          {isSensitive && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setRevealed(!revealed);
-              }}
-              className="text-gray-400 hover:text-gray-600 transition-colors"
-              title={revealed ? "Hide Amount" : "Show Amount"}
-            >
-              {revealed ? <EyeOff size={18} /> : <Eye size={18} />}
-            </button>
-          )}
-        </div>
-        <div className="text-sm font-semibold text-gray-500 uppercase tracking-wide">
-          {label}
-        </div>
-      </div>
+// Helper to format CNIC as 00000-0000000-0
+const formatCNIC = (val) => {
+  // Remove non-digits and limit to 13 digits
+  const digits = val.replace(/\D/g, "").slice(0, 13);
+  let res = "";
+  if (digits.length > 0) res += digits.slice(0, 5);
+  if (digits.length > 5) res += "-" + digits.slice(5, 12);
+  if (digits.length > 12) res += "-" + digits.slice(12, 13);
+  return res;
+};
 
-      <div className="mt-2">
-        <div className="text-2xl font-bold text-gray-900 leading-tight">
-          {isSensitive && !revealed ? (
-            <span className="tracking-widest text-gray-400">••••••</span>
-          ) : (
-            value
-          )}
-        </div>
-        <div className="text-xs text-gray-500 mt-1 font-medium">{sub}</div>
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="src/pages/Payments/PaymentForm.jsx">
-import { useState, useEffect } from "react";
-import { today, daysUntil, formatDate } from "../../utils/dateUtils";
-import usePaymentStore from "../../store/usePaymentStore";
-import usePackageStore from "../../store/usePackageStore";
-import useCustomerStore from "../../store/useCustomerStore";
-import db from "../../db/database"; // Imported to handle debt transfer
-import { AlertTriangle, ArrowRight, Receipt, AlertCircle } from "lucide-react";
-
-export default function PaymentForm({ customer, onClose }) {
-  const getActiveCycle = usePaymentStore((s) => s.getActiveCycle);
-  const addInstallment = usePaymentStore((s) => s.addInstallment);
-  const renewCycle = usePaymentStore((s) => s.renewCycle);
+export default function CustomerForm({ customer, onClose }) {
+  const addCustomer = useCustomerStore((s) => s.addCustomer);
   const updateCustomer = useCustomerStore((s) => s.updateCustomer);
-  const packages = usePackageStore((s) => s.packages);
+  const createInitialCycle = usePaymentStore((s) => s.createInitialCycle);
+  const addInstallment = usePaymentStore((s) => s.addInstallment);
+  const allPackages = usePackageStore((s) => s.packages);
+  const packages = allPackages.filter((p) => p.isActive !== false);
+  const isEdit = !!customer;
 
-  // 1. Get Current Cycle Info
-  const activeCycle = getActiveCycle(customer.id);
-  const days = activeCycle ? daysUntil(activeCycle.cycleEndDate) : 0;
-  const isClear = activeCycle && activeCycle.status === "clear";
-  const isExpired = activeCycle && days < 0;
-
-  // 2. Determine if Renewal is needed/allowed
-  const needsRenewal = !activeCycle || (isClear && days <= 5) || isExpired;
-
-  // 3. State Setup
-  const [selectedPkgId, setSelectedPkgId] = useState(customer.packageId || "");
-  const [amount, setAmount] = useState("");
-  const [date, setDate] = useState(today());
-  const [note, setNote] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  // 4. Calculations
-  const selectedPkg = packages.find(
-    (p) => String(p.id) === String(selectedPkgId),
+  // Initialize form. Ensure 'cnic' exists even for old records.
+  const [form, setFormState] = useState(
+    isEdit ? { cnic: "", ...customer, startDate: today() } : INITIAL,
   );
+  const [payment, setPaymentState] = useState(PAYMENT_INITIAL);
+  const [errors, setErrors] = useState({});
+  const [dupWarning, setDupWarning] = useState(null);
+  const [areas, setAreas] = useState([]);
+  const [agents, setAgents] = useState([]);
+  const [saving, setSaving] = useState(false);
 
-  // Previous Pending: Debt from the currently active (or expired) cycle
-  const previousPending =
-    activeCycle && activeCycle.amountPending > 0
-      ? activeCycle.amountPending
-      : 0;
+  useEffect(() => {
+    db.settings.get("areas").then((r) => setAreas(r?.value || []));
+    db.settings.get("agents").then((r) => setAgents(r?.value || []));
+  }, []);
 
-  // New Cycle Price
-  const newPackagePrice = selectedPkg ? Number(selectedPkg.price) : 0;
-
-  // Grand Total Calculation
-  const grandTotal = needsRenewal
-    ? previousPending + newPackagePrice
-    : previousPending;
-
-  // Auto-fill amount with Grand Total when opening (convenience)
+  // When package changes, auto-fill amountPaid with full price as default
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (!amount && grandTotal > 0) {
-        setAmount(String(grandTotal));
-      } else if (!amount && grandTotal === 0 && needsRenewal) {
-        setAmount("0");
+      if (!isEdit && form.packageId) {
+        const pkg = packages.find(
+          (p) => Number(p.id) === Number(form.packageId),
+        );
+        if (pkg && !payment.amountPaid) {
+          setPaymentState((p) => ({ ...p, amountPaid: String(pkg.price) }));
+        }
       }
     }, 0);
-    return () => clearTimeout(timer);
-  }, [grandTotal, needsRenewal]); // Intentionally omitting 'amount' to allow user edits
+    return clearTimeout(timer);
+  }, [form.packageId, isEdit, packages, payment]);
+
+  const setField = (field, value) => {
+    setFormState((f) => ({ ...f, [field]: value }));
+    setErrors((e) => ({ ...e, [field]: "" }));
+  };
+
+  const setPayField = (field, value) => {
+    setPaymentState((p) => ({ ...p, [field]: value }));
+    setErrors((e) => ({ ...e, [field]: "" }));
+  };
+
+  const checkDup = useCallback(
+    async (field, value) => {
+      if (!value) return setDupWarning(null);
+      const result = await checkDuplicate(
+        field === "userName" ? value : form.userName,
+        field === "mobileNo" ? value : form.mobileNo,
+        isEdit ? customer.id : null,
+      );
+      if (result.hasDuplicate) {
+        setDupWarning(
+          `${field === "userName" ? "Username" : "Mobile"} already used by: ${result.existing.fullName}`,
+        );
+      } else {
+        setDupWarning(null);
+      }
+    },
+    [form.userName, form.mobileNo, isEdit, customer],
+  );
+
+  const validate = () => {
+    const e = {};
+    if (!form.fullName.trim()) e.fullName = "Required";
+    if (!form.userName.trim()) e.userName = "Required";
+    if (!form.packageId) e.packageId = "Select a package";
+    if (!form.mainArea) e.mainArea = "Select an area";
+
+    // Mobile Validation (Strict Pakistani Format)
+    if (form.mobileNo) {
+      if (!/^0\d{10}$/.test(form.mobileNo)) {
+        e.mobileNo = "Must be 11 digits starting with 0 (e.g., 03001234567)";
+      }
+    }
+
+    // CNIC Validation (Format: 00000-0000000-0)
+    if (form.cnic) {
+      if (form.cnic.length < 15) {
+        e.cnic = "Invalid CNIC format (13 digits required)";
+      }
+    }
+
+    // Validate payment section only if enabled
+    if (!isEdit && payment.recordPayment) {
+      const amt = Number(payment.amountPaid);
+      if (!payment.amountPaid || amt <= 0)
+        e.amountPaid = "Enter a valid amount";
+      const pkg = packages.find((p) => Number(p.id) === Number(form.packageId));
+      if (pkg && amt > pkg.price)
+        e.amountPaid = `Cannot exceed PKR ${pkg.price} (package price)`;
+      if (!payment.paymentDate) e.paymentDate = "Required";
+    }
+    return e;
+  };
 
   const handleSubmit = async () => {
-    let payAmount = Number(amount);
-
-    // Validation
-    if (isNaN(payAmount) || payAmount < 0) {
-      setError("Enter a valid amount.");
+    const e = validate();
+    if (Object.keys(e).length) {
+      setErrors(e);
       return;
     }
-    if (!needsRenewal && payAmount <= 0) {
-      setError("Enter a valid amount to pay.");
-      return;
-    }
-
-    // Prevent overpaying existing cycle
-    if (!needsRenewal && payAmount > activeCycle.amountPending) {
-      setError(`Amount exceeds balance of PKR ${activeCycle.amountPending}`);
-      return;
-    }
+    if (dupWarning) return;
 
     setSaving(true);
-    setError("");
-
     try {
-      if (needsRenewal) {
-        // --- RENEWAL LOGIC ---
+      const pkgId = Number(form.packageId);
+      const pkg = packages.find((p) => Number(p.id) === pkgId);
+      const lockedPrice = pkg ? Number(pkg.price) : 0;
 
-        // 1. Update Customer Package if changed
-        if (
-          selectedPkgId &&
-          String(selectedPkgId) !== String(customer.packageId)
-        ) {
-          await updateCustomer(customer.id, {
-            packageId: Number(selectedPkgId),
-            lockedPackagePrice: newPackagePrice,
-          });
-        }
+      const customerData = {
+        fullName: form.fullName.trim(),
+        userName: form.userName.trim(),
+        mobileNo: form.mobileNo,
+        cnic: form.cnic, // Save CNIC
+        mainArea: form.mainArea,
+        recoveryAgent: form.recoveryAgent,
+        packageId: pkgId,
+        lockedPackagePrice: lockedPrice,
+        status: isEdit ? form.status : "active",
+        notes: form.notes,
+      };
 
-        // 2. Handle Previous Debt (Balance Transfer)
-        let carriedBalance = 0;
-        if (activeCycle && previousPending > 0) {
-          carriedBalance = previousPending;
-
-          // Modify OLD cycle to mark it as cleared/transferred
-          // Note Update: We now store the exact amount in the note!
-          const transferNote = `[Bal Transferred: ${carriedBalance}]`;
-
-          await db.paymentCycles.update(activeCycle.id, {
-            amountPending: 0,
-            status: "clear",
-            totalAmount: activeCycle.amountPaid, // Shrink bill to match payment
-            note: activeCycle.note
-              ? activeCycle.note + " " + transferNote
-              : transferNote,
-          });
-        }
-
-        // 3. Start New Cycle
-        // Total = New Price + Old Debt
-        const cycleTotal = newPackagePrice + carriedBalance;
-        const newCycle = await renewCycle(customer.id, date, cycleTotal);
-
-        // 4. Record Payment (if any)
-        if (payAmount > 0) {
-          await addInstallment(newCycle.id, payAmount, date, note);
-        }
-
-        // 5. Force Refresh Store
-        await usePaymentStore.getState().loadCycles();
+      if (isEdit) {
+        await updateCustomer(customer.id, customerData);
       } else {
-        // --- STANDARD PAYMENT LOGIC (No Renewal) ---
-        await addInstallment(activeCycle.id, payAmount, date, note);
-      }
+        const newCustomer = await addCustomer(customerData);
 
+        // Always create the billing cycle first
+        const newCycle = await createInitialCycle(
+          newCustomer.id,
+          form.startDate,
+          lockedPrice,
+        );
+
+        // If staff also entered a payment, record it immediately
+        if (payment.recordPayment && Number(payment.amountPaid) > 0) {
+          await addInstallment(
+            newCycle.id,
+            Number(payment.amountPaid),
+            payment.paymentDate,
+            payment.paymentNote || "",
+          );
+        }
+      }
       onClose();
     } catch (err) {
-      setError("Error: " + err.message);
+      alert("Error saving: " + err.message);
     }
     setSaving(false);
   };
 
+  // Derived: selected package price for display
+  const selectedPkg = packages.find(
+    (p) => Number(p.id) === Number(form.packageId),
+  );
+  const packagePrice = selectedPkg ? Number(selectedPkg.price) : 0;
+  const amountPaidNum = Number(payment.amountPaid) || 0;
+  const remaining = packagePrice - amountPaidNum;
+
   return (
-    <div className="space-y-6 p-1">
-      {/* ── HEADER / SUMMARY CARD ── */}
-      <div
-        className={`rounded-xl overflow-hidden border ${
-          needsRenewal
-            ? "bg-blue-50 border-blue-200"
-            : "bg-gray-50 border-gray-200"
-        }`}
-      >
-        {/* Title Bar */}
-        <div
-          className={`px-5 py-3 border-b flex justify-between items-center ${
-            needsRenewal
-              ? "bg-blue-100/50 border-blue-200"
-              : "bg-gray-100 border-gray-200"
-          }`}
-        >
-          <div>
-            <h3 className="text-base font-bold text-gray-800">
-              {customer.fullName}
-            </h3>
-            <p className="text-xs text-gray-500">{customer.userName}</p>
-          </div>
-          {needsRenewal ? (
-            <span className="bg-blue-600 text-white text-[10px] uppercase font-bold px-2 py-1 rounded shadow-sm">
-              New Cycle
-            </span>
-          ) : (
-            <span className="bg-gray-600 text-white text-[10px] uppercase font-bold px-2 py-1 rounded shadow-sm">
-              Payment Only
-            </span>
+    <div className="space-y-5">
+      {/* ── DUPLICATE WARNING ── */}
+      {dupWarning && (
+        <div className="bg-red-50 border border-red-300 text-red-700 text-sm px-3 py-2 rounded-lg">
+          ⚠ Duplicate detected: {dupWarning}
+        </div>
+      )}
+
+      {/* ── CUSTOMER INFO ── */}
+      <div>
+        <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-3">
+          Customer Information
+        </p>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Full Name *" error={errors.fullName}>
+            <input
+              className={inp(errors.fullName)}
+              value={form.fullName}
+              onChange={(e) => setField("fullName", e.target.value)}
+              placeholder="e.g. Muhammad Qasim"
+            />
+          </Field>
+
+          <Field label="Username *" error={errors.userName}>
+            <input
+              className={inp(errors.userName)}
+              value={form.userName}
+              onChange={(e) => {
+                setField("userName", e.target.value);
+                checkDup("userName", e.target.value);
+              }}
+              placeholder="e.g. Qasim6655"
+            />
+          </Field>
+
+          <Field label="Mobile No" error={errors.mobileNo}>
+            <input
+              className={inp(errors.mobileNo)}
+              value={form.mobileNo}
+              onChange={(e) => {
+                // Digits only, max 11 chars
+                const val = e.target.value.replace(/\D/g, "").slice(0, 11);
+                setField("mobileNo", val);
+                checkDup("mobileNo", val);
+              }}
+              placeholder="03001234567"
+              type="tel"
+            />
+          </Field>
+
+          <Field label="CNIC (Optional)" error={errors.cnic}>
+            <input
+              className={inp(errors.cnic)}
+              value={form.cnic}
+              onChange={(e) => {
+                // Apply CNIC masking
+                const val = formatCNIC(e.target.value);
+                setField("cnic", val);
+              }}
+              placeholder="35202-1234567-1"
+              maxLength={15} // 13 digits + 2 dashes
+            />
+          </Field>
+
+          <Field label="Package *" error={errors.packageId}>
+            <select
+              className={inp(errors.packageId)}
+              value={form.packageId}
+              onChange={(e) => {
+                setField("packageId", e.target.value);
+                // Reset payment amount so it auto-fills with new price
+                setPaymentState((p) => ({ ...p, amountPaid: "" }));
+              }}
+            >
+              <option value="">— Select Package —</option>
+              {packages.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} — PKR {Number(p.price).toLocaleString()}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field label="Main Area *" error={errors.mainArea}>
+            <select
+              className={inp(errors.mainArea)}
+              value={form.mainArea}
+              onChange={(e) => setField("mainArea", e.target.value)}
+            >
+              <option value="">— Select Area —</option>
+              {areas.map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field label="Recovery Agent">
+            <select
+              className={inp()}
+              value={form.recoveryAgent}
+              onChange={(e) => setField("recoveryAgent", e.target.value)}
+            >
+              <option value="">— Select Agent —</option>
+              {agents.map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          {!isEdit && (
+            <Field label="Subscription Start Date *">
+              <input
+                type="date"
+                className={inp()}
+                value={form.startDate}
+                max={today()}
+                onChange={(e) => setField("startDate", e.target.value)}
+              />
+            </Field>
+          )}
+
+          {isEdit && (
+            <Field label="Status">
+              <select
+                className={inp()}
+                value={form.status}
+                onChange={(e) => setField("status", e.target.value)}
+              >
+                <option value="active">Active</option>
+                <option value="suspended">Suspended</option>
+                <option value="terminated">Terminated</option>
+              </select>
+            </Field>
           )}
         </div>
 
-        <div className="p-5 space-y-4">
-          {needsRenewal ? (
-            // ── RENEWAL VIEW ──
-            <>
-              {/* 1. Previous Debt Section (Only if exists) */}
-              {previousPending > 0 && (
-                <div className="flex items-center justify-between text-sm bg-red-50 border border-red-100 p-2.5 rounded-lg text-red-800 mb-2">
-                  <div className="flex items-center gap-2">
-                    <AlertCircle size={16} />
-                    <span className="font-semibold">Previous Overdue</span>
-                  </div>
-                  <span className="font-bold">
-                    PKR {previousPending.toLocaleString()}
+        <div className="mt-4">
+          <Field label="Notes">
+            <textarea
+              className={inp() + " resize-none"}
+              rows={2}
+              value={form.notes}
+              onChange={(e) => setField("notes", e.target.value)}
+              placeholder="Optional notes..."
+            />
+          </Field>
+        </div>
+      </div>
+
+      {/* ── PAYMENT SECTION (Add mode only) ── */}
+      {!isEdit && (
+        <div className="border-t border-gray-200 pt-4">
+          {/* Toggle */}
+          <label className="flex items-center gap-3 cursor-pointer select-none mb-4">
+            <div
+              onClick={() =>
+                setPayField("recordPayment", !payment.recordPayment)
+              }
+              className={`relative w-11 h-6 rounded-full transition-colors ${
+                payment.recordPayment ? "bg-blue-600" : "bg-gray-300"
+              }`}
+            >
+              <div
+                className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
+                  payment.recordPayment ? "translate-x-5" : "translate-x-0"
+                }`}
+              />
+            </div>
+            <div>
+              <span className="text-sm font-bold text-gray-800">
+                Record First Payment Now
+              </span>
+              <p className="text-xs text-gray-400">
+                Optionally log a payment while adding the customer
+              </p>
+            </div>
+          </label>
+
+          {payment.recordPayment && (
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-4">
+              {/* Package price hint */}
+              {selectedPkg && (
+                <div className="flex items-center justify-between bg-white border border-blue-100 rounded-lg px-4 py-2 text-sm">
+                  <span className="text-gray-500">Package Total</span>
+                  <span className="font-bold text-gray-800">
+                    PKR {packagePrice.toLocaleString()}
                   </span>
                 </div>
               )}
 
-              {/* 2. New Package Selection */}
-              <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5 ml-1">
-                  Select Package for New Cycle
-                </label>
-                <div className="relative">
-                  <select
-                    value={selectedPkgId}
-                    onChange={(e) => {
-                      setSelectedPkgId(e.target.value);
-                      // Reset amount to trigger auto-calc
-                      setAmount("");
-                    }}
-                    className="w-full bg-white border border-gray-300 rounded-lg pl-3 pr-8 py-2.5 text-sm font-medium text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none appearance-none shadow-sm transition-all"
-                  >
-                    {packages.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name} — {p.speedMbps ? `${p.speedMbps} Mbps` : ""} —
-                        PKR {Number(p.price).toLocaleString()}
-                      </option>
-                    ))}
-                  </select>
-                  <div className="absolute right-3 top-3 pointer-events-none text-gray-400">
-                    <ArrowRight size={14} className="rotate-90" />
-                  </div>
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Amount Paid *" error={errors.amountPaid}>
+                  <input
+                    type="number"
+                    min="1"
+                    max={packagePrice || undefined}
+                    className={inp(errors.amountPaid)}
+                    value={payment.amountPaid}
+                    onChange={(e) => setPayField("amountPaid", e.target.value)}
+                    placeholder={`Max PKR ${packagePrice.toLocaleString()}`}
+                  />
+                </Field>
+
+                <Field label="Payment Date *" error={errors.paymentDate}>
+                  <input
+                    type="date"
+                    className={inp(errors.paymentDate)}
+                    value={payment.paymentDate}
+                    max={today()}
+                    onChange={(e) => setPayField("paymentDate", e.target.value)}
+                  />
+                </Field>
+              </div>
+
+              <Field label="Payment Note (optional)">
+                <input
+                  className={inp()}
+                  value={payment.paymentNote}
+                  onChange={(e) => setPayField("paymentNote", e.target.value)}
+                  placeholder="e.g. Cash received, Bank transfer..."
+                />
+              </Field>
+
+              {/* Live remaining balance */}
+              {selectedPkg && amountPaidNum > 0 && (
+                <div
+                  className={`flex items-center justify-between rounded-lg px-4 py-2 text-sm font-semibold ${
+                    remaining <= 0
+                      ? "bg-green-100 text-green-800"
+                      : "bg-yellow-100 text-yellow-800"
+                  }`}
+                >
+                  <span>
+                    {remaining <= 0 ? "✓ Fully Paid" : "Remaining Balance"}
+                  </span>
+                  <span>
+                    {remaining <= 0
+                      ? "PKR 0"
+                      : `PKR ${remaining.toLocaleString()}`}
+                  </span>
                 </div>
-              </div>
-
-              {/* 3. New Cycle Details */}
-              <div className="flex justify-between items-center text-sm px-1">
-                <span className="text-gray-600">New Subscription Cost</span>
-                <span className="font-semibold text-gray-900">
-                  PKR {newPackagePrice.toLocaleString()}
-                </span>
-              </div>
-
-              {/* 4. Divider */}
-              <div className="border-t border-blue-200 border-dashed my-1"></div>
-
-              {/* 5. Total */}
-              <div className="flex justify-between items-center bg-blue-600 text-white p-3 rounded-lg shadow-sm">
-                <div className="flex items-center gap-2">
-                  <Receipt size={18} />
-                  <span className="font-bold text-sm">Total Payable</span>
-                </div>
-                <span className="text-lg font-black">
-                  PKR {grandTotal.toLocaleString()}
-                </span>
-              </div>
-            </>
-          ) : (
-            // ── EXISTING CYCLE VIEW (No Renewal) ──
-            <div className="text-sm space-y-3">
-              <div className="flex justify-between items-center bg-gray-50 p-2 rounded border border-gray-100">
-                <span className="text-gray-500">Current Cycle</span>
-                <span className="font-semibold text-gray-700">
-                  {formatDate(activeCycle?.cycleStartDate)} →{" "}
-                  {formatDate(activeCycle?.cycleEndDate)}
-                </span>
-              </div>
-              <div className="flex justify-between px-1">
-                <span className="text-gray-500">Total Bill</span>
-                <span className="font-medium">
-                  PKR {activeCycle?.totalAmount}
-                </span>
-              </div>
-              <div className="flex justify-between px-1">
-                <span className="text-gray-500">Already Paid</span>
-                <span className="font-medium text-green-600">
-                  PKR {activeCycle?.amountPaid}
-                </span>
-              </div>
-              <div className="border-t border-gray-200 my-1"></div>
-              <div className="flex justify-between items-center px-1">
-                <span className="font-bold text-gray-700">Remaining Due</span>
-                <span className="font-black text-xl text-red-600">
-                  PKR {activeCycle?.amountPending}
-                </span>
-              </div>
+              )}
             </div>
           )}
         </div>
-      </div>
-
-      {/* ── INPUT FIELDS ── */}
-      <div className="space-y-4 pt-1">
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1.5 ml-1">
-              Amount Paid <span className="text-red-500">*</span>
-            </label>
-            <div className="relative">
-              <span className="absolute left-3 top-2.5 text-gray-400 text-sm font-medium">
-                PKR
-              </span>
-              <input
-                type="number"
-                min="0"
-                className="w-full border border-gray-300 rounded-lg pl-10 pr-3 py-2.5 text-sm font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all shadow-sm"
-                value={amount}
-                onChange={(e) => {
-                  setAmount(e.target.value);
-                  setError("");
-                }}
-                placeholder="0"
-              />
-            </div>
-            {needsRenewal && Number(amount) === 0 && (
-              <p className="text-[10px] text-orange-600 mt-1.5 ml-1 font-medium">
-                * Zero payment allowed for activation
-              </p>
-            )}
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1.5 ml-1">
-              Payment Date <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="date"
-              max={today()}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all shadow-sm"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-            />
-          </div>
-        </div>
-
-        <div>
-          <label className="block text-xs font-semibold text-gray-600 mb-1.5 ml-1">
-            Note (optional)
-          </label>
-          <input
-            className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all shadow-sm"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder="e.g. Cash, JazzCash, clearing old dues..."
-          />
-        </div>
-      </div>
-
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-600 px-3 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2">
-          <AlertCircle size={16} />
-          {error}
-        </div>
       )}
 
-      {/* ── ACTIONS ── */}
-      <div className="flex justify-end gap-3 pt-2">
+      {/* ── FOOTER BUTTONS ── */}
+      <div className="flex justify-end gap-3 pt-1">
         <button
           onClick={onClose}
-          className="px-5 py-2 text-sm font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+          className="px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
         >
           Cancel
         </button>
         <button
           onClick={handleSubmit}
-          disabled={saving}
-          className={`px-6 py-2 text-sm font-bold text-white rounded-lg shadow-sm transition-all flex items-center gap-2 ${
-            needsRenewal
-              ? "bg-blue-600 hover:bg-blue-700 hover:shadow-md"
-              : "bg-green-600 hover:bg-green-700 hover:shadow-md"
-          } disabled:opacity-50 disabled:cursor-not-allowed`}
+          disabled={saving || !!dupWarning}
+          className="px-5 py-2 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50"
         >
-          {saving ? (
-            "Processing..."
-          ) : needsRenewal ? (
-            <>
-              <ArrowRight size={16} /> Renew & Pay
-            </>
-          ) : (
-            "Record Payment"
-          )}
+          {saving
+            ? "Saving..."
+            : isEdit
+              ? "Save Changes"
+              : payment.recordPayment
+                ? "Add Customer & Record Payment"
+                : "Add Customer"}
         </button>
       </div>
+    </div>
+  );
+}
+
+const inp = (err) =>
+  `w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+    err ? "border-red-400 bg-red-50" : "border-gray-300 bg-white"
+  }`;
+
+function Field({ label, error, children }) {
+  return (
+    <div>
+      <label className="block text-xs font-semibold text-gray-600 mb-1.5">
+        {label}
+      </label>
+      {children}
+      {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
+    </div>
+  );
+}
+</file>
+
+<file path="src/store/usePaymentStore.js">
+import { create } from "zustand";
+import db from "../db/database";
+import { addDays } from "../utils/dateUtils";
+
+const usePaymentStore = create((set, get) => ({
+  cycles: [],
+
+  loadCycles: async () => {
+    const cycles = await db.paymentCycles.toArray();
+    set({ cycles });
+  },
+
+  createInitialCycle: async (customerId, startDate, totalAmount) => {
+    const cycleData = {
+      customerId,
+      cycleStartDate: startDate,
+      cycleEndDate: addDays(startDate, 30),
+      totalAmount,
+      amountPaid: 0,
+      amountPending: totalAmount,
+      status: "pending",
+      installments: [],
+      createdAt: new Date().toISOString(),
+    };
+    const id = await db.paymentCycles.add(cycleData);
+    const cycle = await db.paymentCycles.get(id);
+    set((s) => ({ cycles: [...s.cycles, cycle] }));
+    return cycle;
+  },
+
+  addInstallment: async (cycleId, amountPaid, datePaid, note = "") => {
+    const cycle = await db.paymentCycles.get(cycleId);
+    if (!cycle) throw new Error("Cycle not found");
+
+    const installment = {
+      id: crypto.randomUUID(),
+      amountPaid: Number(amountPaid),
+      datePaid,
+      note,
+      createdAt: new Date().toISOString(),
+    };
+
+    const updatedInstallments = [...(cycle.installments || []), installment];
+    const totalPaid = updatedInstallments.reduce(
+      (sum, i) => sum + i.amountPaid,
+      0,
+    );
+    const amountPending = Math.max(0, cycle.totalAmount - totalPaid);
+    const status = amountPending === 0 ? "clear" : "pending";
+
+    const updates = {
+      installments: updatedInstallments,
+      amountPaid: totalPaid,
+      amountPending,
+      status,
+    };
+
+    await db.paymentCycles.update(cycleId, updates);
+    set((s) => ({
+      cycles: s.cycles.map((c) =>
+        c.id === cycleId ? { ...c, ...updates } : c,
+      ),
+    }));
+  },
+
+  renewCycle: async (customerId, startDate, packagePrice) => {
+    const allCycles = get().cycles.filter((c) => c.customerId === customerId);
+    const activeCycle = allCycles.sort(
+      (a, b) => new Date(b.cycleStartDate) - new Date(a.cycleStartDate),
+    )[0];
+
+    // FIX: Prevent accidental double renewal on the exact same date
+    if (
+      activeCycle &&
+      activeCycle.cycleStartDate === startDate &&
+      activeCycle.isRenewal
+    ) {
+      return activeCycle; // Return existing cycle instead of duplicating the math
+    }
+
+    let broughtForward = 0;
+
+    if (activeCycle && activeCycle.amountPending > 0) {
+      broughtForward = activeCycle.amountPending;
+
+      const updates = {
+        amountPending: 0,
+        status: "clear",
+        shiftedAmount: broughtForward,
+      };
+
+      await db.paymentCycles.update(activeCycle.id, updates);
+
+      set((s) => ({
+        cycles: s.cycles.map((c) =>
+          c.id === activeCycle.id ? { ...c, ...updates } : c,
+        ),
+      }));
+    }
+
+    const totalAmount = packagePrice + broughtForward;
+
+    const cycleData = {
+      customerId,
+      cycleStartDate: startDate,
+      cycleEndDate: addDays(startDate, 30),
+      totalAmount,
+      amountPaid: 0,
+      amountPending: totalAmount,
+      status: "pending",
+      installments: [],
+      isRenewal: true,
+      previousBalance: broughtForward,
+      createdAt: new Date().toISOString(),
+    };
+
+    const id = await db.paymentCycles.add(cycleData);
+    const cycle = await db.paymentCycles.get(id);
+    set((s) => ({ cycles: [...s.cycles, cycle] }));
+    return cycle;
+  },
+
+  getActiveCycle: (customerId) => {
+    const all = get()
+      .cycles.filter((c) => c.customerId === customerId)
+      .sort((a, b) => new Date(b.cycleStartDate) - new Date(a.cycleStartDate));
+    return all[0] || null;
+  },
+
+  getCyclesForCustomer: (customerId) => {
+    return get()
+      .cycles.filter((c) => c.customerId === customerId)
+      .sort((a, b) => new Date(b.cycleStartDate) - new Date(a.cycleStartDate));
+  },
+
+  deleteCycle: async (cycleId) => {
+    await db.paymentCycles.delete(cycleId);
+    set((s) => ({ cycles: s.cycles.filter((c) => c.id !== cycleId) }));
+  },
+}));
+
+export default usePaymentStore;
+</file>
+
+<file path="src/App.jsx">
+import { useEffect, useState } from "react";
+import Navbar from "./components/layout/Navbar";
+import BackupBanner from "./components/ui/BackupBanner";
+import Dashboard from "./pages/Dashboard";
+import Customers from "./pages/Customers/Customers";
+import Inventory from "./pages/Inventory/Inventory";
+import Expenses from "./pages/Expenses/Expenses";
+import Settings from "./pages/Settings";
+import useCustomerStore from "./store/useCustomerStore";
+import usePaymentStore from "./store/usePaymentStore";
+import usePackageStore from "./store/usePackageStore";
+import useInventoryStore from "./store/useInventoryStore";
+import useExpenseStore from "./store/useExpenseStore";
+
+export default function App() {
+  const [tab, setTab] = useState("dashboard");
+  const [customerFilter, setCustomerFilter] = useState("all");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.all([
+      useCustomerStore.getState().loadCustomers(),
+      usePaymentStore.getState().loadCycles(),
+      usePackageStore.getState().loadPackages(),
+      useInventoryStore.getState().loadInventory(),
+      useExpenseStore.getState().loadExpenses(),
+    ]).then(() => setLoading(false));
+  }, []);
+
+  const handleNavigate = (targetTab, filterMode = "all") => {
+    setTab(targetTab);
+    setCustomerFilter(filterMode);
+  };
+
+  if (loading) {
+    return (
+      <div className="h-screen flex items-center justify-center text-gray-400 text-sm">
+        Loading Galaxy ISP...
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 flex flex-col">
+      <Navbar activeTab={tab} onTabChange={(t) => handleNavigate(t, "all")} />
+      <BackupBanner />
+      <main className="flex-1 overflow-auto">
+        <div style={{ display: tab === "dashboard" ? "block" : "none" }}>
+          <Dashboard onNavigate={handleNavigate} />
+        </div>
+        <div style={{ display: tab === "customers" ? "block" : "none" }}>
+          <Customers initialFilter={customerFilter} />
+        </div>
+        <div style={{ display: tab === "inventory" ? "block" : "none" }}>
+          <Inventory />
+        </div>
+        <div style={{ display: tab === "expenses" ? "block" : "none" }}>
+          <Expenses />
+        </div>
+        <div style={{ display: tab === "settings" ? "block" : "none" }}>
+          <Settings />
+        </div>
+      </main>
     </div>
   );
 }
@@ -5801,6 +3936,1785 @@ const db = {
 
 export default db;
 export { readAll, writeAll, invalidate };
+</file>
+
+<file path="src/pages/Customers/Customers.jsx">
+import { useState, useEffect } from "react";
+import {
+  Plus,
+  Search,
+  Archive,
+  ArchiveRestore,
+  Trash2,
+  ArrowUpDown,
+} from "lucide-react";
+import Modal from "../../components/ui/Modal";
+import ConfirmDialog from "../../components/ui/ConfirmDialog";
+import CustomerTable from "./CustomerTable";
+import CustomerForm from "./CustomerForm";
+import PaymentForm from "../Payments/PaymentForm";
+import useCustomerStore from "../../store/useCustomerStore";
+import usePaymentStore from "../../store/usePaymentStore";
+import { formatDate, daysUntil } from "../../utils/dateUtils";
+
+export default function Customers({ initialFilter }) {
+  const customers = useCustomerStore((s) => s.customers);
+  const archiveCustomer = useCustomerStore((s) => s.archiveCustomer);
+  const restoreCustomer = useCustomerStore((s) => s.restoreCustomer);
+  const permanentlyDeleteCustomer = useCustomerStore(
+    (s) => s.permanentlyDeleteCustomer,
+  );
+  const getCyclesForCustomer = usePaymentStore((s) => s.getCyclesForCustomer);
+  const getActiveCycle = usePaymentStore((s) => s.getActiveCycle);
+
+  const [view, setView] = useState("active");
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("newest");
+
+  const [showAdd, setShowAdd] = useState(false);
+  const [editCustomer, setEditCustomer] = useState(null);
+  const [payCustomer, setPayCustomer] = useState(null);
+  const [archiveTarget, setArchiveTarget] = useState(null);
+  const [restoreTarget, setRestoreTarget] = useState(null);
+  const [purgeTarget, setPurgeTarget] = useState(null);
+
+  // Sync prop filter to local state when prop changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (initialFilter) {
+        setFilter(initialFilter);
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [initialFilter]);
+
+  const activeCustomers = customers.filter((c) => !c.isArchived);
+  const archivedCustomers = customers.filter((c) => c.isArchived);
+
+  // 1. FILTERING
+  const q = search.toLowerCase();
+  const matchSearch = (c) =>
+    !search ||
+    c.fullName?.toLowerCase().includes(q) ||
+    c.userName?.toLowerCase().includes(q) ||
+    c.mobileNo?.includes(q) ||
+    c.mainArea?.toLowerCase().includes(q);
+
+  const filteredActive = activeCustomers.filter((c) => {
+    // Check search first
+    if (!matchSearch(c)) return false;
+
+    // Check Filter
+    if (filter === "all") return true;
+    if (filter === "active") return c.status === "active";
+    if (filter === "suspended") return c.status === "suspended";
+    if (filter === "terminated") return c.status === "terminated";
+
+    // New filters based on payment status
+    const cycle = getActiveCycle(c.id);
+    const days = cycle ? daysUntil(cycle.cycleEndDate) : 0;
+    const pending = cycle ? cycle.amountPending : 0;
+
+    if (filter === "overdue") {
+      // Must be active AND have pending balance AND be overdue (days < 0)
+      return c.status === "active" && pending > 0 && days < 0;
+    }
+    if (filter === "pending") {
+      // Must be active AND have pending balance BUT NOT overdue (days >= 0)
+      return c.status === "active" && pending > 0 && days >= 0;
+    }
+
+    return true;
+  });
+
+  // 2. SORTING
+  const sortedActive = [...filteredActive].sort((a, b) => {
+    const cycleA = getActiveCycle(a.id);
+    const cycleB = getActiveCycle(b.id);
+
+    switch (sortBy) {
+      case "name":
+        return a.fullName.localeCompare(b.fullName);
+
+      case "pending":
+        // Highest balance first
+        return (cycleB?.amountPending || 0) - (cycleA?.amountPending || 0);
+
+      case "expiring":
+        // Soonest expiry date first.
+        if (!cycleA) return 1;
+        if (!cycleB) return -1;
+        return new Date(cycleA.cycleEndDate) - new Date(cycleB.cycleEndDate);
+
+      case "newest":
+      default:
+        // IDs are auto-incrementing
+        return b.id - a.id;
+    }
+  });
+
+  const filteredArchived = archivedCustomers.filter(matchSearch);
+
+  const filterOptions = [
+    { id: "all", label: "All" },
+    { id: "active", label: "Active" },
+    { id: "pending", label: "Pending" }, // Added
+    { id: "overdue", label: "Overdue" }, // Added
+    { id: "suspended", label: "Suspended" },
+  ];
+
+  return (
+    <div className="p-4 space-y-3">
+      {/* HEADER */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h1 className="text-base font-semibold text-gray-800">Customers</h1>
+
+          {/* Active / Archived tab switcher */}
+          <div className="flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5">
+            <button
+              onClick={() => setView("active")}
+              className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
+                view === "active"
+                  ? "bg-white text-gray-900 shadow-sm"
+                  : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              Active
+              <span className="ml-1.5 bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full text-xs">
+                {activeCustomers.length}
+              </span>
+            </button>
+            <button
+              onClick={() => setView("archived")}
+              className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
+                view === "archived"
+                  ? "bg-white text-gray-900 shadow-sm"
+                  : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              Archived
+              {archivedCustomers.length > 0 && (
+                <span className="ml-1.5 bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full text-xs">
+                  {archivedCustomers.length}
+                </span>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {view === "active" && (
+          <button
+            onClick={() => setShowAdd(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
+          >
+            <Plus size={14} /> Add Customer
+          </button>
+        )}
+      </div>
+
+      {/* SEARCH + FILTER + SORT */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        {/* Left Side: Search & Status Filters */}
+        <div className="flex items-center gap-2 flex-1 min-w-62.5">
+          <div className="relative flex-1 max-w-xs">
+            <Search
+              size={14}
+              className="absolute left-2.5 top-2 text-gray-400"
+            />
+            <input
+              className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+              placeholder="Search..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          {view === "active" && (
+            <div className="flex gap-1">
+              {filterOptions.map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => setFilter(f.id)}
+                  className={`px-3 py-1.5 text-xs rounded capitalize transition-colors ${
+                    filter === f.id
+                      ? "bg-gray-800 text-white"
+                      : "border border-gray-300 text-gray-600 hover:bg-gray-50"
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Right Side: Sorting Dropdown */}
+        {view === "active" && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-500 font-medium">Sort by:</span>
+            <div className="relative">
+              <ArrowUpDown
+                size={14}
+                className="absolute left-2.5 top-2 text-gray-500 pointer-events-none"
+              />
+              <select
+                className="pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white text-gray-700 cursor-pointer appearance-none min-w-35"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+              >
+                <option value="newest">Newest First</option>
+                <option value="name">Name (A-Z)</option>
+                <option value="expiring">Expiring Soon</option>
+                <option value="pending">Highest Debt</option>
+              </select>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ACTIVE TABLE */}
+      {view === "active" && (
+        <div className="bg-white border border-gray-200 rounded overflow-hidden">
+          <CustomerTable
+            customers={sortedActive}
+            searchQuery={""} // Search handled above
+            onEdit={(c) => setEditCustomer(c)}
+            onPay={(c) => setPayCustomer(c)}
+            onDelete={(c) => setArchiveTarget(c)}
+          />
+        </div>
+      )}
+
+      {/* ARCHIVED TABLE */}
+      {view === "archived" && (
+        <div className="bg-white border border-gray-200 rounded overflow-hidden">
+          {filteredArchived.length === 0 ? (
+            <div className="py-16 flex flex-col items-center gap-2 text-gray-400">
+              <Archive size={36} className="text-gray-300" />
+              <p className="text-sm font-medium">No archived customers</p>
+              <p className="text-xs text-gray-300">
+                Deleted customers appear here — nothing is ever lost.
+              </p>
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-800 text-white text-left text-xs">
+                  <th className="px-4 py-2.5 font-medium">Customer</th>
+                  <th className="px-4 py-2.5 font-medium">Area</th>
+                  <th className="px-4 py-2.5 font-medium">Archived On</th>
+                  <th className="px-4 py-2.5 font-medium">Reason</th>
+                  <th className="px-4 py-2.5 font-medium">Total Ever Paid</th>
+                  <th className="px-4 py-2.5 font-medium">Cycles</th>
+                  <th className="px-4 py-2.5 font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredArchived.map((c) => {
+                  const cycles = getCyclesForCustomer(c.id);
+                  const totalPaid = cycles.reduce(
+                    (sum, cy) =>
+                      sum +
+                      (cy.installments || []).reduce(
+                        (s, i) => s + (i.amountPaid || 0),
+                        0,
+                      ),
+                    0,
+                  );
+                  return (
+                    <tr
+                      key={c.id}
+                      className="border-t border-gray-100 hover:bg-gray-50"
+                    >
+                      <td className="px-4 py-3">
+                        <div className="font-medium text-gray-800">
+                          {c.fullName}
+                        </div>
+                        <div className="text-xs text-gray-400">
+                          {c.userName}
+                        </div>
+                        {c.mobileNo && (
+                          <div className="text-xs text-gray-400">
+                            {c.mobileNo}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-500">
+                        {c.mainArea || "—"}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-500">
+                        {c.archivedAt ? formatDate(c.archivedAt) : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-500 max-w-50">
+                        {c.archiveReason || (
+                          <span className="text-gray-300 italic">
+                            No reason given
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 font-semibold text-gray-800">
+                        PKR {totalPaid.toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-500">
+                        {cycles.length}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => setRestoreTarget(c)}
+                            className="flex items-center gap-1 px-2.5 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 font-medium"
+                          >
+                            <ArchiveRestore size={12} /> Restore
+                          </button>
+                          <button
+                            onClick={() => setPurgeTarget(c)}
+                            title="Permanently delete all data"
+                            className="flex items-center gap-1 px-2.5 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 font-medium"
+                          >
+                            <Trash2 size={12} /> Purge
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {/* MODALS */}
+      <Modal
+        isOpen={showAdd}
+        onClose={() => setShowAdd(false)}
+        title="Add New Customer"
+        size="lg"
+      >
+        <CustomerForm onClose={() => setShowAdd(false)} />
+      </Modal>
+
+      <Modal
+        isOpen={!!editCustomer}
+        onClose={() => setEditCustomer(null)}
+        title="Edit Customer"
+        size="lg"
+      >
+        {editCustomer && (
+          <CustomerForm
+            customer={editCustomer}
+            onClose={() => setEditCustomer(null)}
+          />
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={!!payCustomer}
+        onClose={() => setPayCustomer(null)}
+        title="Record Payment"
+        size="md"
+      >
+        {payCustomer && (
+          <PaymentForm
+            customer={payCustomer}
+            onClose={() => setPayCustomer(null)}
+          />
+        )}
+      </Modal>
+
+      {/* Archive dialog */}
+      <ConfirmDialog
+        isOpen={!!archiveTarget}
+        onClose={() => setArchiveTarget(null)}
+        onConfirm={(reason) => archiveCustomer(archiveTarget.id, reason)}
+        title="Archive Customer"
+        message={`"${archiveTarget?.fullName}" will be moved to the Archived tab. All payment history is preserved and you can restore them at any time.`}
+        confirmLabel="Archive Customer"
+        confirmText={archiveTarget?.fullName}
+        showReason
+        reasonLabel="Reason for archiving (optional)"
+        danger
+      />
+
+      {/* Restore dialog */}
+      <ConfirmDialog
+        isOpen={!!restoreTarget}
+        onClose={() => setRestoreTarget(null)}
+        onConfirm={() => restoreCustomer(restoreTarget.id)}
+        title="Restore Customer"
+        message={`Restore "${restoreTarget?.fullName}" back to Active customers? Their full payment history will remain intact.`}
+        confirmLabel="Yes, Restore"
+        danger={false}
+      />
+
+      {/* Purge dialog */}
+      <ConfirmDialog
+        isOpen={!!purgeTarget}
+        onClose={() => setPurgeTarget(null)}
+        onConfirm={() => permanentlyDeleteCustomer(purgeTarget.id)}
+        title="Permanently Delete"
+        message={`This will PERMANENTLY delete "${purgeTarget?.fullName}" and every payment record forever. This cannot be undone.`}
+        confirmLabel="Permanently Delete"
+        confirmText={purgeTarget?.fullName}
+        requirePassword
+        danger
+      />
+    </div>
+  );
+}
+</file>
+
+<file path="src/pages/Customers/CustomerTable.jsx">
+import { useState } from "react";
+import {
+  Pencil,
+  Trash2,
+  CreditCard,
+  History,
+  CornerDownRight,
+  AlertCircle,
+} from "lucide-react";
+import Badge from "../../components/ui/Badge";
+import WhatsAppButton from "../../components/shared/WhatsAppButton";
+import Modal from "../../components/ui/Modal";
+import { formatDate, daysUntil } from "../../utils/dateUtils";
+import { MESSAGE_TEMPLATES } from "../../config/messageTemplates";
+import usePaymentStore from "../../store/usePaymentStore";
+import usePackageStore from "../../store/usePackageStore";
+
+export default function CustomerTable({
+  customers,
+  onEdit,
+  onPay,
+  onDelete,
+  searchQuery,
+}) {
+  const getActiveCycle = usePaymentStore((s) => s.getActiveCycle);
+  const getCyclesForCustomer = usePaymentStore((s) => s.getCyclesForCustomer);
+  const packages = usePackageStore((s) => s.packages);
+
+  // State for the History Modal
+  const [historyTarget, setHistoryTarget] = useState(null);
+
+  const filtered = customers.filter((c) => {
+    if (!searchQuery) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      c.fullName?.toLowerCase().includes(q) ||
+      c.userName?.toLowerCase().includes(q) ||
+      c.mobileNo?.includes(q) ||
+      c.mainArea?.toLowerCase().includes(q)
+    );
+  });
+
+  return (
+    <>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="bg-gray-100 text-gray-600 text-left">
+              <th className="px-3 py-2 font-medium">Customer</th>
+              <th className="px-3 py-2 font-medium">Area</th>
+              <th className="px-3 py-2 font-medium">Package</th>
+              <th className="px-3 py-2 font-medium">Expires</th>
+              <th className="px-3 py-2 font-medium">Pending</th>
+              <th className="px-3 py-2 font-medium">Status</th>
+              <th className="px-3 py-2 font-medium">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((customer) => {
+              const cycle = getActiveCycle(customer.id);
+              const pkg = packages.find((p) => p.id === customer.packageId);
+              const days = cycle ? daysUntil(cycle.cycleEndDate) : null;
+
+              let rowBg = "";
+              let cycleStatus = cycle ? cycle.status : "pending";
+              if (cycle) {
+                if (days !== null && days < 0 && cycleStatus !== "clear") {
+                  cycleStatus = "overdue";
+                  rowBg = "bg-red-50";
+                } else if (
+                  days !== null &&
+                  days <= 3 &&
+                  cycleStatus !== "clear"
+                ) {
+                  rowBg = "bg-yellow-50";
+                } else if (cycleStatus === "clear") {
+                  rowBg = "";
+                }
+              }
+
+              const waMessage =
+                cycle && cycle.amountPending > 0
+                  ? MESSAGE_TEMPLATES.paymentDue(customer, cycle)
+                  : cycle
+                    ? MESSAGE_TEMPLATES.expiryReminder(customer, cycle)
+                    : "";
+
+              return (
+                <tr
+                  key={customer.id}
+                  className={`border-b border-gray-100 ${rowBg} hover:bg-gray-50`}
+                >
+                  <td className="px-3 py-2">
+                    <div className="font-medium text-gray-800">
+                      {customer.fullName}
+                    </div>
+                    <div className="text-xs text-gray-400">
+                      {customer.userName}
+                    </div>
+                    {customer.mobileNo && (
+                      <div className="text-xs text-gray-400">
+                        {customer.mobileNo}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-gray-600">
+                    {customer.mainArea || "-"}
+                  </td>
+                  <td className="px-3 py-2 text-gray-600">
+                    {pkg ? pkg.name : "-"}
+                  </td>
+                  <td className="px-3 py-2">
+                    {cycle ? (
+                      <div>
+                        <div className="text-xs">
+                          {formatDate(cycle.cycleEndDate)}
+                        </div>
+                        <div
+                          className={`text-xs ${days < 0 ? "text-red-600" : days <= 3 ? "text-yellow-700" : "text-gray-400"}`}
+                        >
+                          {days < 0
+                            ? `${-days}d overdue`
+                            : days === 0
+                              ? "expires today"
+                              : `${days}d left`}
+                        </div>
+                      </div>
+                    ) : (
+                      "-"
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
+                    {cycle && cycle.amountPending > 0 ? (
+                      <span className="text-red-600 font-medium">
+                        PKR {cycle.amountPending}
+                      </span>
+                    ) : (
+                      <span className="text-green-600 text-xs">Paid</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
+                    <Badge
+                      status={
+                        customer.status === "active"
+                          ? cycleStatus
+                          : customer.status
+                      }
+                    />
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {/* Pay Button */}
+                      <button
+                        onClick={() => onPay(customer)}
+                        className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-blue-50 text-blue-700 rounded hover:bg-blue-100 border border-blue-200 transition-colors"
+                        title="Record Payment"
+                      >
+                        <CreditCard size={13} /> Pay
+                      </button>
+
+                      {/* Edit Button */}
+                      <button
+                        onClick={() => onEdit(customer)}
+                        className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-white text-gray-700 rounded hover:bg-gray-50 border border-gray-300 transition-colors"
+                        title="Edit Customer"
+                      >
+                        <Pencil size={13} /> Edit
+                      </button>
+
+                      {/* Delete Button */}
+                      <button
+                        onClick={() => onDelete(customer)}
+                        className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-white text-red-600 rounded hover:bg-red-50 border border-gray-200 transition-colors"
+                        title="Delete Customer"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+
+                      {customer.mobileNo && (
+                        <WhatsAppButton
+                          mobileNo={customer.mobileNo}
+                          message={waMessage}
+                          label="Send"
+                        />
+                      )}
+
+                      {/* History Button (Modal Trigger) */}
+                      <button
+                        onClick={() => setHistoryTarget(customer)}
+                        className="flex items-center justify-center w-7 h-7 rounded border bg-white border-gray-300 text-gray-500 hover:bg-gray-50 transition-colors"
+                        title="View Payment History"
+                      >
+                        <History size={15} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {filtered.length === 0 && (
+              <tr>
+                <td
+                  colSpan={7}
+                  className="px-3 py-8 text-center text-gray-400 text-sm"
+                >
+                  No customers found.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* History Modal */}
+      <Modal
+        isOpen={!!historyTarget}
+        onClose={() => setHistoryTarget(null)}
+        title={historyTarget ? `History: ${historyTarget.fullName}` : "History"}
+        size="md"
+      >
+        {historyTarget && (
+          <PaymentHistory
+            customerId={historyTarget.id}
+            getCyclesForCustomer={getCyclesForCustomer}
+          />
+        )}
+      </Modal>
+    </>
+  );
+}
+
+function PaymentHistory({ customerId, getCyclesForCustomer }) {
+  const cycles = getCyclesForCustomer(customerId);
+
+  if (!cycles || cycles.length === 0)
+    return (
+      <p className="text-sm text-gray-400 italic p-2">
+        No payment history available.
+      </p>
+    );
+
+  return (
+    <div className="space-y-4">
+      {cycles.map((c) => (
+        <div
+          key={c.id}
+          className="border border-gray-200 rounded-lg p-3 bg-white hover:border-blue-300 transition-colors"
+        >
+          {/* Header of Cycle */}
+          <div className="flex justify-between items-start mb-2 border-b border-gray-100 pb-2">
+            <div>
+              <div className="text-sm font-bold text-gray-800">
+                {formatDate(c.cycleStartDate)} — {formatDate(c.cycleEndDate)}
+              </div>
+              <div className="text-xs text-gray-500 mt-0.5">
+                Total Bill:{" "}
+                <span className="font-medium text-gray-700">
+                  PKR {c.totalAmount}
+                </span>
+              </div>
+            </div>
+            <Badge status={c.status} />
+          </div>
+
+          {/* Payment Status Bar */}
+          <div className="flex items-center gap-4 text-xs mb-3">
+            <div className="flex items-center gap-1">
+              <div className="w-2 h-2 rounded-full bg-green-500"></div>
+              <span className="text-gray-600">Paid:</span>
+              <span className="font-bold text-gray-900">
+                PKR {c.amountPaid}
+              </span>
+            </div>
+            <div className="flex items-center gap-1">
+              <div
+                className={`w-2 h-2 rounded-full ${c.amountPending > 0 ? "bg-red-500" : "bg-gray-300"}`}
+              ></div>
+              <span className="text-gray-600">Pending:</span>
+              <span
+                className={`font-bold ${c.amountPending > 0 ? "text-red-600" : "text-gray-400"}`}
+              >
+                PKR {c.amountPending}
+              </span>
+            </div>
+          </div>
+
+          {/* Outgoing Shifted Amount Notification (On the OLD Cycle) */}
+          {c.shiftedAmount > 0 && (
+            <div className="mb-3 bg-orange-50 border border-orange-100 rounded px-3 py-2 flex items-start gap-2">
+              <CornerDownRight
+                size={15}
+                className="text-orange-500 mt-0.5 shrink-0"
+              />
+              <div className="text-xs text-orange-800">
+                <span className="font-semibold block mb-0.5">
+                  Unpaid Debt Shifted: PKR {c.shiftedAmount}
+                </span>
+                <span className="text-orange-600/90 text-[11px] leading-tight block">
+                  This unpaid balance was moved to the next billing cycle.
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Incoming Previous Balance Notification (On the NEW Cycle) */}
+          {c.previousBalance > 0 && (
+            <div className="mb-3 bg-blue-50 border border-blue-100 rounded px-3 py-2 flex items-start gap-2">
+              <AlertCircle
+                size={15}
+                className="text-blue-500 mt-0.5 shrink-0"
+              />
+              <div className="text-xs text-blue-800">
+                <span className="font-semibold block mb-0.5">
+                  Includes Previous Debt: PKR {c.previousBalance}
+                </span>
+                <span className="text-blue-600/90 text-[11px] leading-tight block">
+                  This cycle's total bill includes an unpaid balance carried
+                  over from the previous cycle.
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Installments List */}
+          {c.installments && c.installments.length > 0 ? (
+            <div className="bg-gray-50 rounded-md p-2 space-y-2">
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                Payments Log
+              </p>
+              {c.installments.map((inst) => (
+                <div
+                  key={inst.id}
+                  className="flex justify-between items-center text-xs"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-600">
+                      {formatDate(inst.datePaid)}
+                    </span>
+                    {inst.note && (
+                      <span className="text-gray-400 italic">
+                        ({inst.note})
+                      </span>
+                    )}
+                  </div>
+                  <span className="font-bold text-gray-700">
+                    PKR {inst.amountPaid}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-xs text-gray-400 italic bg-gray-50 p-2 rounded-md">
+              No payments recorded yet.
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+</file>
+
+<file path="src/pages/Dashboard.jsx">
+import { useState } from "react";
+import {
+  Users,
+  TrendingUp,
+  Clock,
+  AlertTriangle,
+  CheckCircle,
+  XCircle,
+  Calendar,
+  CreditCard,
+  Activity,
+  ChevronLeft,
+  ChevronRight,
+  RefreshCw,
+  Eye,
+  EyeOff,
+} from "lucide-react";
+import useCustomerStore from "../store/useCustomerStore";
+import usePaymentStore from "../store/usePaymentStore";
+import useExpenseStore from "../store/useExpenseStore";
+import { daysUntil, formatDate, today } from "../utils/dateUtils";
+import Badge from "../components/ui/Badge";
+import Modal from "../components/ui/Modal";
+import PaymentForm from "./Payments/PaymentForm";
+import WhatsAppButton from "../components/shared/WhatsAppButton";
+import { MESSAGE_TEMPLATES } from "../config/messageTemplates";
+
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+function getLatestCycle(cycles, customerId) {
+  return (
+    cycles
+      .filter((c) => c.customerId === customerId)
+      .sort(
+        (a, b) => new Date(b.cycleStartDate) - new Date(a.cycleStartDate),
+      )[0] || null
+  );
+}
+
+export default function Dashboard({ onNavigate }) {
+  const customers = useCustomerStore((s) => s.customers);
+  const cycles = usePaymentStore((s) => s.cycles);
+  const expenses = useExpenseStore((s) => s.expenses);
+
+  const [payCustomer, setPayCustomer] = useState(null);
+  const [mode, setMode] = useState("alltime"); // alltime | monthly | daily
+
+  // Date state for Monthly view
+  const now = new Date();
+  const [selYear, setSelYear] = useState(now.getFullYear());
+  const [selMonth, setSelMonth] = useState(now.getMonth());
+
+  // Date state for Daily view
+  const [selDate, setSelDate] = useState(today());
+
+  // Monthly Navigation
+  const prevMonth = () => {
+    if (selMonth === 0) {
+      setSelMonth(11);
+      setSelYear((y) => y - 1);
+    } else setSelMonth((m) => m - 1);
+  };
+  const nextMonth = () => {
+    if (selYear === now.getFullYear() && selMonth === now.getMonth()) return;
+    if (selMonth === 11) {
+      setSelMonth(0);
+      setSelYear((y) => y + 1);
+    } else setSelMonth((m) => m + 1);
+  };
+  const isCurrentMonth =
+    selYear === now.getFullYear() && selMonth === now.getMonth();
+
+  // ── Stats Calculation ─────────────────────────────────────────────
+  const activeCustomers = customers.filter((c) => !c.isArchived);
+
+  // 1. ALL TIME STATS
+  let at_collected = 0,
+    at_pending = 0,
+    at_overdueMoney = 0;
+  let at_overdueCount = 0;
+  let at_expiringCount = 0;
+  let at_renewalCount = 0;
+  let at_activeCount = 0,
+    at_suspendedCount = 0,
+    at_totalEver = 0;
+
+  activeCustomers.forEach((c) => {
+    if (c.status === "active") at_activeCount++;
+    if (c.status === "suspended") at_suspendedCount++;
+    const cycle = getLatestCycle(cycles, c.id);
+    if (!cycle) return;
+
+    at_collected += cycle.amountPaid || 0;
+    at_pending += cycle.amountPending || 0;
+
+    const days = daysUntil(cycle.cycleEndDate);
+
+    // Overdue Logic (Pending AND Expired)
+    if (cycle.amountPending > 0 && days < 0) {
+      at_overdueCount++;
+      at_overdueMoney += cycle.amountPending;
+    }
+
+    if (days >= 0 && days <= 5) at_expiringCount++;
+    if (days < 0) at_renewalCount++;
+  });
+
+  cycles.forEach((cy) => {
+    (cy.installments || []).forEach((inst) => {
+      at_totalEver += inst.amountPaid || 0;
+    });
+  });
+
+  const at_totalExpenses = expenses.reduce(
+    (s, e) => s + (Number(e.amount) || 0),
+    0,
+  );
+
+  const allTime = {
+    totalCustomers: activeCustomers.length,
+    activeCount: at_activeCount,
+    suspendedCount: at_suspendedCount,
+    collected: at_collected,
+    pending: at_pending,
+    overdueMoney: at_overdueMoney,
+    totalEverCollected: at_totalEver,
+    overdueCount: at_overdueCount,
+    expiringCount: at_expiringCount,
+    renewalCount: at_renewalCount,
+    totalExpenses: at_totalExpenses,
+    netIncome: at_totalEver - at_totalExpenses,
+  };
+
+  // 2. MONTHLY STATS
+  const monthStart = new Date(selYear, selMonth, 1);
+  const monthEnd = new Date(selYear, selMonth + 1, 0, 23, 59, 59);
+  let mo_collected = 0,
+    mo_pending = 0,
+    mo_overdueMoney = 0,
+    mo_newCustomers = 0;
+  let mo_clearedCount = 0,
+    mo_pendingCount = 0,
+    mo_overdueCount = 0,
+    mo_renewalCount = 0,
+    mo_expiringCount = 0;
+
+  cycles.forEach((cy) => {
+    // Collected in this month
+    (cy.installments || []).forEach((inst) => {
+      const d = new Date(inst.datePaid);
+      if (d >= monthStart && d <= monthEnd)
+        mo_collected += inst.amountPaid || 0;
+    });
+
+    // Check if cycle is relevant to this month
+    const cStart = new Date(cy.cycleStartDate);
+    const cEnd = new Date(cy.cycleEndDate);
+    if (cStart <= monthEnd && cEnd >= monthStart) {
+      mo_pending += cy.amountPending || 0;
+      if (cy.status === "clear") mo_clearedCount++;
+      else mo_pendingCount++;
+
+      const days = daysUntil(cy.cycleEndDate);
+      if (days < 0 && cy.amountPending > 0) {
+        mo_overdueMoney += cy.amountPending;
+        mo_overdueCount++;
+      }
+      if (days < 0) mo_renewalCount++;
+      if (days >= 0 && days <= 5) mo_expiringCount++;
+    }
+  });
+
+  activeCustomers.forEach((c) => {
+    const d = new Date(c.createdAt);
+    if (d >= monthStart && d <= monthEnd) mo_newCustomers++;
+  });
+
+  const mo_expenses = expenses
+    .filter((e) => {
+      const d = new Date(e.date);
+      return d >= monthStart && d <= monthEnd;
+    })
+    .reduce((s, e) => s + (Number(e.amount) || 0), 0);
+
+  const monthly = {
+    collected: mo_collected,
+    pending: mo_pending,
+    overdueMoney: mo_overdueMoney,
+    newCustomers: mo_newCustomers,
+    clearedCount: mo_clearedCount,
+    pendingCount: mo_pendingCount,
+    overdueCount: mo_overdueCount,
+    renewalCount: mo_renewalCount,
+    expiringCount: mo_expiringCount,
+    totalExpenses: mo_expenses,
+    netIncome: mo_collected - mo_expenses,
+  };
+
+  // 3. DAILY STATS
+  let day_collected = 0;
+  let day_newCustomers = 0;
+
+  cycles.forEach((cy) => {
+    (cy.installments || []).forEach((inst) => {
+      if (inst.datePaid === selDate) {
+        day_collected += inst.amountPaid || 0;
+      }
+    });
+  });
+
+  activeCustomers.forEach((c) => {
+    if (c.createdAt && c.createdAt.startsWith(selDate)) {
+      day_newCustomers++;
+    }
+  });
+
+  const day_expenses = expenses
+    .filter((e) => e.date === selDate)
+    .reduce((s, e) => s + (Number(e.amount) || 0), 0);
+
+  const daily = {
+    collected: day_collected,
+    newCustomers: day_newCustomers,
+    totalExpenses: day_expenses,
+    netIncome: day_collected - day_expenses,
+  };
+
+  // ── Urgent List Logic ─────────────────────────────────────────────
+  const urgentCustomers = activeCustomers
+    .map((c) => ({ customer: c, cycle: getLatestCycle(cycles, c.id) }))
+    .filter(({ cycle }) => {
+      if (!cycle) return true;
+      const days = daysUntil(cycle.cycleEndDate);
+      return days < 0 || days <= 5;
+    })
+    .sort((a, b) => {
+      const da = a.cycle ? daysUntil(a.cycle.cycleEndDate) : -999;
+      const db2 = b.cycle ? daysUntil(b.cycle.cycleEndDate) : -999;
+      return da - db2;
+    });
+
+  const displayStats = mode === "monthly" ? monthly : allTime;
+
+  return (
+    <div className="p-5 space-y-5 max-w-7xl mx-auto">
+      {/* HEADER */}
+      <div className="flex items-center justify-between flex-wrap gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+          <p className="text-sm text-gray-500 mt-0.5">{today()}</p>
+        </div>
+        <div className="flex items-center gap-1 bg-gray-200 rounded-lg p-1">
+          <button
+            onClick={() => setMode("alltime")}
+            className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === "alltime" ? "bg-white text-gray-900 shadow" : "text-gray-500 hover:text-gray-800"}`}
+          >
+            All Time
+          </button>
+          <button
+            onClick={() => setMode("monthly")}
+            className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === "monthly" ? "bg-white text-gray-900 shadow" : "text-gray-500 hover:text-gray-800"}`}
+          >
+            Monthly
+          </button>
+          <button
+            onClick={() => setMode("daily")}
+            className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === "daily" ? "bg-white text-gray-900 shadow" : "text-gray-500 hover:text-gray-800"}`}
+          >
+            Daily
+          </button>
+        </div>
+      </div>
+
+      {/* FILTERS */}
+      {mode === "monthly" && (
+        <div className="flex items-center gap-3 bg-white border-2 border-gray-200 rounded-xl px-4 py-3 w-fit">
+          <button
+            onClick={prevMonth}
+            className="p-1 rounded-lg hover:bg-gray-100 text-gray-700"
+          >
+            <ChevronLeft size={20} />
+          </button>
+          <div className="flex items-center gap-2 min-w-43 justify-center">
+            <Calendar size={17} className="text-blue-600" />
+            <span className="font-bold text-gray-900 text-lg">
+              {MONTH_NAMES[selMonth]} {selYear}
+            </span>
+          </div>
+          <button
+            onClick={nextMonth}
+            disabled={isCurrentMonth}
+            className="p-1 rounded-lg hover:bg-gray-100 text-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            <ChevronRight size={20} />
+          </button>
+        </div>
+      )}
+
+      {mode === "daily" && (
+        <div className="flex items-center gap-3 bg-white border-2 border-gray-200 rounded-xl px-4 py-2 w-fit">
+          <Calendar size={18} className="text-blue-600" />
+          <input
+            type="date"
+            value={selDate}
+            max={today()}
+            onChange={(e) => setSelDate(e.target.value)}
+            className="font-bold text-gray-900 text-lg outline-none cursor-pointer"
+          />
+        </div>
+      )}
+
+      {/* ─── CARDS GRID ─── */}
+
+      {mode !== "daily" ? (
+        <>
+          {/* Top Row: 5 Columns */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+            <BigCard
+              icon={<Users size={20} />}
+              label="Total Customers"
+              value={
+                mode === "monthly"
+                  ? monthly.newCustomers
+                  : allTime.totalCustomers
+              }
+              sub={
+                mode === "monthly"
+                  ? "Joined this month"
+                  : `${allTime.activeCount} active`
+              }
+              color="blue"
+            />
+            <BigCard
+              icon={<CheckCircle size={20} />}
+              label="Total Collected"
+              value={`PKR ${mode === "monthly" ? monthly.collected.toLocaleString() : allTime.totalEverCollected.toLocaleString()}`}
+              sub={
+                mode === "monthly" ? "Received this month" : "All payments ever"
+              }
+              color="green"
+              isSensitive={true}
+            />
+            <BigCard
+              icon={<Clock size={20} />}
+              label="Currently Pending"
+              value={`PKR ${displayStats.pending.toLocaleString()}`}
+              sub="Click to view details"
+              color="amber"
+              // Navigate to Customers > Pending
+              onClick={() => onNavigate("customers", "pending")}
+              isClickable
+            />
+            <BigCard
+              icon={<AlertTriangle size={20} />}
+              label="Total Overdue"
+              value={`PKR ${displayStats.overdueMoney.toLocaleString()}`}
+              sub="Expired + Unpaid"
+              color="red"
+              highlight={displayStats.overdueMoney > 0}
+              // Navigate to Customers > Overdue
+              onClick={() => onNavigate("customers", "overdue")}
+              isClickable
+            />
+            <BigCard
+              icon={<XCircle size={20} />}
+              label="Total Expenses"
+              value={`PKR ${displayStats.totalExpenses.toLocaleString()}`}
+              sub="Recorded expenses"
+              color="red"
+            />
+          </div>
+
+          {/* Bottom Row: 4 Columns */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <BigCard
+              icon={<Users size={20} />}
+              label="Overdue Customers"
+              value={displayStats.overdueCount}
+              sub="Count of customers overdue"
+              color="red"
+              highlight={displayStats.overdueCount > 0}
+            />
+            <BigCard
+              icon={<RefreshCw size={20} />}
+              label="Needs Renewal"
+              value={displayStats.renewalCount}
+              sub="Cycle expired, renew now"
+              color="red"
+              highlight={displayStats.renewalCount > 0}
+            />
+            <BigCard
+              icon={<Activity size={20} />}
+              label="Expiring in 5 Days"
+              value={displayStats.expiringCount}
+              sub="Collect before cutoff"
+              color="amber"
+              highlight={displayStats.expiringCount > 0}
+            />
+            <BigCard
+              icon={<TrendingUp size={20} />}
+              label="Net Income"
+              value={`PKR ${displayStats.netIncome.toLocaleString()}`}
+              sub="Total collected − expenses"
+              color={displayStats.netIncome >= 0 ? "green" : "red"}
+              isSensitive={true}
+            />
+          </div>
+        </>
+      ) : (
+        /* Daily View */
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <BigCard
+            icon={<CreditCard size={20} />}
+            label="Collected Today"
+            value={`PKR ${daily.collected.toLocaleString()}`}
+            sub={`Payments received on ${formatDate(selDate)}`}
+            color="green"
+            isSensitive={true}
+          />
+          <BigCard
+            icon={<XCircle size={20} />}
+            label="Expenses Today"
+            value={`PKR ${daily.totalExpenses.toLocaleString()}`}
+            sub={`Expenses recorded on ${formatDate(selDate)}`}
+            color="red"
+          />
+          <BigCard
+            icon={<TrendingUp size={20} />}
+            label="Daily Net Income"
+            value={`PKR ${daily.netIncome.toLocaleString()}`}
+            sub="Collected − expenses"
+            color={daily.netIncome >= 0 ? "green" : "red"}
+            isSensitive={true}
+          />
+          <BigCard
+            icon={<Users size={20} />}
+            label="New Customers"
+            value={daily.newCustomers}
+            sub="Joined today"
+            color="blue"
+          />
+        </div>
+      )}
+
+      {/* NEEDS ATTENTION TABLE */}
+      <div>
+        <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2 mb-3">
+          <AlertTriangle size={18} className="text-red-500" />
+          Needs Attention
+          {urgentCustomers.length > 0 && (
+            <span className="bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
+              {urgentCustomers.length}
+            </span>
+          )}
+        </h2>
+
+        {urgentCustomers.length === 0 ? (
+          <div className="bg-green-50 border-2 border-green-200 rounded-xl px-5 py-4 flex items-center gap-3">
+            <CheckCircle size={22} className="text-green-600" />
+            <span className="text-green-800 font-semibold text-base">
+              All accounts are in good standing.
+            </span>
+          </div>
+        ) : (
+          <div className="bg-white border-2 border-gray-200 rounded-xl overflow-hidden overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-gray-900 text-white text-left">
+                  <th className="px-4 py-3 text-sm font-semibold">Customer</th>
+                  <th className="px-4 py-3 text-sm font-semibold">Area</th>
+                  <th className="px-4 py-3 text-sm font-semibold">Mobile</th>
+                  <th className="px-4 py-3 text-sm font-semibold">
+                    Cycle Ended
+                  </th>
+                  <th className="px-4 py-3 text-sm font-semibold">Days</th>
+                  <th className="px-4 py-3 text-sm font-semibold">
+                    Balance Due
+                  </th>
+                  <th className="px-4 py-3 text-sm font-semibold">Status</th>
+                  <th className="px-4 py-3 text-sm font-semibold">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {urgentCustomers.map(({ customer, cycle }) => {
+                  if (!cycle)
+                    return (
+                      <tr
+                        key={customer.id}
+                        className="border-t border-gray-200 bg-gray-50"
+                      >
+                        <td className="px-4 py-3 font-bold text-gray-900">
+                          {customer.fullName}
+                        </td>
+                        <td
+                          colSpan={6}
+                          className="px-4 py-3 text-sm text-gray-500"
+                        >
+                          No billing cycle — needs setup
+                        </td>
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() => setPayCustomer(customer)}
+                            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700"
+                          >
+                            Pay Now
+                          </button>
+                        </td>
+                      </tr>
+                    );
+
+                  const days = daysUntil(cycle.cycleEndDate);
+                  const isExpiredUnpaid = days < 0 && cycle.amountPending > 0;
+                  const isExpiredPaid = days < 0 && cycle.amountPending === 0;
+                  const isExpiringSoon = days >= 0 && days <= 5;
+
+                  let waMessage = "";
+                  if (isExpiredUnpaid) {
+                    waMessage = MESSAGE_TEMPLATES.paymentOverdue(
+                      customer,
+                      cycle,
+                    );
+                  } else if (cycle.amountPending > 0) {
+                    waMessage = MESSAGE_TEMPLATES.paymentDue(customer, cycle);
+                  } else {
+                    waMessage = MESSAGE_TEMPLATES.expiryReminder(
+                      customer,
+                      cycle,
+                    );
+                  }
+
+                  const showPayButton =
+                    cycle.amountPending > 0 || isExpiredPaid;
+
+                  const rowBg = isExpiredUnpaid
+                    ? "bg-red-50"
+                    : isExpiredPaid
+                      ? "bg-orange-50"
+                      : "bg-yellow-50";
+
+                  return (
+                    <tr
+                      key={customer.id}
+                      className={`border-t border-gray-200 ${rowBg}`}
+                    >
+                      <td className="px-4 py-3">
+                        <div className="font-bold text-gray-900 text-sm">
+                          {customer.fullName}
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          {customer.userName}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-800">
+                        {customer.mainArea || "—"}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-800">
+                        {customer.mobileNo || "—"}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-800">
+                        {formatDate(cycle.cycleEndDate)}
+                      </td>
+                      <td className="px-4 py-3">
+                        {isExpiredUnpaid && (
+                          <span className="text-sm font-bold text-red-700">
+                            {-days}d overdue
+                          </span>
+                        )}
+                        {isExpiredPaid && (
+                          <span className="text-sm font-bold text-orange-700">
+                            {-days}d ago — needs renewal
+                          </span>
+                        )}
+                        {isExpiringSoon && (
+                          <span className="text-sm font-bold text-yellow-700">
+                            {days}d left
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {cycle.amountPending > 0 ? (
+                          <span className="text-sm font-bold text-red-700">
+                            PKR {Number(cycle.amountPending).toLocaleString()}
+                          </span>
+                        ) : (
+                          <span className="text-sm font-semibold text-green-700">
+                            Paid ✓
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {isExpiredUnpaid && <Badge status="overdue" />}
+                        {isExpiredPaid && (
+                          <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
+                            Renewal Due
+                          </span>
+                        )}
+                        {isExpiringSoon && <Badge status="pending" />}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          {showPayButton && (
+                            <button
+                              onClick={() => setPayCustomer(customer)}
+                              className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700"
+                            >
+                              {isExpiredPaid ? "Renew" : "Pay Now"}
+                            </button>
+                          )}
+                          <WhatsAppButton
+                            mobileNo={customer.mobileNo}
+                            message={waMessage}
+                            label="WhatsApp"
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <Modal
+        isOpen={!!payCustomer}
+        onClose={() => setPayCustomer(null)}
+        title="Record Payment"
+        size="md"
+      >
+        {payCustomer && (
+          <PaymentForm
+            customer={payCustomer}
+            onClose={() => setPayCustomer(null)}
+          />
+        )}
+      </Modal>
+    </div>
+  );
+}
+
+// Updated Colors: Softer backgrounds with borders and icons
+const colorMap = {
+  blue: {
+    bg: "bg-blue-50 border border-blue-200",
+    iconBox: "bg-blue-100",
+    icon: "text-blue-600",
+  },
+  green: {
+    bg: "bg-green-50 border border-green-200",
+    iconBox: "bg-green-100",
+    icon: "text-green-600",
+  },
+  amber: {
+    bg: "bg-amber-50 border border-amber-200",
+    iconBox: "bg-amber-100",
+    icon: "text-amber-600",
+  },
+  red: {
+    bg: "bg-red-50 border border-red-200",
+    iconBox: "bg-red-100",
+    icon: "text-red-600",
+  },
+};
+
+function BigCard({
+  icon,
+  label,
+  value,
+  sub,
+  color,
+  highlight = false,
+  isSensitive = false,
+  onClick,
+  isClickable = false,
+}) {
+  const c = colorMap[color] || colorMap.blue;
+  const [revealed, setRevealed] = useState(false);
+
+  return (
+    <div
+      onClick={isClickable ? onClick : undefined}
+      className={`rounded-xl p-5 ${c.bg} flex flex-col justify-between ${highlight ? "ring-2 ring-offset-1 ring-red-300" : ""} ${isClickable ? "cursor-pointer hover:shadow-md transition-shadow active:scale-95" : ""}`}
+    >
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <div
+            className={`w-10 h-10 rounded-lg flex items-center justify-center ${c.iconBox} ${c.icon}`}
+          >
+            {icon}
+          </div>
+          {isSensitive && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setRevealed(!revealed);
+              }}
+              className="text-gray-400 hover:text-gray-600 transition-colors"
+              title={revealed ? "Hide Amount" : "Show Amount"}
+            >
+              {revealed ? <EyeOff size={18} /> : <Eye size={18} />}
+            </button>
+          )}
+        </div>
+        <div className="text-sm font-semibold text-gray-500 uppercase tracking-wide">
+          {label}
+        </div>
+      </div>
+
+      <div className="mt-2">
+        <div className="text-2xl font-bold text-gray-900 leading-tight">
+          {isSensitive && !revealed ? (
+            <span className="tracking-widest text-gray-400">••••••</span>
+          ) : (
+            value
+          )}
+        </div>
+        <div className="text-xs text-gray-500 mt-1 font-medium">{sub}</div>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/pages/Payments/PaymentForm.jsx">
+import { useState, useEffect } from "react";
+import { today, daysUntil } from "../../utils/dateUtils";
+import usePaymentStore from "../../store/usePaymentStore";
+import usePackageStore from "../../store/usePackageStore";
+import useCustomerStore from "../../store/useCustomerStore";
+
+export default function PaymentForm({ customer, onClose }) {
+  const getActiveCycle = usePaymentStore((s) => s.getActiveCycle);
+  const addInstallment = usePaymentStore((s) => s.addInstallment);
+  const renewCycle = usePaymentStore((s) => s.renewCycle);
+  const updateCustomer = useCustomerStore((s) => s.updateCustomer);
+  const packages = usePackageStore((s) => s.packages);
+
+  const activeCycle = getActiveCycle(customer.id);
+  const days = activeCycle ? daysUntil(activeCycle.cycleEndDate) : 0;
+  const isClear = activeCycle && activeCycle.status === "clear";
+
+  // FIX: Allow renewal if the cycle is expired (days < 0), even if unpaid
+  const needsRenewal = !activeCycle || days < 0 || (isClear && days <= 5);
+
+  const [selectedPkgId, setSelectedPkgId] = useState(customer.packageId || "");
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(today());
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const selectedPkg = packages.find(
+    (p) => String(p.id) === String(selectedPkgId),
+  );
+
+  const renewalPrice = selectedPkg ? Number(selectedPkg.price) : 0;
+  const maxPayable =
+    activeCycle && !needsRenewal ? activeCycle.amountPending : renewalPrice;
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      // Auto fill amount on load, but won't force it back if user clears it
+      if (needsRenewal && renewalPrice > 0 && amount === "") {
+        setAmount(String(renewalPrice));
+      }
+    }, 0);
+
+    return () => clearTimeout(timer);
+  }, [needsRenewal, renewalPrice]);
+
+  const handleSubmit = async () => {
+    setError("");
+    const amt = Number(amount) || 0; // Treat empty strings safely as 0
+
+    // Validate if NOT renewing: They must pay > 0
+    if (!needsRenewal && amt <= 0) {
+      setError("Enter a valid amount to pay.");
+      return;
+    }
+
+    if (!needsRenewal && amt > activeCycle.amountPending) {
+      setError(`Amount exceeds balance of PKR ${activeCycle.amountPending}`);
+      return;
+    }
+
+    setSaving(true);
+    try {
+      if (needsRenewal) {
+        if (String(selectedPkgId) !== String(customer.packageId)) {
+          await updateCustomer(customer.id, {
+            packageId: Number(selectedPkgId),
+            lockedPackagePrice: renewalPrice,
+          });
+        }
+
+        // Generate the cycle, carrying over previous debt automatically
+        const newCycle = await renewCycle(customer.id, date, renewalPrice);
+
+        // FIX: Only add an installment record if they actually typed > 0
+        if (amt > 0) {
+          await addInstallment(newCycle.id, amt, date, note);
+        }
+      } else {
+        await addInstallment(activeCycle.id, amt, date, note);
+      }
+      onClose();
+    } catch (err) {
+      setError("Error: " + err.message);
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="space-y-6 p-2">
+      {/* ── SUMMARY SECTION ── */}
+      <div
+        className={`rounded-xl p-5 border ${needsRenewal ? "bg-blue-50 border-blue-100" : "bg-gray-50 border-gray-200"}`}
+      >
+        <div className="flex justify-between items-start mb-2">
+          <div>
+            <h3 className="text-lg font-bold text-gray-800">
+              {customer.fullName}
+            </h3>
+            <p className="text-sm text-gray-500">{customer.userName}</p>
+          </div>
+          {needsRenewal && (
+            <span className="bg-blue-600 text-white text-xs font-bold px-2 py-1 rounded">
+              RENEWAL
+            </span>
+          )}
+        </div>
+
+        {needsRenewal ? (
+          <div className="space-y-3">
+            <div className="text-sm text-blue-800">
+              <p>Starting a new billing cycle.</p>
+              {activeCycle && (
+                <p className="text-xs opacity-70 mt-1">
+                  Previous ends: {activeCycle.cycleEndDate}
+                </p>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold uppercase text-blue-800 mb-1.5">
+                Select Package for Renewal
+              </label>
+              <select
+                value={selectedPkgId}
+                onChange={(e) => {
+                  setSelectedPkgId(e.target.value);
+                  setAmount("");
+                }}
+                className="w-full bg-white border border-blue-200 rounded-lg px-3 py-2 text-sm font-medium text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none"
+              >
+                {packages.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} — PKR {Number(p.price).toLocaleString()}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        ) : (
+          <div className="text-sm space-y-1">
+            <div className="flex justify-between border-b border-gray-200 pb-2 mb-2">
+              <span className="text-gray-500">Current Cycle</span>
+              <span className="font-medium text-gray-800">
+                {activeCycle?.cycleStartDate} → {activeCycle?.cycleEndDate}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-500">Total Bill</span>
+              <span className="font-medium">
+                PKR {activeCycle?.totalAmount}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-500">Paid So Far</span>
+              <span className="font-medium text-green-600">
+                PKR {activeCycle?.amountPaid}
+              </span>
+            </div>
+            <div className="flex justify-between text-base pt-1">
+              <span className="font-bold text-gray-700">Remaining Due</span>
+              <span className="font-bold text-red-600">
+                PKR {activeCycle?.amountPending}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── INPUT FIELDS ── */}
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 gap-5">
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+              Amount Paid{" "}
+              <span className="text-gray-400 font-normal">(Optional)</span>
+            </label>
+            <input
+              type="number"
+              min="0"
+              max={maxPayable || undefined}
+              className="w-full border border-gray-300 rounded-lg px-3 h-11 text-base focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+              value={amount}
+              onChange={(e) => {
+                setAmount(e.target.value);
+                setError("");
+              }}
+              placeholder={
+                needsRenewal ? `0 to just renew` : `Max: ${maxPayable}`
+              }
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+              Date <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="date"
+              max={today()}
+              className="w-full border border-gray-300 rounded-lg px-3 h-11 text-base focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+            Note (optional)
+          </label>
+          <input
+            className="w-full border border-gray-300 rounded-lg px-3 h-11 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="e.g. Cash, JazzCash, EasyPaisa..."
+          />
+        </div>
+      </div>
+
+      {error && (
+        <div className="bg-red-50 text-red-600 px-4 py-3 rounded-lg text-sm font-medium">
+          {error}
+        </div>
+      )}
+
+      {/* ── ACTIONS ── */}
+      <div className="flex justify-end gap-3 pt-2">
+        <button
+          onClick={onClose}
+          className="px-6 py-2.5 text-sm font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleSubmit}
+          disabled={saving}
+          className="px-6 py-2.5 text-sm font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 shadow-sm transition-colors"
+        >
+          {saving
+            ? "Processing..."
+            : needsRenewal
+              ? "Renew Cycle"
+              : "Record Payment"}
+        </button>
+      </div>
+    </div>
+  );
+}
 </file>
 
 </files>

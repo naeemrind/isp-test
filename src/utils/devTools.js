@@ -4,7 +4,7 @@ import usePaymentStore from "../store/usePaymentStore";
 import useCustomerStore from "../store/useCustomerStore";
 import useExpenseStore from "../store/useExpenseStore";
 import useInventoryStore from "../store/useInventoryStore";
-import { addDays, today } from "./dateUtils";
+import { addDays, today, CYCLE_LENGTH_DAYS } from "./dateUtils";
 
 export const setupDevTools = () => {
   // 1. List Customers
@@ -34,8 +34,9 @@ export const setupDevTools = () => {
       );
       for (const c of customerCycles) await db.paymentCycles.delete(c.id);
 
+      // Start 10 days ago, each cycle is exactly 30 days inclusive (offset = 29)
       let currentStart = addDays(today(), -10);
-      let currentEnd = addDays(currentStart, 30);
+      let currentEnd = addDays(currentStart, CYCLE_LENGTH_DAYS);
 
       for (let i = 0; i < numCycles; i++) {
         const isCurrent = i === 0;
@@ -61,8 +62,9 @@ export const setupDevTools = () => {
           isRenewal: i > 0,
           createdAt: new Date().toISOString(),
         });
-        currentEnd = currentStart;
-        currentStart = addDays(currentStart, -30);
+        // Walk backwards: previous cycle ends the day before this one starts
+        currentEnd = addDays(currentStart, -1);
+        currentStart = addDays(currentEnd, -CYCLE_LENGTH_DAYS);
       }
       await usePaymentStore.getState().loadCycles();
       console.log(
@@ -90,7 +92,8 @@ export const setupDevTools = () => {
 
         const daysLeft = Math.floor(Math.random() * 10) - 5;
         const endDate = addDays(today(), daysLeft);
-        const startDate = addDays(endDate, -30);
+        // startDate is exactly 30 days inclusive before endDate
+        const startDate = addDays(endDate, -CYCLE_LENGTH_DAYS);
         const isPaid = Math.random() > 0.5;
         const packagePrice = 2000 + Math.floor(Math.random() * 3) * 500;
 
@@ -125,7 +128,7 @@ export const setupDevTools = () => {
     }
   };
 
-  // 4. NEW: Clear All Data
+  // 4. Clear All Data
   window.clearAllData = async () => {
     if (
       !confirm(
@@ -137,19 +140,16 @@ export const setupDevTools = () => {
     console.log("🧹 Wiping database...");
 
     try {
-      // 1. Get all IDs first
       const customers = await db.customers.toArray();
       const cycles = await db.paymentCycles.toArray();
       const expenses = await db.expenses.toArray();
       const inventory = await db.inventory.toArray();
 
-      // 2. Delete them loop-wise (safe for file-based JSON DB)
       for (const c of customers) await db.customers.delete(c.id);
       for (const c of cycles) await db.paymentCycles.delete(c.id);
       for (const e of expenses) await db.expenses.delete(e.id);
       for (const i of inventory) await db.inventory.delete(i.id);
 
-      // 3. Reload all stores to update UI
       await Promise.all([
         useCustomerStore.getState().loadCustomers(),
         usePaymentStore.getState().loadCycles(),

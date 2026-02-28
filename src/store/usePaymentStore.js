@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import db from "../db/database";
-import { addDays } from "../utils/dateUtils";
+// CYCLE_LENGTH_DAYS = 29  →  endDate = startDate + 29 = the 30th inclusive day
+import { addDays, CYCLE_LENGTH_DAYS } from "../utils/dateUtils";
 
 const usePaymentStore = create((set, get) => ({
   cycles: [],
@@ -14,7 +15,8 @@ const usePaymentStore = create((set, get) => ({
     const cycleData = {
       customerId,
       cycleStartDate: startDate,
-      cycleEndDate: addDays(startDate, 30),
+      // Day 1 = startDate, Day 30 = startDate + 29
+      cycleEndDate: addDays(startDate, CYCLE_LENGTH_DAYS),
       totalAmount,
       amountPaid: 0,
       amountPending: totalAmount,
@@ -69,13 +71,13 @@ const usePaymentStore = create((set, get) => ({
       (a, b) => new Date(b.cycleStartDate) - new Date(a.cycleStartDate),
     )[0];
 
-    // FIX: Prevent accidental double renewal on the exact same date
+    // Prevent accidental double renewal on the exact same date
     if (
       activeCycle &&
       activeCycle.cycleStartDate === startDate &&
       activeCycle.isRenewal
     ) {
-      return activeCycle; // Return existing cycle instead of duplicating the math
+      return activeCycle;
     }
 
     let broughtForward = 0;
@@ -103,7 +105,8 @@ const usePaymentStore = create((set, get) => ({
     const cycleData = {
       customerId,
       cycleStartDate: startDate,
-      cycleEndDate: addDays(startDate, 30),
+      // Day 1 = startDate, Day 30 = startDate + 29
+      cycleEndDate: addDays(startDate, CYCLE_LENGTH_DAYS),
       totalAmount,
       amountPaid: 0,
       amountPending: totalAmount,
