@@ -10,10 +10,13 @@ import {
   ArrowDownCircle,
   Clock,
   XCircle,
+  FileText,
+  Printer,
 } from "lucide-react";
 import Badge from "../../components/ui/Badge";
 import WhatsAppButton from "../../components/shared/WhatsAppButton";
 import Modal from "../../components/ui/Modal";
+import InvoiceModal from "../../components/ui/InvoiceModal";
 import { formatDate, daysUntil } from "../../utils/dateUtils";
 import { MESSAGE_TEMPLATES } from "../../config/messageTemplates";
 import usePaymentStore from "../../store/usePaymentStore";
@@ -31,6 +34,8 @@ export default function CustomerTable({
   const packages = usePackageStore((s) => s.packages);
 
   const [historyTarget, setHistoryTarget] = useState(null);
+  // invoiceTarget: { customer, cycle, packageName }
+  const [invoiceTarget, setInvoiceTarget] = useState(null);
 
   const filtered = customers.filter((c) => {
     if (!searchQuery) return true;
@@ -232,6 +237,22 @@ export default function CustomerTable({
                       >
                         <History size={15} />
                       </button>
+                      {/* Invoice button — opens latest cycle's invoice */}
+                      {cycle && (
+                        <button
+                          onClick={() =>
+                            setInvoiceTarget({
+                              customer,
+                              cycle,
+                              packageName: pkg?.name || "—",
+                            })
+                          }
+                          className="flex items-center justify-center w-7 h-7 rounded border bg-white border-gray-300 text-gray-500 hover:bg-purple-50 hover:border-purple-300 hover:text-purple-600 transition-colors"
+                          title="View / Print Latest Invoice"
+                        >
+                          <FileText size={15} />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -264,11 +285,28 @@ export default function CustomerTable({
       >
         {historyTarget && (
           <PaymentHistory
-            customerId={historyTarget.id}
+            customer={historyTarget}
             getCyclesForCustomer={getCyclesForCustomer}
+            packages={packages}
+            onInvoice={(cycle, pkgName) =>
+              setInvoiceTarget({
+                customer: historyTarget,
+                cycle,
+                packageName: pkgName,
+              })
+            }
           />
         )}
       </Modal>
+
+      {/* Invoice Modal */}
+      <InvoiceModal
+        isOpen={!!invoiceTarget}
+        onClose={() => setInvoiceTarget(null)}
+        customer={invoiceTarget?.customer}
+        cycle={invoiceTarget?.cycle}
+        packageName={invoiceTarget?.packageName}
+      />
     </>
   );
 }
@@ -342,8 +380,13 @@ function StatusPill({ statusKey }) {
 
 // ─── PaymentHistory ───────────────────────────────────────────────────────────
 
-function PaymentHistory({ customerId, getCyclesForCustomer }) {
-  const cycles = getCyclesForCustomer(customerId);
+function PaymentHistory({
+  customer,
+  getCyclesForCustomer,
+  packages,
+  onInvoice,
+}) {
+  const cycles = getCyclesForCustomer(customer.id);
 
   if (!cycles || cycles.length === 0) {
     return (
@@ -494,7 +537,23 @@ function PaymentHistory({ customerId, getCyclesForCustomer }) {
                     recorded
                   </p>
                 </div>
-                <StatusPill statusKey={displayStatus} />
+                <div className="flex items-center gap-2 shrink-0">
+                  <StatusPill statusKey={displayStatus} />
+                  <button
+                    onClick={() => {
+                      // Resolve package name for this cycle
+                      const pkgName =
+                        packages?.find(
+                          (p) => String(p.id) === String(customer.packageId),
+                        )?.name || "—";
+                      onInvoice(cycle, pkgName);
+                    }}
+                    className="flex items-center justify-center w-7 h-7 rounded border bg-white border-gray-300 text-gray-400 hover:bg-purple-50 hover:border-purple-300 hover:text-purple-600 transition-colors"
+                    title="View / Print Invoice"
+                  >
+                    <Printer size={13} />
+                  </button>
+                </div>
               </div>
 
               <div className="px-4 py-4 bg-white space-y-4">

@@ -49,6 +49,7 @@ src/components/ui/BackupBanner.jsx
 src/components/ui/Badge.jsx
 src/components/ui/ConfirmDialog.jsx
 src/components/ui/HistoryModal.jsx
+src/components/ui/InvoiceModal.jsx
 src/components/ui/Modal.jsx
 src/config/messageTemplates.js
 src/db/database.js
@@ -78,6 +79,551 @@ vite.config.js
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="src/components/ui/InvoiceModal.jsx">
+// src/components/ui/InvoiceModal.jsx
+
+import { useRef } from "react";
+import { toPng } from "html-to-image";
+import {
+  X,
+  Printer,
+  Wifi,
+  CheckCircle2,
+  AlertCircle,
+  CornerDownRight,
+  ImageDown,
+} from "lucide-react";
+import { formatDate } from "../../utils/dateUtils";
+
+// ── Invoice number ────────────────────────────────────────────────────────────
+function invoiceNumber(cycle) {
+  const year = cycle.cycleStartDate?.slice(0, 4) || new Date().getFullYear();
+  const seq = String(cycle.id).padStart(4, "0");
+  return `INV-${year}-${seq}`;
+}
+
+// ── Scenario detector ─────────────────────────────────────────────────────────
+function getScenario(cycle) {
+  if (!cycle.isRenewal) return "new";
+  if (Number(cycle.previousBalance) > 0) return "renewal_with_dues";
+  return "renewal_clean";
+}
+
+const SCENARIO_LABELS = {
+  new: {
+    label: "New Connection",
+    color: "#1d4ed8",
+    bg: "#eff6ff",
+    border: "#bfdbfe",
+  },
+  renewal_with_dues: {
+    label: "Renewal — Previous Balance Included",
+    color: "#c2410c",
+    bg: "#fff7ed",
+    border: "#fed7aa",
+  },
+  renewal_clean: {
+    label: "Renewal",
+    color: "#15803d",
+    bg: "#f0fdf4",
+    border: "#bbf7d0",
+  },
+};
+
+// ── Print via new tab ────────────────────────────────────────────────────────
+function buildInvoiceHTML({
+  invNo,
+  scenarioMeta,
+  customer,
+  cycle,
+  packageName,
+  packagePrice,
+  previousBalance,
+  totalAmount,
+  amountPaid,
+  amountPending,
+  installments,
+}) {
+  const isPaid = amountPending === 0;
+
+  const installmentRows = installments
+    .map(
+      (inst) => `
+    <tr>
+      <td style="padding:6px 0; color:#374151; font-size:13px;">
+        ${formatDate(inst.datePaid)}${inst.note ? ` · <span style="color:#9ca3af">${inst.note}</span>` : ""}
+      </td>
+      <td style="padding:6px 0; text-align:right; font-weight:600; color:#15803d; font-size:13px;">
+        PKR ${Number(inst.amountPaid).toLocaleString()}
+      </td>
+    </tr>
+  `,
+    )
+    .join("");
+
+  const installmentsSection =
+    installments.length > 0
+      ? `
+    <div style="border:1px solid #e5e7eb; border-radius:10px; overflow:hidden; margin-bottom:16px;">
+      <div style="background:#f9fafb; padding:8px 16px; border-bottom:1px solid #e5e7eb;">
+        <p style="margin:0; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af;">Payments Received</p>
+      </div>
+      <div style="padding:10px 16px;">
+        <table style="width:100%; border-collapse:collapse;">
+          ${installmentRows}
+          <tr style="border-top:1px solid #f3f4f6;">
+            <td style="padding-top:8px; font-weight:600; color:#374151; font-size:13px;">Total Paid</td>
+            <td style="padding-top:8px; text-align:right; font-weight:700; color:#15803d; font-size:13px;">PKR ${amountPaid.toLocaleString()}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  `
+      : "";
+
+  const statusBar = isPaid
+    ? `
+    <div style="display:flex; align-items:center; gap:12px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:10px; padding:12px 16px;">
+      <div style="font-size:20px;">✅</div>
+      <div>
+        <p style="margin:0; font-weight:700; color:#166534; font-size:14px;">Paid in Full</p>
+        <p style="margin:2px 0 0; color:#16a34a; font-size:12px;">No outstanding balance. Thank you!</p>
+      </div>
+    </div>
+  `
+    : `
+    <div style="display:flex; align-items:center; justify-content:space-between; background:#fef2f2; border:1px solid #fecaca; border-radius:10px; padding:12px 16px;">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <div style="font-size:20px;">⚠️</div>
+        <div>
+          <p style="margin:0; font-weight:700; color:#991b1b; font-size:14px;">Balance Due</p>
+          <p style="margin:2px 0 0; color:#dc2626; font-size:12px;">Please pay at your earliest convenience.</p>
+        </div>
+      </div>
+      <p style="margin:0; font-weight:900; color:#b91c1c; font-size:20px;">PKR ${amountPending.toLocaleString()}</p>
+    </div>
+  `;
+
+  const prevBalanceRow =
+    previousBalance > 0
+      ? `
+    <tr>
+      <td style="padding:5px 0; color:#c2410c; font-size:13px;">↩ Previous unpaid balance</td>
+      <td style="padding:5px 0; text-align:right; font-weight:600; color:#c2410c; font-size:13px;">+ PKR ${previousBalance.toLocaleString()}</td>
+    </tr>
+  `
+      : "";
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8"/>
+  <title>Invoice ${invNo}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #1f2937; background: #fff; padding: 24px; font-size: 14px; }
+    @page { margin: 12mm; }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; padding-bottom:16px; border-bottom:2px solid #1f2937; margin-bottom:20px;">
+    <div>
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+        <span style="font-size:22px;">📡</span>
+        <span style="font-size:22px; font-weight:900; letter-spacing:-0.5px;">Galaxy ISP</span>
+      </div>
+      <p style="color:#6b7280; font-size:12px;">Internet Service Provider</p>
+    </div>
+    <div style="text-align:right;">
+      <p style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:#9ca3af; margin-bottom:2px;">Invoice</p>
+      <p style="font-size:17px; font-weight:900;">${invNo}</p>
+      <p style="font-size:12px; color:#6b7280; margin-top:2px;">Issued: ${formatDate(cycle.cycleStartDate)}</p>
+    </div>
+  </div>
+
+  <!-- Scenario badge -->
+  <div style="display:inline-flex; align-items:center; gap:6px; background:${scenarioMeta.bg}; border:1px solid ${scenarioMeta.border}; border-radius:8px; padding:6px 12px; margin-bottom:20px;">
+    <span style="font-size:11px; font-weight:700; color:${scenarioMeta.color};">${scenarioMeta.label}</span>
+  </div>
+
+  <!-- Customer info -->
+  <table style="width:100%; border-collapse:collapse; margin-bottom:20px;">
+    <tr>
+      <td style="width:50%; vertical-align:top; padding-bottom:12px;">
+        <p style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af; margin-bottom:3px;">Customer</p>
+        <p style="font-size:15px; font-weight:700; color:#111827;">${customer.fullName}</p>
+        <p style="font-size:12px; color:#6b7280;">${customer.userName}</p>
+      </td>
+      <td style="width:50%; vertical-align:top; padding-bottom:12px;">
+        <p style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af; margin-bottom:3px;">Contact</p>
+        <p style="font-size:13px; color:#374151;">${customer.mobileNo || "—"}</p>
+        <p style="font-size:12px; color:#6b7280;">${customer.mainArea || "—"}</p>
+      </td>
+    </tr>
+    <tr>
+      <td style="vertical-align:top;">
+        <p style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af; margin-bottom:3px;">Package</p>
+        <p style="font-size:13px; font-weight:600; color:#374151;">${packageName || "—"}</p>
+      </td>
+      <td style="vertical-align:top;">
+        <p style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af; margin-bottom:3px;">Billing Period</p>
+        <p style="font-size:13px; color:#374151;">${formatDate(cycle.cycleStartDate)} → ${formatDate(cycle.cycleEndDate)}</p>
+      </td>
+    </tr>
+  </table>
+
+  <!-- Billing breakdown -->
+  <div style="border:1px solid #e5e7eb; border-radius:10px; overflow:hidden; margin-bottom:16px;">
+    <div style="background:#f9fafb; padding:8px 16px; border-bottom:1px solid #e5e7eb;">
+      <p style="margin:0; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af;">Billing Breakdown</p>
+    </div>
+    <div style="padding:10px 16px;">
+      <table style="width:100%; border-collapse:collapse;">
+        <tr>
+          <td style="padding:5px 0; color:#4b5563; font-size:13px;">Package charge (${packageName})</td>
+          <td style="padding:5px 0; text-align:right; font-weight:600; color:#1f2937; font-size:13px;">PKR ${packagePrice.toLocaleString()}</td>
+        </tr>
+        ${prevBalanceRow}
+        <tr style="border-top:1px solid #e5e7eb;">
+          <td style="padding-top:10px; font-weight:700; color:#1f2937; font-size:14px;">Total Due</td>
+          <td style="padding-top:10px; text-align:right; font-weight:900; color:#111827; font-size:16px;">PKR ${totalAmount.toLocaleString()}</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  ${installmentsSection}
+  ${statusBar}
+
+  <!-- Footer -->
+  <div style="margin-top:28px; padding-top:12px; border-top:1px solid #e5e7eb; text-align:center;">
+    <p style="font-size:10px; color:#9ca3af;">Galaxy ISP · Thank you for your business</p>
+    <p style="font-size:10px; color:#d1d5db; margin-top:3px;">This is a computer-generated invoice — no signature required.</p>
+  </div>
+
+</body>
+</html>`;
+}
+
+function printInvoice(htmlString) {
+  const tab = window.open("", "_blank");
+  if (!tab) {
+    alert("Please allow pop-ups for this site to enable printing.");
+    return;
+  }
+  tab.document.open();
+  tab.document.write(htmlString);
+  tab.document.close();
+  tab.onload = () => {
+    tab.focus();
+    tab.print();
+    tab.onafterprint = () => tab.close();
+  };
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+export default function InvoiceModal({
+  isOpen,
+  onClose,
+  customer,
+  cycle,
+  packageName,
+}) {
+  const invoiceRef = useRef(null);
+
+  if (!isOpen || !customer || !cycle) return null;
+
+  const scenario = getScenario(cycle);
+  const scenarioMeta = SCENARIO_LABELS[scenario];
+  const invNo = invoiceNumber(cycle);
+
+  const packagePrice =
+    Number(cycle.totalAmount) - Number(cycle.previousBalance || 0);
+  const previousBalance = Number(cycle.previousBalance || 0);
+  const totalAmount = Number(cycle.totalAmount);
+  const amountPaid = Number(cycle.amountPaid || 0);
+  const amountPending = Number(cycle.amountPending || 0);
+  const installments = cycle.installments || [];
+  const isPaid = amountPending === 0;
+
+  const invoiceProps = {
+    invNo,
+    scenarioMeta,
+    customer,
+    cycle,
+    packageName,
+    packagePrice,
+    previousBalance,
+    totalAmount,
+    amountPaid,
+    amountPending,
+    installments,
+  };
+
+  const handlePrint = () => {
+    const html = buildInvoiceHTML(invoiceProps);
+    printInvoice(html);
+  };
+
+  const handleSavePng = () => {
+    toPng(invoiceRef.current, { pixelRatio: 3 }).then((dataUrl) => {
+      const link = document.createElement("a");
+      link.download = `${invNo}.png`;
+      link.href = dataUrl;
+      link.click();
+    });
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4 max-h-[92vh] flex flex-col">
+        {/* Modal header */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200 shrink-0">
+          <h2 className="text-sm font-semibold text-gray-700">
+            Invoice Preview
+          </h2>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleSavePng}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+            >
+              <ImageDown size={13} />
+              Save PNG
+            </button>
+            <button
+              onClick={handlePrint}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              <Printer size={13} />
+              Print / Save PDF
+            </button>
+            <button
+              onClick={onClose}
+              className="text-gray-400 hover:text-gray-600 p-1 rounded"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+
+        {/* Scrollable invoice preview */}
+        <div className="overflow-y-auto flex-1 p-5">
+          <div
+            ref={invoiceRef}
+            className="bg-white p-6 font-sans text-gray-800 text-sm"
+          >
+            {/* Header */}
+            <div className="flex items-start justify-between mb-5 pb-4 border-b-2 border-gray-800">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <Wifi size={20} className="text-blue-600" />
+                  <span className="text-xl font-black text-gray-900 tracking-tight">
+                    Galaxy ISP
+                  </span>
+                </div>
+                <p className="text-xs text-gray-500">
+                  Internet Service Provider
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-widest mb-0.5">
+                  Invoice
+                </p>
+                <p className="text-base font-black text-gray-900">{invNo}</p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Issued: {formatDate(cycle.cycleStartDate)}
+                </p>
+              </div>
+            </div>
+
+            {/* Scenario badge */}
+            <div
+              className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 mb-4 border text-xs font-semibold"
+              style={{
+                background: scenarioMeta.bg,
+                borderColor: scenarioMeta.border,
+                color: scenarioMeta.color,
+              }}
+            >
+              {scenario === "new" && <Wifi size={12} />}
+              {scenario === "renewal_clean" && <CheckCircle2 size={12} />}
+              {scenario === "renewal_with_dues" && (
+                <CornerDownRight size={12} />
+              )}
+              {scenarioMeta.label}
+            </div>
+
+            {/* Customer info */}
+            <div className="grid grid-cols-2 gap-x-6 gap-y-3 mb-5 text-xs">
+              <div>
+                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-0.5">
+                  Customer
+                </p>
+                <p className="font-bold text-gray-900 text-sm">
+                  {customer.fullName}
+                </p>
+                <p className="text-gray-500">{customer.userName}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-0.5">
+                  Contact
+                </p>
+                <p className="text-gray-700">{customer.mobileNo || "—"}</p>
+                <p className="text-gray-500">{customer.mainArea || "—"}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-0.5">
+                  Package
+                </p>
+                <p className="text-gray-700 font-medium">
+                  {packageName || "—"}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-0.5">
+                  Billing Period
+                </p>
+                <p className="text-gray-700">
+                  {formatDate(cycle.cycleStartDate)} →{" "}
+                  {formatDate(cycle.cycleEndDate)}
+                </p>
+              </div>
+            </div>
+
+            {/* Billing breakdown */}
+            <div className="border border-gray-200 rounded-xl overflow-hidden mb-4">
+              <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-widest">
+                  Billing Breakdown
+                </p>
+              </div>
+              <div className="px-4 py-3 space-y-2">
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-gray-600">
+                    Package charge ({packageName})
+                  </span>
+                  <span className="font-semibold text-gray-800">
+                    PKR {packagePrice.toLocaleString()}
+                  </span>
+                </div>
+                {previousBalance > 0 && (
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-orange-600 flex items-center gap-1.5">
+                      <CornerDownRight size={12} /> Previous unpaid balance
+                    </span>
+                    <span className="font-semibold text-orange-700">
+                      + PKR {previousBalance.toLocaleString()}
+                    </span>
+                  </div>
+                )}
+                <div className="border-t border-gray-200 pt-2 flex justify-between items-center">
+                  <span className="font-bold text-gray-800">Total Due</span>
+                  <span className="font-black text-gray-900 text-base">
+                    PKR {totalAmount.toLocaleString()}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Payments received */}
+            {installments.length > 0 && (
+              <div className="border border-gray-200 rounded-xl overflow-hidden mb-4">
+                <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                  <p className="text-[10px] font-bold uppercase text-gray-400 tracking-widest">
+                    Payments Received
+                  </p>
+                </div>
+                <div className="px-4 py-3 space-y-2">
+                  {installments.map((inst, i) => (
+                    <div
+                      key={inst.id || i}
+                      className="flex justify-between items-center text-sm"
+                    >
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2
+                          size={13}
+                          className="text-green-500 shrink-0"
+                        />
+                        <span className="text-gray-600">
+                          {formatDate(inst.datePaid)}
+                          {inst.note && (
+                            <span className="text-gray-400 ml-1">
+                              · {inst.note}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <span className="font-semibold text-green-700">
+                        PKR {Number(inst.amountPaid).toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+                  <div className="border-t border-gray-100 pt-2 flex justify-between text-sm">
+                    <span className="font-semibold text-gray-700">
+                      Total Paid
+                    </span>
+                    <span className="font-bold text-green-700">
+                      PKR {amountPaid.toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Status */}
+            {isPaid ? (
+              <div className="flex items-center gap-3 bg-green-50 border border-green-200 rounded-xl px-4 py-3">
+                <CheckCircle2 size={20} className="text-green-600 shrink-0" />
+                <div>
+                  <p className="font-bold text-green-800 text-sm">
+                    Paid in Full
+                  </p>
+                  <p className="text-xs text-green-600">
+                    No outstanding balance. Thank you!
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between bg-red-50 border border-red-200 rounded-xl px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <AlertCircle size={20} className="text-red-500 shrink-0" />
+                  <div>
+                    <p className="font-bold text-red-800 text-sm">
+                      Balance Due
+                    </p>
+                    <p className="text-xs text-red-600">
+                      Please pay at your earliest convenience.
+                    </p>
+                  </div>
+                </div>
+                <p className="font-black text-red-700 text-lg">
+                  PKR {amountPending.toLocaleString()}
+                </p>
+              </div>
+            )}
+
+            {/* Footer */}
+            <div className="mt-5 pt-3 border-t border-gray-200 text-center text-[10px] text-gray-400">
+              <p>Galaxy ISP · Thank you for your business</p>
+              <p className="mt-0.5">
+                This is a computer-generated invoice — no signature required.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
 
 <file path="eslint.config.js">
 import js from '@eslint/js'
@@ -2325,232 +2871,6 @@ export const getLastBackupDate = async () => {
 };
 </file>
 
-<file path="src/utils/dateUtils.js">
-// src/utils/dateUtils.js
-
-// Add N days to a date string, returns YYYY-MM-DD
-export const addDays = (dateStr, days) => {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  const date = new Date(y, m - 1, d + days);
-  const yy = date.getFullYear();
-  const mm = String(date.getMonth() + 1).padStart(2, "0");
-  const dd = String(date.getDate()).padStart(2, "0");
-  return `${yy}-${mm}-${dd}`;
-};
-
-// Format date to Pakistani Standard: "27-Feb-2026"
-export const formatDate = (dateStr) => {
-  if (!dateStr) return "-";
-  const [y, m, d] = dateStr.split("T")[0].split("-").map(Number);
-  const date = new Date(y, m - 1, d);
-  if (isNaN(date)) return "-";
-
-  // 'en-PK' usually gives DD/MM/YYYY, but we force "27-Feb-2026" for clarity
-  return date
-    .toLocaleDateString("en-PK", {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-    })
-    .replace(/\//g, "-");
-};
-
-// Today's date as YYYY-MM-DD
-export const today = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-};
-
-// Days difference (Midnight to Midnight)
-export const daysUntil = (dateStr) => {
-  if (!dateStr) return 0;
-  const raw = dateStr.split("T")[0];
-  const [y, m, d] = raw.split("-").map(Number);
-
-  const target = new Date(y, m - 1, d); // Target Midnight
-  const now = new Date();
-  now.setHours(0, 0, 0, 0); // Current Midnight
-
-  // Calculate strict day difference
-  return Math.round((target - now) / (1000 * 60 * 60 * 24));
-};
-
-// Check if a cycle is within grace period (1-7 days overdue)
-export const daysSince = (dateStr) => -daysUntil(dateStr);
-</file>
-
-<file path="src/utils/devTools.js">
-// src/utils/devTools.js
-import db from "../db/database";
-import usePaymentStore from "../store/usePaymentStore";
-import useCustomerStore from "../store/useCustomerStore";
-import useExpenseStore from "../store/useExpenseStore";
-import useInventoryStore from "../store/useInventoryStore";
-import { addDays, today } from "./dateUtils";
-
-export const setupDevTools = () => {
-  // 1. List Customers
-  window.listCustomers = () => {
-    const customers = useCustomerStore.getState().customers;
-    console.table(
-      customers.map((c) => ({
-        ID: c.id,
-        Name: c.fullName,
-        Username: c.userName,
-        Status: c.status,
-      })),
-    );
-  };
-
-  // 2. Generate History for ONE customer
-  window.generateTestCycles = async (
-    customerId,
-    packagePrice = 2500,
-    numCycles = 10,
-  ) => {
-    if (!customerId) return console.error("❌ Please provide a customerId.");
-    try {
-      const allCycles = await db.paymentCycles.toArray();
-      const customerCycles = allCycles.filter(
-        (c) => Number(c.customerId) === Number(customerId),
-      );
-      for (const c of customerCycles) await db.paymentCycles.delete(c.id);
-
-      let currentStart = addDays(today(), -10);
-      let currentEnd = addDays(currentStart, 30);
-
-      for (let i = 0; i < numCycles; i++) {
-        const isCurrent = i === 0;
-        await db.paymentCycles.add({
-          customerId: Number(customerId),
-          cycleStartDate: currentStart,
-          cycleEndDate: currentEnd,
-          totalAmount: packagePrice,
-          amountPaid: isCurrent ? 0 : packagePrice,
-          amountPending: isCurrent ? packagePrice : 0,
-          status: isCurrent ? "pending" : "clear",
-          installments: isCurrent
-            ? []
-            : [
-                {
-                  id: crypto.randomUUID(),
-                  amountPaid: packagePrice,
-                  datePaid: currentStart,
-                  note: `Auto-payment (Test Data - Month ${i})`,
-                  createdAt: new Date().toISOString(),
-                },
-              ],
-          isRenewal: i > 0,
-          createdAt: new Date().toISOString(),
-        });
-        currentEnd = currentStart;
-        currentStart = addDays(currentStart, -30);
-      }
-      await usePaymentStore.getState().loadCycles();
-      console.log(
-        `✅ Added ${numCycles} historical cycles for customer ID: ${customerId}`,
-      );
-    } catch (error) {
-      console.error("❌ Failed:", error);
-    }
-  };
-
-  // 3. Generate Bulk Dummy Data
-  window.generateNeedsAttentionData = async (count = 15) => {
-    console.log(`⏳ Generating ${count} dummy customers...`);
-    try {
-      for (let i = 1; i <= count; i++) {
-        const customerId = await db.customers.add({
-          fullName: `Urgent Tester ${i}`,
-          userName: `urg_${Date.now()}_${i}`,
-          mobileNo: `0300${String(i).padStart(7, "0")}`,
-          mainArea: "Test Area",
-          packageId: null,
-          status: "active",
-          createdAt: new Date().toISOString(),
-        });
-
-        const daysLeft = Math.floor(Math.random() * 10) - 5;
-        const endDate = addDays(today(), daysLeft);
-        const startDate = addDays(endDate, -30);
-        const isPaid = Math.random() > 0.5;
-        const packagePrice = 2000 + Math.floor(Math.random() * 3) * 500;
-
-        await db.paymentCycles.add({
-          customerId: Number(customerId),
-          cycleStartDate: startDate,
-          cycleEndDate: endDate,
-          totalAmount: packagePrice,
-          amountPaid: isPaid ? packagePrice : 0,
-          amountPending: isPaid ? 0 : packagePrice,
-          status: isPaid ? "clear" : "pending",
-          installments: isPaid
-            ? [
-                {
-                  id: crypto.randomUUID(),
-                  amountPaid: packagePrice,
-                  datePaid: startDate,
-                  note: "Paid dummy",
-                  createdAt: new Date().toISOString(),
-                },
-              ]
-            : [],
-          isRenewal: false,
-          createdAt: new Date().toISOString(),
-        });
-      }
-      await useCustomerStore.getState().loadCustomers();
-      await usePaymentStore.getState().loadCycles();
-      console.log(`✅ Success! Generated ${count} customers.`);
-    } catch (error) {
-      console.error("❌ Failed:", error);
-    }
-  };
-
-  // 4. NEW: Clear All Data
-  window.clearAllData = async () => {
-    if (
-      !confirm(
-        "⚠️ ARE YOU SURE? This will delete ALL customers, payments, inventory, and expenses. Settings (Packages/Areas) will be kept.",
-      )
-    )
-      return;
-
-    console.log("🧹 Wiping database...");
-
-    try {
-      // 1. Get all IDs first
-      const customers = await db.customers.toArray();
-      const cycles = await db.paymentCycles.toArray();
-      const expenses = await db.expenses.toArray();
-      const inventory = await db.inventory.toArray();
-
-      // 2. Delete them loop-wise (safe for file-based JSON DB)
-      for (const c of customers) await db.customers.delete(c.id);
-      for (const c of cycles) await db.paymentCycles.delete(c.id);
-      for (const e of expenses) await db.expenses.delete(e.id);
-      for (const i of inventory) await db.inventory.delete(i.id);
-
-      // 3. Reload all stores to update UI
-      await Promise.all([
-        useCustomerStore.getState().loadCustomers(),
-        usePaymentStore.getState().loadCycles(),
-        useExpenseStore.getState().loadExpenses(),
-        useInventoryStore.getState().loadInventory(),
-      ]);
-
-      console.log("✨ All data cleared. App is fresh.");
-    } catch (err) {
-      console.error("Error clearing data:", err);
-    }
-  };
-
-  console.log("🛠️ DevTools Ready:");
-  console.log("👉 window.generateNeedsAttentionData(15) -> Add Dummy Data");
-  console.log("👉 window.clearAllData() -> DELETE ALL DATA");
-};
-</file>
-
 <file path="src/utils/duplicateCheck.js">
 import db from "../db/database";
 
@@ -3512,149 +3832,266 @@ function Field({ label, error, children }) {
 }
 </file>
 
-<file path="src/store/usePaymentStore.js">
-import { create } from "zustand";
+<file path="src/utils/dateUtils.js">
+// src/utils/dateUtils.js
+
+// ─── Core constant ────────────────────────────────────────────────────────────
+// A billing cycle is exactly 30 days inclusive of both start and end date.
+// That means: endDate = startDate + 29 days.
+//
+// Why 29 and not 30?
+//   Day 1  = startDate         (e.g. 28-Feb)
+//   Day 30 = startDate + 29    (e.g. 29-Mar)
+//   startDate + 30 would be Day 31 — one day too many.
+//
+// This constant is used by the payment store wherever it creates cycles.
+// Never hard-code 29 or 30 directly — always use this.
+export const CYCLE_LENGTH_DAYS = 29; // offset to add to startDate to get endDate
+
+// ─── addDays ─────────────────────────────────────────────────────────────────
+// Adds `days` to a YYYY-MM-DD string and returns a new YYYY-MM-DD string.
+//
+// Implementation notes:
+//   • We parse year/month/day manually to avoid any timezone shifting that
+//     `new Date(dateStr)` can cause (it parses ISO strings as UTC midnight,
+//     but `new Date(y, m, d)` uses LOCAL midnight — mixing the two is a bug).
+//   • We always construct dates with `new Date(y, m - 1, d)` (local).
+//   • JavaScript's Date handles month/year rollovers automatically:
+//       new Date(2026, 1, 28 + 1) → 1 Mar 2026  ✓  (Feb has 28 days in 2026)
+//       new Date(2024, 1, 28 + 1) → 29 Feb 2024 ✓  (2024 is a leap year)
+//       new Date(2026, 11, 31 + 1)→ 1 Jan 2027  ✓  (Dec → Jan rollover)
+//   • `days` may be negative (used for "go back N days").
+export const addDays = (dateStr, days) => {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const date = new Date(y, m - 1, d + days); // JS handles overflow/underflow
+  return _toYMD(date);
+};
+
+// ─── formatDate ──────────────────────────────────────────────────────────────
+// Returns a human-readable date like "27-Feb-2026".
+// Always parses as local midnight (y, m-1, d) to avoid UTC-offset surprises.
+export const formatDate = (dateStr) => {
+  if (!dateStr) return "-";
+  const raw = dateStr.split("T")[0]; // strip any time component
+  const [y, m, d] = raw.split("-").map(Number);
+  if (!y || !m || !d) return "-";
+  const date = new Date(y, m - 1, d);
+  if (isNaN(date.getTime())) return "-";
+  return date
+    .toLocaleDateString("en-PK", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    })
+    .replace(/\//g, "-");
+};
+
+// ─── today ───────────────────────────────────────────────────────────────────
+// Returns today's local date as YYYY-MM-DD.
+// Uses local getFullYear/getMonth/getDate — never UTC — so it matches the
+// machine's wall-clock date regardless of timezone.
+export const today = () => {
+  return _toYMD(new Date());
+};
+
+// ─── daysUntil ───────────────────────────────────────────────────────────────
+// Returns how many days from today until `dateStr` (negative = past).
+// Both dates are normalised to local midnight so partial-day offsets don't
+// affect the result.
+export const daysUntil = (dateStr) => {
+  if (!dateStr) return 0;
+  const raw = dateStr.split("T")[0];
+  const [y, m, d] = raw.split("-").map(Number);
+  const target = new Date(y, m - 1, d); // local midnight on target date
+  const now = new Date();
+  now.setHours(0, 0, 0, 0); // local midnight today
+  return Math.round((target - now) / (1000 * 60 * 60 * 24));
+};
+
+// ─── daysSince ───────────────────────────────────────────────────────────────
+// Inverse of daysUntil: positive = date is in the past.
+export const daysSince = (dateStr) => -daysUntil(dateStr);
+
+// ─── Internal helper ──────────────────────────────────────────────────────────
+// Converts a local Date object to a zero-padded YYYY-MM-DD string.
+function _toYMD(date) {
+  const yy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+}
+</file>
+
+<file path="src/utils/devTools.js">
+// src/utils/devTools.js
 import db from "../db/database";
-import { addDays } from "../utils/dateUtils";
+import usePaymentStore from "../store/usePaymentStore";
+import useCustomerStore from "../store/useCustomerStore";
+import useExpenseStore from "../store/useExpenseStore";
+import useInventoryStore from "../store/useInventoryStore";
+import { addDays, today, CYCLE_LENGTH_DAYS } from "./dateUtils";
 
-const usePaymentStore = create((set, get) => ({
-  cycles: [],
-
-  loadCycles: async () => {
-    const cycles = await db.paymentCycles.toArray();
-    set({ cycles });
-  },
-
-  createInitialCycle: async (customerId, startDate, totalAmount) => {
-    const cycleData = {
-      customerId,
-      cycleStartDate: startDate,
-      cycleEndDate: addDays(startDate, 30),
-      totalAmount,
-      amountPaid: 0,
-      amountPending: totalAmount,
-      status: "pending",
-      installments: [],
-      createdAt: new Date().toISOString(),
-    };
-    const id = await db.paymentCycles.add(cycleData);
-    const cycle = await db.paymentCycles.get(id);
-    set((s) => ({ cycles: [...s.cycles, cycle] }));
-    return cycle;
-  },
-
-  addInstallment: async (cycleId, amountPaid, datePaid, note = "") => {
-    const cycle = await db.paymentCycles.get(cycleId);
-    if (!cycle) throw new Error("Cycle not found");
-
-    const installment = {
-      id: crypto.randomUUID(),
-      amountPaid: Number(amountPaid),
-      datePaid,
-      note,
-      createdAt: new Date().toISOString(),
-    };
-
-    const updatedInstallments = [...(cycle.installments || []), installment];
-    const totalPaid = updatedInstallments.reduce(
-      (sum, i) => sum + i.amountPaid,
-      0,
+export const setupDevTools = () => {
+  // 1. List Customers
+  window.listCustomers = () => {
+    const customers = useCustomerStore.getState().customers;
+    console.table(
+      customers.map((c) => ({
+        ID: c.id,
+        Name: c.fullName,
+        Username: c.userName,
+        Status: c.status,
+      })),
     );
-    const amountPending = Math.max(0, cycle.totalAmount - totalPaid);
-    const status = amountPending === 0 ? "clear" : "pending";
+  };
 
-    const updates = {
-      installments: updatedInstallments,
-      amountPaid: totalPaid,
-      amountPending,
-      status,
-    };
+  // 2. Generate History for ONE customer
+  window.generateTestCycles = async (
+    customerId,
+    packagePrice = 2500,
+    numCycles = 10,
+  ) => {
+    if (!customerId) return console.error("❌ Please provide a customerId.");
+    try {
+      const allCycles = await db.paymentCycles.toArray();
+      const customerCycles = allCycles.filter(
+        (c) => Number(c.customerId) === Number(customerId),
+      );
+      for (const c of customerCycles) await db.paymentCycles.delete(c.id);
 
-    await db.paymentCycles.update(cycleId, updates);
-    set((s) => ({
-      cycles: s.cycles.map((c) =>
-        c.id === cycleId ? { ...c, ...updates } : c,
-      ),
-    }));
-  },
+      // Start 10 days ago, each cycle is exactly 30 days inclusive (offset = 29)
+      let currentStart = addDays(today(), -10);
+      let currentEnd = addDays(currentStart, CYCLE_LENGTH_DAYS);
 
-  renewCycle: async (customerId, startDate, packagePrice) => {
-    const allCycles = get().cycles.filter((c) => c.customerId === customerId);
-    const activeCycle = allCycles.sort(
-      (a, b) => new Date(b.cycleStartDate) - new Date(a.cycleStartDate),
-    )[0];
+      for (let i = 0; i < numCycles; i++) {
+        const isCurrent = i === 0;
+        await db.paymentCycles.add({
+          customerId: Number(customerId),
+          cycleStartDate: currentStart,
+          cycleEndDate: currentEnd,
+          totalAmount: packagePrice,
+          amountPaid: isCurrent ? 0 : packagePrice,
+          amountPending: isCurrent ? packagePrice : 0,
+          status: isCurrent ? "pending" : "clear",
+          installments: isCurrent
+            ? []
+            : [
+                {
+                  id: crypto.randomUUID(),
+                  amountPaid: packagePrice,
+                  datePaid: currentStart,
+                  note: `Auto-payment (Test Data - Month ${i})`,
+                  createdAt: new Date().toISOString(),
+                },
+              ],
+          isRenewal: i > 0,
+          createdAt: new Date().toISOString(),
+        });
+        // Walk backwards: previous cycle ends the day before this one starts
+        currentEnd = addDays(currentStart, -1);
+        currentStart = addDays(currentEnd, -CYCLE_LENGTH_DAYS);
+      }
+      await usePaymentStore.getState().loadCycles();
+      console.log(
+        `✅ Added ${numCycles} historical cycles for customer ID: ${customerId}`,
+      );
+    } catch (error) {
+      console.error("❌ Failed:", error);
+    }
+  };
 
-    // FIX: Prevent accidental double renewal on the exact same date
+  // 3. Generate Bulk Dummy Data
+  window.generateNeedsAttentionData = async (count = 15) => {
+    console.log(`⏳ Generating ${count} dummy customers...`);
+    try {
+      for (let i = 1; i <= count; i++) {
+        const customerId = await db.customers.add({
+          fullName: `Urgent Tester ${i}`,
+          userName: `urg_${Date.now()}_${i}`,
+          mobileNo: `0300${String(i).padStart(7, "0")}`,
+          mainArea: "Test Area",
+          packageId: null,
+          status: "active",
+          createdAt: new Date().toISOString(),
+        });
+
+        const daysLeft = Math.floor(Math.random() * 10) - 5;
+        const endDate = addDays(today(), daysLeft);
+        // startDate is exactly 30 days inclusive before endDate
+        const startDate = addDays(endDate, -CYCLE_LENGTH_DAYS);
+        const isPaid = Math.random() > 0.5;
+        const packagePrice = 2000 + Math.floor(Math.random() * 3) * 500;
+
+        await db.paymentCycles.add({
+          customerId: Number(customerId),
+          cycleStartDate: startDate,
+          cycleEndDate: endDate,
+          totalAmount: packagePrice,
+          amountPaid: isPaid ? packagePrice : 0,
+          amountPending: isPaid ? 0 : packagePrice,
+          status: isPaid ? "clear" : "pending",
+          installments: isPaid
+            ? [
+                {
+                  id: crypto.randomUUID(),
+                  amountPaid: packagePrice,
+                  datePaid: startDate,
+                  note: "Paid dummy",
+                  createdAt: new Date().toISOString(),
+                },
+              ]
+            : [],
+          isRenewal: false,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      await useCustomerStore.getState().loadCustomers();
+      await usePaymentStore.getState().loadCycles();
+      console.log(`✅ Success! Generated ${count} customers.`);
+    } catch (error) {
+      console.error("❌ Failed:", error);
+    }
+  };
+
+  // 4. Clear All Data
+  window.clearAllData = async () => {
     if (
-      activeCycle &&
-      activeCycle.cycleStartDate === startDate &&
-      activeCycle.isRenewal
-    ) {
-      return activeCycle; // Return existing cycle instead of duplicating the math
+      !confirm(
+        "⚠️ ARE YOU SURE? This will delete ALL customers, payments, inventory, and expenses. Settings (Packages/Areas) will be kept.",
+      )
+    )
+      return;
+
+    console.log("🧹 Wiping database...");
+
+    try {
+      const customers = await db.customers.toArray();
+      const cycles = await db.paymentCycles.toArray();
+      const expenses = await db.expenses.toArray();
+      const inventory = await db.inventory.toArray();
+
+      for (const c of customers) await db.customers.delete(c.id);
+      for (const c of cycles) await db.paymentCycles.delete(c.id);
+      for (const e of expenses) await db.expenses.delete(e.id);
+      for (const i of inventory) await db.inventory.delete(i.id);
+
+      await Promise.all([
+        useCustomerStore.getState().loadCustomers(),
+        usePaymentStore.getState().loadCycles(),
+        useExpenseStore.getState().loadExpenses(),
+        useInventoryStore.getState().loadInventory(),
+      ]);
+
+      console.log("✨ All data cleared. App is fresh.");
+    } catch (err) {
+      console.error("Error clearing data:", err);
     }
+  };
 
-    let broughtForward = 0;
-
-    if (activeCycle && activeCycle.amountPending > 0) {
-      broughtForward = activeCycle.amountPending;
-
-      const updates = {
-        amountPending: 0,
-        status: "clear",
-        shiftedAmount: broughtForward,
-      };
-
-      await db.paymentCycles.update(activeCycle.id, updates);
-
-      set((s) => ({
-        cycles: s.cycles.map((c) =>
-          c.id === activeCycle.id ? { ...c, ...updates } : c,
-        ),
-      }));
-    }
-
-    const totalAmount = packagePrice + broughtForward;
-
-    const cycleData = {
-      customerId,
-      cycleStartDate: startDate,
-      cycleEndDate: addDays(startDate, 30),
-      totalAmount,
-      amountPaid: 0,
-      amountPending: totalAmount,
-      status: "pending",
-      installments: [],
-      isRenewal: true,
-      previousBalance: broughtForward,
-      createdAt: new Date().toISOString(),
-    };
-
-    const id = await db.paymentCycles.add(cycleData);
-    const cycle = await db.paymentCycles.get(id);
-    set((s) => ({ cycles: [...s.cycles, cycle] }));
-    return cycle;
-  },
-
-  getActiveCycle: (customerId) => {
-    const all = get()
-      .cycles.filter((c) => c.customerId === customerId)
-      .sort((a, b) => new Date(b.cycleStartDate) - new Date(a.cycleStartDate));
-    return all[0] || null;
-  },
-
-  getCyclesForCustomer: (customerId) => {
-    return get()
-      .cycles.filter((c) => c.customerId === customerId)
-      .sort((a, b) => new Date(b.cycleStartDate) - new Date(a.cycleStartDate));
-  },
-
-  deleteCycle: async (cycleId) => {
-    await db.paymentCycles.delete(cycleId);
-    set((s) => ({ cycles: s.cycles.filter((c) => c.id !== cycleId) }));
-  },
-}));
-
-export default usePaymentStore;
+  console.log("🛠️ DevTools Ready:");
+  console.log("👉 window.generateNeedsAttentionData(15) -> Add Dummy Data");
+  console.log("👉 window.clearAllData() -> DELETE ALL DATA");
+};
 </file>
 
 <file path="src/App.jsx">
@@ -4360,369 +4797,6 @@ export default function Customers({ initialFilter }) {
         requirePassword
         danger
       />
-    </div>
-  );
-}
-</file>
-
-<file path="src/pages/Customers/CustomerTable.jsx">
-import { useState } from "react";
-import {
-  Pencil,
-  Trash2,
-  CreditCard,
-  History,
-  CornerDownRight,
-  AlertCircle,
-} from "lucide-react";
-import Badge from "../../components/ui/Badge";
-import WhatsAppButton from "../../components/shared/WhatsAppButton";
-import Modal from "../../components/ui/Modal";
-import { formatDate, daysUntil } from "../../utils/dateUtils";
-import { MESSAGE_TEMPLATES } from "../../config/messageTemplates";
-import usePaymentStore from "../../store/usePaymentStore";
-import usePackageStore from "../../store/usePackageStore";
-
-export default function CustomerTable({
-  customers,
-  onEdit,
-  onPay,
-  onDelete,
-  searchQuery,
-}) {
-  const getActiveCycle = usePaymentStore((s) => s.getActiveCycle);
-  const getCyclesForCustomer = usePaymentStore((s) => s.getCyclesForCustomer);
-  const packages = usePackageStore((s) => s.packages);
-
-  // State for the History Modal
-  const [historyTarget, setHistoryTarget] = useState(null);
-
-  const filtered = customers.filter((c) => {
-    if (!searchQuery) return true;
-    const q = searchQuery.toLowerCase();
-    return (
-      c.fullName?.toLowerCase().includes(q) ||
-      c.userName?.toLowerCase().includes(q) ||
-      c.mobileNo?.includes(q) ||
-      c.mainArea?.toLowerCase().includes(q)
-    );
-  });
-
-  return (
-    <>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm border-collapse">
-          <thead>
-            <tr className="bg-gray-100 text-gray-600 text-left">
-              <th className="px-3 py-2 font-medium">Customer</th>
-              <th className="px-3 py-2 font-medium">Area</th>
-              <th className="px-3 py-2 font-medium">Package</th>
-              <th className="px-3 py-2 font-medium">Expires</th>
-              <th className="px-3 py-2 font-medium">Pending</th>
-              <th className="px-3 py-2 font-medium">Status</th>
-              <th className="px-3 py-2 font-medium">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((customer) => {
-              const cycle = getActiveCycle(customer.id);
-              const pkg = packages.find((p) => p.id === customer.packageId);
-              const days = cycle ? daysUntil(cycle.cycleEndDate) : null;
-
-              let rowBg = "";
-              let cycleStatus = cycle ? cycle.status : "pending";
-              if (cycle) {
-                if (days !== null && days < 0 && cycleStatus !== "clear") {
-                  cycleStatus = "overdue";
-                  rowBg = "bg-red-50";
-                } else if (
-                  days !== null &&
-                  days <= 3 &&
-                  cycleStatus !== "clear"
-                ) {
-                  rowBg = "bg-yellow-50";
-                } else if (cycleStatus === "clear") {
-                  rowBg = "";
-                }
-              }
-
-              const waMessage =
-                cycle && cycle.amountPending > 0
-                  ? MESSAGE_TEMPLATES.paymentDue(customer, cycle)
-                  : cycle
-                    ? MESSAGE_TEMPLATES.expiryReminder(customer, cycle)
-                    : "";
-
-              return (
-                <tr
-                  key={customer.id}
-                  className={`border-b border-gray-100 ${rowBg} hover:bg-gray-50`}
-                >
-                  <td className="px-3 py-2">
-                    <div className="font-medium text-gray-800">
-                      {customer.fullName}
-                    </div>
-                    <div className="text-xs text-gray-400">
-                      {customer.userName}
-                    </div>
-                    {customer.mobileNo && (
-                      <div className="text-xs text-gray-400">
-                        {customer.mobileNo}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-gray-600">
-                    {customer.mainArea || "-"}
-                  </td>
-                  <td className="px-3 py-2 text-gray-600">
-                    {pkg ? pkg.name : "-"}
-                  </td>
-                  <td className="px-3 py-2">
-                    {cycle ? (
-                      <div>
-                        <div className="text-xs">
-                          {formatDate(cycle.cycleEndDate)}
-                        </div>
-                        <div
-                          className={`text-xs ${days < 0 ? "text-red-600" : days <= 3 ? "text-yellow-700" : "text-gray-400"}`}
-                        >
-                          {days < 0
-                            ? `${-days}d overdue`
-                            : days === 0
-                              ? "expires today"
-                              : `${days}d left`}
-                        </div>
-                      </div>
-                    ) : (
-                      "-"
-                    )}
-                  </td>
-                  <td className="px-3 py-2">
-                    {cycle && cycle.amountPending > 0 ? (
-                      <span className="text-red-600 font-medium">
-                        PKR {cycle.amountPending}
-                      </span>
-                    ) : (
-                      <span className="text-green-600 text-xs">Paid</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2">
-                    <Badge
-                      status={
-                        customer.status === "active"
-                          ? cycleStatus
-                          : customer.status
-                      }
-                    />
-                  </td>
-                  <td className="px-3 py-2">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {/* Pay Button */}
-                      <button
-                        onClick={() => onPay(customer)}
-                        className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-blue-50 text-blue-700 rounded hover:bg-blue-100 border border-blue-200 transition-colors"
-                        title="Record Payment"
-                      >
-                        <CreditCard size={13} /> Pay
-                      </button>
-
-                      {/* Edit Button */}
-                      <button
-                        onClick={() => onEdit(customer)}
-                        className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-white text-gray-700 rounded hover:bg-gray-50 border border-gray-300 transition-colors"
-                        title="Edit Customer"
-                      >
-                        <Pencil size={13} /> Edit
-                      </button>
-
-                      {/* Delete Button */}
-                      <button
-                        onClick={() => onDelete(customer)}
-                        className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-white text-red-600 rounded hover:bg-red-50 border border-gray-200 transition-colors"
-                        title="Delete Customer"
-                      >
-                        <Trash2 size={13} />
-                      </button>
-
-                      {customer.mobileNo && (
-                        <WhatsAppButton
-                          mobileNo={customer.mobileNo}
-                          message={waMessage}
-                          label="Send"
-                        />
-                      )}
-
-                      {/* History Button (Modal Trigger) */}
-                      <button
-                        onClick={() => setHistoryTarget(customer)}
-                        className="flex items-center justify-center w-7 h-7 rounded border bg-white border-gray-300 text-gray-500 hover:bg-gray-50 transition-colors"
-                        title="View Payment History"
-                      >
-                        <History size={15} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-            {filtered.length === 0 && (
-              <tr>
-                <td
-                  colSpan={7}
-                  className="px-3 py-8 text-center text-gray-400 text-sm"
-                >
-                  No customers found.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {/* History Modal */}
-      <Modal
-        isOpen={!!historyTarget}
-        onClose={() => setHistoryTarget(null)}
-        title={historyTarget ? `History: ${historyTarget.fullName}` : "History"}
-        size="md"
-      >
-        {historyTarget && (
-          <PaymentHistory
-            customerId={historyTarget.id}
-            getCyclesForCustomer={getCyclesForCustomer}
-          />
-        )}
-      </Modal>
-    </>
-  );
-}
-
-function PaymentHistory({ customerId, getCyclesForCustomer }) {
-  const cycles = getCyclesForCustomer(customerId);
-
-  if (!cycles || cycles.length === 0)
-    return (
-      <p className="text-sm text-gray-400 italic p-2">
-        No payment history available.
-      </p>
-    );
-
-  return (
-    <div className="space-y-4">
-      {cycles.map((c) => (
-        <div
-          key={c.id}
-          className="border border-gray-200 rounded-lg p-3 bg-white hover:border-blue-300 transition-colors"
-        >
-          {/* Header of Cycle */}
-          <div className="flex justify-between items-start mb-2 border-b border-gray-100 pb-2">
-            <div>
-              <div className="text-sm font-bold text-gray-800">
-                {formatDate(c.cycleStartDate)} — {formatDate(c.cycleEndDate)}
-              </div>
-              <div className="text-xs text-gray-500 mt-0.5">
-                Total Bill:{" "}
-                <span className="font-medium text-gray-700">
-                  PKR {c.totalAmount}
-                </span>
-              </div>
-            </div>
-            <Badge status={c.status} />
-          </div>
-
-          {/* Payment Status Bar */}
-          <div className="flex items-center gap-4 text-xs mb-3">
-            <div className="flex items-center gap-1">
-              <div className="w-2 h-2 rounded-full bg-green-500"></div>
-              <span className="text-gray-600">Paid:</span>
-              <span className="font-bold text-gray-900">
-                PKR {c.amountPaid}
-              </span>
-            </div>
-            <div className="flex items-center gap-1">
-              <div
-                className={`w-2 h-2 rounded-full ${c.amountPending > 0 ? "bg-red-500" : "bg-gray-300"}`}
-              ></div>
-              <span className="text-gray-600">Pending:</span>
-              <span
-                className={`font-bold ${c.amountPending > 0 ? "text-red-600" : "text-gray-400"}`}
-              >
-                PKR {c.amountPending}
-              </span>
-            </div>
-          </div>
-
-          {/* Outgoing Shifted Amount Notification (On the OLD Cycle) */}
-          {c.shiftedAmount > 0 && (
-            <div className="mb-3 bg-orange-50 border border-orange-100 rounded px-3 py-2 flex items-start gap-2">
-              <CornerDownRight
-                size={15}
-                className="text-orange-500 mt-0.5 shrink-0"
-              />
-              <div className="text-xs text-orange-800">
-                <span className="font-semibold block mb-0.5">
-                  Unpaid Debt Shifted: PKR {c.shiftedAmount}
-                </span>
-                <span className="text-orange-600/90 text-[11px] leading-tight block">
-                  This unpaid balance was moved to the next billing cycle.
-                </span>
-              </div>
-            </div>
-          )}
-
-          {/* Incoming Previous Balance Notification (On the NEW Cycle) */}
-          {c.previousBalance > 0 && (
-            <div className="mb-3 bg-blue-50 border border-blue-100 rounded px-3 py-2 flex items-start gap-2">
-              <AlertCircle
-                size={15}
-                className="text-blue-500 mt-0.5 shrink-0"
-              />
-              <div className="text-xs text-blue-800">
-                <span className="font-semibold block mb-0.5">
-                  Includes Previous Debt: PKR {c.previousBalance}
-                </span>
-                <span className="text-blue-600/90 text-[11px] leading-tight block">
-                  This cycle's total bill includes an unpaid balance carried
-                  over from the previous cycle.
-                </span>
-              </div>
-            </div>
-          )}
-
-          {/* Installments List */}
-          {c.installments && c.installments.length > 0 ? (
-            <div className="bg-gray-50 rounded-md p-2 space-y-2">
-              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
-                Payments Log
-              </p>
-              {c.installments.map((inst) => (
-                <div
-                  key={inst.id}
-                  className="flex justify-between items-center text-xs"
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="text-gray-600">
-                      {formatDate(inst.datePaid)}
-                    </span>
-                    {inst.note && (
-                      <span className="text-gray-400 italic">
-                        ({inst.note})
-                      </span>
-                    )}
-                  </div>
-                  <span className="font-bold text-gray-700">
-                    PKR {inst.amountPaid}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-xs text-gray-400 italic bg-gray-50 p-2 rounded-md">
-              No payments recorded yet.
-            </div>
-          )}
-        </div>
-      ))}
     </div>
   );
 }
@@ -5466,12 +5540,1021 @@ function BigCard({
 }
 </file>
 
+<file path="src/store/usePaymentStore.js">
+import { create } from "zustand";
+import db from "../db/database";
+// CYCLE_LENGTH_DAYS = 29  →  endDate = startDate + 29 = the 30th inclusive day
+import { addDays, CYCLE_LENGTH_DAYS } from "../utils/dateUtils";
+
+const usePaymentStore = create((set, get) => ({
+  cycles: [],
+
+  loadCycles: async () => {
+    const cycles = await db.paymentCycles.toArray();
+    set({ cycles });
+  },
+
+  createInitialCycle: async (customerId, startDate, totalAmount) => {
+    const cycleData = {
+      customerId,
+      cycleStartDate: startDate,
+      // Day 1 = startDate, Day 30 = startDate + 29
+      cycleEndDate: addDays(startDate, CYCLE_LENGTH_DAYS),
+      totalAmount,
+      amountPaid: 0,
+      amountPending: totalAmount,
+      status: "pending",
+      installments: [],
+      createdAt: new Date().toISOString(),
+    };
+    const id = await db.paymentCycles.add(cycleData);
+    const cycle = await db.paymentCycles.get(id);
+    set((s) => ({ cycles: [...s.cycles, cycle] }));
+    return cycle;
+  },
+
+  addInstallment: async (cycleId, amountPaid, datePaid, note = "") => {
+    const cycle = await db.paymentCycles.get(cycleId);
+    if (!cycle) throw new Error("Cycle not found");
+
+    const installment = {
+      id: crypto.randomUUID(),
+      amountPaid: Number(amountPaid),
+      datePaid,
+      note,
+      createdAt: new Date().toISOString(),
+    };
+
+    const updatedInstallments = [...(cycle.installments || []), installment];
+    const totalPaid = updatedInstallments.reduce(
+      (sum, i) => sum + i.amountPaid,
+      0,
+    );
+    const amountPending = Math.max(0, cycle.totalAmount - totalPaid);
+    const status = amountPending === 0 ? "clear" : "pending";
+
+    const updates = {
+      installments: updatedInstallments,
+      amountPaid: totalPaid,
+      amountPending,
+      status,
+    };
+
+    await db.paymentCycles.update(cycleId, updates);
+    set((s) => ({
+      cycles: s.cycles.map((c) =>
+        c.id === cycleId ? { ...c, ...updates } : c,
+      ),
+    }));
+  },
+
+  renewCycle: async (customerId, startDate, packagePrice) => {
+    const allCycles = get().cycles.filter((c) => c.customerId === customerId);
+    const activeCycle = allCycles.sort(
+      (a, b) => new Date(b.cycleStartDate) - new Date(a.cycleStartDate),
+    )[0];
+
+    // Prevent accidental double renewal on the exact same date
+    if (
+      activeCycle &&
+      activeCycle.cycleStartDate === startDate &&
+      activeCycle.isRenewal
+    ) {
+      return activeCycle;
+    }
+
+    let broughtForward = 0;
+
+    if (activeCycle && activeCycle.amountPending > 0) {
+      broughtForward = activeCycle.amountPending;
+
+      const updates = {
+        amountPending: 0,
+        status: "clear",
+        shiftedAmount: broughtForward,
+      };
+
+      await db.paymentCycles.update(activeCycle.id, updates);
+
+      set((s) => ({
+        cycles: s.cycles.map((c) =>
+          c.id === activeCycle.id ? { ...c, ...updates } : c,
+        ),
+      }));
+    }
+
+    const totalAmount = packagePrice + broughtForward;
+
+    const cycleData = {
+      customerId,
+      cycleStartDate: startDate,
+      // Day 1 = startDate, Day 30 = startDate + 29
+      cycleEndDate: addDays(startDate, CYCLE_LENGTH_DAYS),
+      totalAmount,
+      amountPaid: 0,
+      amountPending: totalAmount,
+      status: "pending",
+      installments: [],
+      isRenewal: true,
+      previousBalance: broughtForward,
+      createdAt: new Date().toISOString(),
+    };
+
+    const id = await db.paymentCycles.add(cycleData);
+    const cycle = await db.paymentCycles.get(id);
+    set((s) => ({ cycles: [...s.cycles, cycle] }));
+    return cycle;
+  },
+
+  getActiveCycle: (customerId) => {
+    const all = get()
+      .cycles.filter((c) => c.customerId === customerId)
+      .sort((a, b) => new Date(b.cycleStartDate) - new Date(a.cycleStartDate));
+    return all[0] || null;
+  },
+
+  getCyclesForCustomer: (customerId) => {
+    return get()
+      .cycles.filter((c) => c.customerId === customerId)
+      .sort((a, b) => new Date(b.cycleStartDate) - new Date(a.cycleStartDate));
+  },
+
+  deleteCycle: async (cycleId) => {
+    await db.paymentCycles.delete(cycleId);
+    set((s) => ({ cycles: s.cycles.filter((c) => c.id !== cycleId) }));
+  },
+}));
+
+export default usePaymentStore;
+</file>
+
+<file path="src/pages/Customers/CustomerTable.jsx">
+import { useState } from "react";
+import {
+  Pencil,
+  Trash2,
+  CreditCard,
+  History,
+  CornerDownRight,
+  AlertCircle,
+  CheckCircle2,
+  ArrowDownCircle,
+  Clock,
+  XCircle,
+  FileText,
+  Printer,
+} from "lucide-react";
+import Badge from "../../components/ui/Badge";
+import WhatsAppButton from "../../components/shared/WhatsAppButton";
+import Modal from "../../components/ui/Modal";
+import InvoiceModal from "../../components/ui/InvoiceModal";
+import { formatDate, daysUntil } from "../../utils/dateUtils";
+import { MESSAGE_TEMPLATES } from "../../config/messageTemplates";
+import usePaymentStore from "../../store/usePaymentStore";
+import usePackageStore from "../../store/usePackageStore";
+
+export default function CustomerTable({
+  customers,
+  onEdit,
+  onPay,
+  onDelete,
+  searchQuery,
+}) {
+  const getActiveCycle = usePaymentStore((s) => s.getActiveCycle);
+  const getCyclesForCustomer = usePaymentStore((s) => s.getCyclesForCustomer);
+  const packages = usePackageStore((s) => s.packages);
+
+  const [historyTarget, setHistoryTarget] = useState(null);
+  // invoiceTarget: { customer, cycle, packageName }
+  const [invoiceTarget, setInvoiceTarget] = useState(null);
+
+  const filtered = customers.filter((c) => {
+    if (!searchQuery) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      c.fullName?.toLowerCase().includes(q) ||
+      c.userName?.toLowerCase().includes(q) ||
+      c.mobileNo?.includes(q) ||
+      c.mainArea?.toLowerCase().includes(q)
+    );
+  });
+
+  return (
+    <>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="bg-gray-100 text-gray-600 text-left">
+              <th className="px-3 py-2 font-medium">Customer</th>
+              <th className="px-3 py-2 font-medium">Area</th>
+              <th className="px-3 py-2 font-medium">Package</th>
+              <th className="px-3 py-2 font-medium">Expires</th>
+              <th className="px-3 py-2 font-medium">Pending</th>
+              <th className="px-3 py-2 font-medium">Status</th>
+              <th className="px-3 py-2 font-medium">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((customer) => {
+              const cycle = getActiveCycle(customer.id);
+              const pkg = packages.find((p) => p.id === customer.packageId);
+              const days = cycle ? daysUntil(cycle.cycleEndDate) : null;
+
+              // Historical price: locked at last renewal > derived from cycle > current pkg price
+              let displayPrice = null;
+              if (customer.lockedPackagePrice != null) {
+                displayPrice = Number(customer.lockedPackagePrice);
+              } else if (cycle) {
+                const carried = Number(cycle.previousBalance) || 0;
+                displayPrice = Number(cycle.totalAmount) - carried;
+              } else if (pkg) {
+                displayPrice = Number(pkg.price);
+              }
+
+              const currentPkgPrice = pkg ? Number(pkg.price) : null;
+              const priceChangedSinceLock =
+                displayPrice != null &&
+                currentPkgPrice != null &&
+                displayPrice !== currentPkgPrice;
+
+              let rowBg = "";
+              let cycleStatus = cycle ? cycle.status : "pending";
+              if (cycle) {
+                if (days !== null && days < 0 && cycleStatus !== "clear") {
+                  cycleStatus = "overdue";
+                  rowBg = "bg-red-50";
+                } else if (
+                  days !== null &&
+                  days <= 3 &&
+                  cycleStatus !== "clear"
+                ) {
+                  rowBg = "bg-yellow-50";
+                } else if (cycleStatus === "clear") {
+                  rowBg = "";
+                }
+              }
+
+              const waMessage =
+                cycle && cycle.amountPending > 0
+                  ? MESSAGE_TEMPLATES.paymentDue(customer, cycle)
+                  : cycle
+                    ? MESSAGE_TEMPLATES.expiryReminder(customer, cycle)
+                    : "";
+
+              return (
+                <tr
+                  key={customer.id}
+                  className={`border-b border-gray-100 ${rowBg} hover:bg-gray-50`}
+                >
+                  <td className="px-3 py-2">
+                    <div className="font-medium text-gray-800">
+                      {customer.fullName}
+                    </div>
+                    <div className="text-xs text-gray-400">
+                      {customer.userName}
+                    </div>
+                    {customer.mobileNo && (
+                      <div className="text-xs text-gray-400">
+                        {customer.mobileNo}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-gray-600">
+                    {customer.mainArea || "-"}
+                  </td>
+
+                  {/* Package column with locked historical price */}
+                  <td className="px-3 py-2">
+                    <div className="font-medium text-gray-700">
+                      {pkg ? pkg.name : "-"}
+                    </div>
+                    {displayPrice != null && (
+                      <div
+                        className="text-xs text-gray-400 mt-0.5"
+                        title={
+                          priceChangedSinceLock
+                            ? `Current package price is PKR ${currentPkgPrice?.toLocaleString()} — customer is on the old locked rate`
+                            : undefined
+                        }
+                      >
+                        PKR {displayPrice.toLocaleString()}
+                        {priceChangedSinceLock && (
+                          <span className="ml-1 text-amber-500 font-semibold">
+                            *
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </td>
+
+                  <td className="px-3 py-2">
+                    {cycle ? (
+                      <div>
+                        <div className="text-xs">
+                          {formatDate(cycle.cycleEndDate)}
+                        </div>
+                        <div
+                          className={`text-xs ${
+                            days < 0
+                              ? "text-red-600"
+                              : days <= 3
+                                ? "text-yellow-700"
+                                : "text-gray-400"
+                          }`}
+                        >
+                          {days < 0
+                            ? `${-days}d overdue`
+                            : days === 0
+                              ? "expires today"
+                              : `${days}d left`}
+                        </div>
+                      </div>
+                    ) : (
+                      "-"
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
+                    {cycle && cycle.amountPending > 0 ? (
+                      <span className="text-red-600 font-medium">
+                        PKR {cycle.amountPending}
+                      </span>
+                    ) : (
+                      <span className="text-green-600 text-xs">Paid</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
+                    <Badge
+                      status={
+                        customer.status === "active"
+                          ? cycleStatus
+                          : customer.status
+                      }
+                    />
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        onClick={() => onPay(customer)}
+                        className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-blue-50 text-blue-700 rounded hover:bg-blue-100 border border-blue-200 transition-colors"
+                        title="Record Payment"
+                      >
+                        <CreditCard size={13} /> Pay
+                      </button>
+                      <button
+                        onClick={() => onEdit(customer)}
+                        className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-white text-gray-700 rounded hover:bg-gray-50 border border-gray-300 transition-colors"
+                        title="Edit Customer"
+                      >
+                        <Pencil size={13} /> Edit
+                      </button>
+                      <button
+                        onClick={() => onDelete(customer)}
+                        className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-white text-red-600 rounded hover:bg-red-50 border border-gray-200 transition-colors"
+                        title="Delete Customer"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                      {customer.mobileNo && (
+                        <WhatsAppButton
+                          mobileNo={customer.mobileNo}
+                          message={waMessage}
+                          label="Send"
+                        />
+                      )}
+                      <button
+                        onClick={() => setHistoryTarget(customer)}
+                        className="flex items-center justify-center w-7 h-7 rounded border bg-white border-gray-300 text-gray-500 hover:bg-gray-50 transition-colors"
+                        title="View Payment History"
+                      >
+                        <History size={15} />
+                      </button>
+                      {/* Invoice button — opens latest cycle's invoice */}
+                      {cycle && (
+                        <button
+                          onClick={() =>
+                            setInvoiceTarget({
+                              customer,
+                              cycle,
+                              packageName: pkg?.name || "—",
+                            })
+                          }
+                          className="flex items-center justify-center w-7 h-7 rounded border bg-white border-gray-300 text-gray-500 hover:bg-purple-50 hover:border-purple-300 hover:text-purple-600 transition-colors"
+                          title="View / Print Latest Invoice"
+                        >
+                          <FileText size={15} />
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {filtered.length === 0 && (
+              <tr>
+                <td
+                  colSpan={7}
+                  className="px-3 py-8 text-center text-gray-400 text-sm"
+                >
+                  No customers found.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* History Modal — size "lg" for more breathing room */}
+      <Modal
+        isOpen={!!historyTarget}
+        onClose={() => setHistoryTarget(null)}
+        title={
+          historyTarget
+            ? `Payment History — ${historyTarget.fullName}`
+            : "History"
+        }
+        size="lg"
+      >
+        {historyTarget && (
+          <PaymentHistory
+            customer={historyTarget}
+            getCyclesForCustomer={getCyclesForCustomer}
+            packages={packages}
+            onInvoice={(cycle, pkgName) =>
+              setInvoiceTarget({
+                customer: historyTarget,
+                cycle,
+                packageName: pkgName,
+              })
+            }
+          />
+        )}
+      </Modal>
+
+      {/* Invoice Modal */}
+      <InvoiceModal
+        isOpen={!!invoiceTarget}
+        onClose={() => setInvoiceTarget(null)}
+        customer={invoiceTarget?.customer}
+        cycle={invoiceTarget?.cycle}
+        packageName={invoiceTarget?.packageName}
+      />
+    </>
+  );
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * A cycle that has shiftedAmount > 0 was forcibly "cleared" by the system at
+ * renewal time — the customer never actually paid. We override the display
+ * status to "carried_forward" so staff are not misled by "Clear".
+ */
+function getCycleDisplayStatus(cycle) {
+  if (Number(cycle.shiftedAmount) > 0) return "carried_forward";
+  return cycle.status;
+}
+
+const STATUS_CFG = {
+  clear: {
+    label: "Fully Paid",
+    icon: <CheckCircle2 size={13} />,
+    badge: "bg-green-100 text-green-800 border-green-200",
+    headerBg: "bg-green-50 border-green-200",
+    cardBorder: "border-green-200",
+    bar: "bg-green-500",
+    pendingBg: "bg-gray-50",
+    pendingText: "text-gray-400",
+  },
+  pending: {
+    label: "Pending",
+    icon: <Clock size={13} />,
+    badge: "bg-yellow-100 text-yellow-800 border-yellow-200",
+    headerBg: "bg-yellow-50 border-yellow-200",
+    cardBorder: "border-yellow-200",
+    bar: "bg-blue-500",
+    pendingBg: "bg-red-50",
+    pendingText: "text-red-700",
+  },
+  overdue: {
+    label: "Overdue",
+    icon: <XCircle size={13} />,
+    badge: "bg-red-100 text-red-800 border-red-200",
+    headerBg: "bg-red-50 border-red-200",
+    cardBorder: "border-red-300",
+    bar: "bg-red-400",
+    pendingBg: "bg-red-50",
+    pendingText: "text-red-700",
+  },
+  carried_forward: {
+    label: "Carried Forward",
+    icon: <CornerDownRight size={13} />,
+    badge: "bg-orange-100 text-orange-800 border-orange-200",
+    headerBg: "bg-orange-50 border-orange-200",
+    cardBorder: "border-orange-300",
+    bar: "bg-orange-400",
+    pendingBg: "bg-orange-50",
+    pendingText: "text-orange-700",
+  },
+};
+
+function StatusPill({ statusKey }) {
+  const cfg = STATUS_CFG[statusKey] || STATUS_CFG.pending;
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${cfg.badge}`}
+    >
+      {cfg.icon}
+      {cfg.label}
+    </span>
+  );
+}
+
+// ─── PaymentHistory ───────────────────────────────────────────────────────────
+
+function PaymentHistory({
+  customer,
+  getCyclesForCustomer,
+  packages,
+  onInvoice,
+}) {
+  const cycles = getCyclesForCustomer(customer.id);
+
+  if (!cycles || cycles.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-14 text-gray-400">
+        <History size={36} className="mb-3 opacity-25" />
+        <p className="text-sm">No payment history available.</p>
+      </div>
+    );
+  }
+
+  // Overall summary across all cycles.
+  //
+  // WHY we subtract previousBalance from totalAmount:
+  //   When a customer is renewed with unpaid dues, the new cycle's totalAmount
+  //   already includes the carried-over debt (e.g. PKR 1600 package + PKR 1600
+  //   debt = PKR 3200). The old cycle's totalAmount is ALSO PKR 1600. If we
+  //   naively sum all totalAmounts we count that PKR 1600 debt twice (PKR 4800).
+  //   Subtracting previousBalance from each cycle gives us only the actual new
+  //   package charge per cycle, avoiding double-counting.
+  //
+  // grandPending: only the latest cycle's amountPending is the real current
+  //   outstanding — older cycles were either paid or their debt was rolled
+  //   forward into the latest cycle (and is already counted there).
+  const grandBilled = cycles.reduce(
+    (s, c) => s + Number(c.totalAmount || 0) - Number(c.previousBalance || 0),
+    0,
+  );
+  const grandPaid = cycles.reduce((s, c) => s + Number(c.amountPaid || 0), 0);
+  const grandPending = Number(cycles[0]?.amountPending || 0);
+
+  return (
+    <div className="space-y-5">
+      {/* ── Grand summary ── */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-center">
+          <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-1">
+            Total Billed
+          </p>
+          <p className="text-base font-bold text-gray-800">
+            PKR {grandBilled.toLocaleString()}
+          </p>
+          <p className="text-[10px] text-gray-400 mt-0.5">
+            {cycles.length} cycle{cycles.length !== 1 ? "s" : ""}
+          </p>
+        </div>
+        <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-center">
+          <p className="text-[10px] font-bold uppercase text-green-600 tracking-wide mb-1">
+            Total Paid
+          </p>
+          <p className="text-base font-bold text-green-700">
+            PKR {grandPaid.toLocaleString()}
+          </p>
+          <p className="text-[10px] text-green-600/70 mt-0.5">
+            {grandBilled > 0
+              ? Math.min(100, Math.round((grandPaid / grandBilled) * 100))
+              : 0}
+            % of total billed
+          </p>
+        </div>
+        <div
+          className={`rounded-xl px-4 py-3 text-center border ${
+            grandPending > 0
+              ? "bg-red-50 border-red-200"
+              : "bg-gray-50 border-gray-200"
+          }`}
+        >
+          <p
+            className={`text-[10px] font-bold uppercase tracking-wide mb-1 ${
+              grandPending > 0 ? "text-red-500" : "text-gray-400"
+            }`}
+          >
+            Outstanding
+          </p>
+          <p
+            className={`text-base font-bold ${
+              grandPending > 0 ? "text-red-700" : "text-gray-400"
+            }`}
+          >
+            PKR {grandPending.toLocaleString()}
+          </p>
+          <p
+            className={`text-[10px] mt-0.5 ${grandPending > 0 ? "text-red-400" : "text-gray-400"}`}
+          >
+            {grandPending > 0 ? "still owed" : "fully settled"}
+          </p>
+        </div>
+      </div>
+
+      {/* ── Per-cycle cards ── */}
+      <div className="space-y-4">
+        {cycles.map((cycle, index) => {
+          const displayStatus = getCycleDisplayStatus(cycle);
+          const cfg = STATUS_CFG[displayStatus] || STATUS_CFG.pending;
+          const isCarriedForward = displayStatus === "carried_forward";
+          const isClear = displayStatus === "clear";
+          const hasIncomingDebt = Number(cycle.previousBalance) > 0;
+          const packageOnlyPrice =
+            Number(cycle.totalAmount) - Number(cycle.previousBalance || 0);
+          const isLatest = index === 0;
+
+          const percentPaid =
+            Number(cycle.totalAmount) > 0
+              ? Math.min(
+                  100,
+                  Math.round(
+                    (Number(cycle.amountPaid) / Number(cycle.totalAmount)) *
+                      100,
+                  ),
+                )
+              : isClear
+                ? 100
+                : 0;
+
+          // For carried-forward cycles the "pending" shown should be what was shifted
+          const pendingDisplay = isCarriedForward
+            ? Number(cycle.shiftedAmount)
+            : Number(cycle.amountPending);
+
+          return (
+            <div
+              key={cycle.id}
+              className={`rounded-xl border-2 overflow-hidden ${cfg.cardBorder}`}
+            >
+              {/* Card header */}
+              <div
+                className={`px-4 py-3 flex items-center justify-between border-b ${cfg.headerBg}`}
+              >
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-bold text-gray-800">
+                      {formatDate(cycle.cycleStartDate)}
+                    </span>
+                    <span className="text-gray-400 text-xs">→</span>
+                    <span className="text-sm font-bold text-gray-800">
+                      {formatDate(cycle.cycleEndDate)}
+                    </span>
+                    {isLatest && (
+                      <span className="text-[10px] font-bold bg-blue-600 text-white px-1.5 py-0.5 rounded uppercase tracking-wide">
+                        Latest
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {cycle.isRenewal ? "Renewal" : "Initial"} cycle
+                    {" · "}
+                    {cycle.installments?.length || 0} payment
+                    {(cycle.installments?.length || 0) !== 1 ? "s" : ""}{" "}
+                    recorded
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <StatusPill statusKey={displayStatus} />
+                  <button
+                    onClick={() => {
+                      // Resolve package name for this cycle
+                      const pkgName =
+                        packages?.find(
+                          (p) => String(p.id) === String(customer.packageId),
+                        )?.name || "—";
+                      onInvoice(cycle, pkgName);
+                    }}
+                    className="flex items-center justify-center w-7 h-7 rounded border bg-white border-gray-300 text-gray-400 hover:bg-purple-50 hover:border-purple-300 hover:text-purple-600 transition-colors"
+                    title="View / Print Invoice"
+                  >
+                    <Printer size={13} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="px-4 py-4 bg-white space-y-4">
+                {/* ── CARRIED FORWARD alert — shown on the OLD cycle ── */}
+                {isCarriedForward && (
+                  <div className="flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-lg px-3 py-3">
+                    <CornerDownRight
+                      size={16}
+                      className="text-orange-500 mt-0.5 shrink-0"
+                    />
+                    <div>
+                      <p className="text-sm font-semibold text-orange-800">
+                        Unpaid dues moved to next cycle — PKR{" "}
+                        {Number(cycle.shiftedAmount).toLocaleString()}
+                      </p>
+                      <p className="text-xs text-orange-700 mt-1 leading-relaxed">
+                        The customer did not pay this cycle. When the next cycle
+                        was started, the full outstanding amount of{" "}
+                        <strong>
+                          PKR {Number(cycle.shiftedAmount).toLocaleString()}
+                        </strong>{" "}
+                        was automatically added to the new cycle&apos;s total
+                        bill. This cycle was then marked as &quot;settled&quot;
+                        by the system, but no actual payment was received.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── INCOMING DEBT notice — shown on the NEW cycle ── */}
+                {hasIncomingDebt && (
+                  <div className="flex items-start gap-3 bg-blue-50 border border-blue-200 rounded-lg px-3 py-3">
+                    <ArrowDownCircle
+                      size={16}
+                      className="text-blue-500 mt-0.5 shrink-0"
+                    />
+                    <div>
+                      <p className="text-sm font-semibold text-blue-800">
+                        Includes unpaid debt from previous cycle — PKR{" "}
+                        {Number(cycle.previousBalance).toLocaleString()}
+                      </p>
+                      <p className="text-xs text-blue-700 mt-1 leading-relaxed">
+                        This cycle&apos;s total of{" "}
+                        <strong>
+                          PKR {Number(cycle.totalAmount).toLocaleString()}
+                        </strong>{" "}
+                        is made up of the package price{" "}
+                        <strong>
+                          (PKR {packageOnlyPrice.toLocaleString()})
+                        </strong>{" "}
+                        plus the carried-over balance from the previous cycle{" "}
+                        <strong>
+                          (PKR {Number(cycle.previousBalance).toLocaleString()})
+                        </strong>
+                        .
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Financials grid ── */}
+                <div className="grid grid-cols-3 gap-3 text-center">
+                  <div className="bg-gray-50 rounded-lg px-3 py-2.5">
+                    <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-1">
+                      Total Bill
+                    </p>
+                    <p className="text-sm font-bold text-gray-800">
+                      PKR {Number(cycle.totalAmount).toLocaleString()}
+                    </p>
+                    {hasIncomingDebt && (
+                      <p className="text-[10px] text-gray-400 mt-0.5">
+                        incl. PKR{" "}
+                        {Number(cycle.previousBalance).toLocaleString()} debt
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="bg-green-50 rounded-lg px-3 py-2.5">
+                    <p className="text-[10px] font-bold uppercase text-green-600 tracking-wide mb-1">
+                      Paid
+                    </p>
+                    <p className="text-sm font-bold text-green-700">
+                      PKR {Number(cycle.amountPaid).toLocaleString()}
+                    </p>
+                  </div>
+
+                  <div className={`rounded-lg px-3 py-2.5 ${cfg.pendingBg}`}>
+                    <p
+                      className={`text-[10px] font-bold uppercase tracking-wide mb-1 ${
+                        isCarriedForward
+                          ? "text-orange-500"
+                          : pendingDisplay > 0
+                            ? "text-red-500"
+                            : "text-gray-400"
+                      }`}
+                    >
+                      {isCarriedForward ? "Moved Forward" : "Pending"}
+                    </p>
+                    <p className={`text-sm font-bold ${cfg.pendingText}`}>
+                      PKR {pendingDisplay.toLocaleString()}
+                    </p>
+                  </div>
+                </div>
+
+                {/* ── Progress bar ── */}
+                <div>
+                  <div className="flex justify-between text-[11px] text-gray-400 mb-1">
+                    <span>Payment progress</span>
+                    <span>{percentPaid}%</span>
+                  </div>
+                  <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
+                    <div
+                      className={`h-2 rounded-full transition-all duration-500 ${cfg.bar}`}
+                      style={{ width: `${percentPaid}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* ── Installments list ── */}
+                {cycle.installments && cycle.installments.length > 0 ? (
+                  <div className="bg-gray-50 border border-gray-100 rounded-lg p-3">
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2.5">
+                      Payments Received
+                    </p>
+                    <div className="space-y-2">
+                      {cycle.installments.map((inst) => (
+                        <div
+                          key={inst.id}
+                          className="flex justify-between items-center bg-white rounded-lg px-3 py-2 border border-gray-100 shadow-sm"
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-6 h-6 rounded-full bg-green-100 flex items-center justify-center shrink-0">
+                              <CheckCircle2
+                                size={12}
+                                className="text-green-600"
+                              />
+                            </div>
+                            <div>
+                              <p className="text-xs font-semibold text-gray-800">
+                                {formatDate(inst.datePaid)}
+                              </p>
+                              {inst.note && (
+                                <p className="text-[10px] text-gray-400 mt-0.5">
+                                  via {inst.note}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          <span className="text-sm font-bold text-gray-800">
+                            PKR {Number(inst.amountPaid).toLocaleString()}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  !isCarriedForward && (
+                    <div className="flex items-center gap-2 text-xs text-gray-400 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5">
+                      <AlertCircle size={13} className="shrink-0" />
+                      No payments recorded for this cycle.
+                    </div>
+                  )
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+</file>
+
 <file path="src/pages/Payments/PaymentForm.jsx">
 import { useState, useEffect } from "react";
+import {
+  AlertTriangle,
+  CheckCircle,
+  Clock,
+  RefreshCw,
+  CreditCard,
+  Calendar,
+  Info,
+  FileText,
+} from "lucide-react";
 import { today, daysUntil } from "../../utils/dateUtils";
 import usePaymentStore from "../../store/usePaymentStore";
 import usePackageStore from "../../store/usePackageStore";
 import useCustomerStore from "../../store/useCustomerStore";
+import InvoiceModal from "../../components/ui/InvoiceModal";
+
+// ─── Scenario helpers ────────────────────────────────────────────────────────
+
+/**
+ * Returns one of four scenarios:
+ *   "overdue"       – cycle expired AND unpaid balance remains
+ *   "early_renewal" – cycle still active AND fully clear (paid), renewing early
+ *   "partial_active"– cycle still active BUT balance still pending (partial pay)
+ *   "no_cycle"      – customer has never had a cycle
+ */
+function getScenario(activeCycle, days) {
+  if (!activeCycle) return "no_cycle";
+  const expired = days < 0;
+  const clear = activeCycle.status === "clear";
+  if (expired) return "overdue";
+  if (clear) return "early_renewal";
+  return "partial_active";
+}
+
+// ─── Alert banner sub-component ──────────────────────────────────────────────
+
+function ScenarioBanner({ scenario, days, activeCycle }) {
+  if (scenario === "no_cycle") {
+    return (
+      <div className="flex items-start gap-3 rounded-xl bg-blue-50 border border-blue-200 px-4 py-3">
+        <Info size={18} className="text-blue-600 mt-0.5 shrink-0" />
+        <div className="text-sm text-blue-800">
+          <p className="font-semibold">No active billing cycle found.</p>
+          <p className="mt-0.5 text-blue-700">
+            This will create the customer&apos;s very first billing cycle.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (scenario === "overdue") {
+    const overdueDays = Math.abs(days);
+    return (
+      <div className="flex items-start gap-3 rounded-xl bg-red-50 border border-red-200 px-4 py-3">
+        <AlertTriangle size={18} className="text-red-600 mt-0.5 shrink-0" />
+        <div className="text-sm text-red-800">
+          <p className="font-semibold">
+            ⚠️ Account is overdue by {overdueDays} day
+            {overdueDays !== 1 ? "s" : ""}!
+          </p>
+          <p className="mt-0.5 text-red-700">
+            Cycle ended on <strong>{activeCycle.cycleEndDate}</strong>.
+            {activeCycle.amountPending > 0 && (
+              <>
+                {" "}
+                Outstanding balance of{" "}
+                <strong>
+                  PKR {activeCycle.amountPending.toLocaleString()}
+                </strong>{" "}
+                will be carried forward automatically into the new cycle.
+              </>
+            )}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (scenario === "early_renewal") {
+    return (
+      <div className="flex items-start gap-3 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3">
+        <AlertTriangle size={18} className="text-amber-600 mt-0.5 shrink-0" />
+        <div className="text-sm text-amber-800">
+          <p className="font-semibold">
+            ⚠️ Renewing early — {days} day{days !== 1 ? "s" : ""} remaining in
+            current cycle.
+          </p>
+          <p className="mt-0.5 text-amber-700">
+            The current cycle ends on{" "}
+            <strong>{activeCycle.cycleEndDate}</strong>. Renewing now will{" "}
+            <strong>
+              waste the remaining {days} day{days !== 1 ? "s" : ""}
+            </strong>
+            . The new cycle starts today.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (scenario === "partial_active") {
+    return (
+      <div className="flex items-start gap-3 rounded-xl bg-yellow-50 border border-yellow-200 px-4 py-3">
+        <CreditCard size={18} className="text-yellow-700 mt-0.5 shrink-0" />
+        <div className="text-sm text-yellow-800">
+          <p className="font-semibold">Pending payment on active cycle.</p>
+          <p className="mt-0.5 text-yellow-700">
+            The current cycle has{" "}
+            <strong>
+              {days} day{days !== 1 ? "s" : ""} left
+            </strong>{" "}
+            (expires <strong>{activeCycle.cycleEndDate}</strong>). Record a
+            payment below or renew the cycle early.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// ─── Billing summary row ──────────────────────────────────────────────────────
+
+function SummaryRow({ label, value, valueClass = "text-gray-800" }) {
+  return (
+    <div className="flex justify-between items-center text-sm py-1.5 border-b border-gray-100 last:border-0">
+      <span className="text-gray-500">{label}</span>
+      <span className={`font-semibold ${valueClass}`}>{value}</span>
+    </div>
+  );
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function PaymentForm({ customer, onClose }) {
   const getActiveCycle = usePaymentStore((s) => s.getActiveCycle);
@@ -5482,236 +6565,405 @@ export default function PaymentForm({ customer, onClose }) {
 
   const activeCycle = getActiveCycle(customer.id);
   const days = activeCycle ? daysUntil(activeCycle.cycleEndDate) : 0;
-  const isClear = activeCycle && activeCycle.status === "clear";
 
-  // FIX: Allow renewal if the cycle is expired (days < 0), even if unpaid
-  const needsRenewal = !activeCycle || days < 0 || (isClear && days <= 5);
+  const scenario = getScenario(activeCycle, days);
 
-  const [selectedPkgId, setSelectedPkgId] = useState(customer.packageId || "");
+  // Whether to show the RENEWAL UI vs. just "record payment" UI
+  // Overdue and no_cycle always force renewal.
+  // partial_active: admin can optionally choose to renew early.
+  // early_renewal: already flagged, show renewal by default.
+  const forceRenewal = scenario === "overdue" || scenario === "no_cycle";
+  const [wantsRenewal, setWantsRenewal] = useState(
+    forceRenewal || scenario === "early_renewal",
+  );
+  const isRenewal = forceRenewal || wantsRenewal;
+
+  const [selectedPkgId, setSelectedPkgId] = useState(
+    String(customer.packageId || (packages[0]?.id ?? "")),
+  );
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(today());
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // After a successful save, store the resulting cycle here to offer invoice
+  const [invoiceData, setInvoiceData] = useState(null);
 
   const selectedPkg = packages.find(
     (p) => String(p.id) === String(selectedPkgId),
   );
-
   const renewalPrice = selectedPkg ? Number(selectedPkg.price) : 0;
-  const maxPayable =
-    activeCycle && !needsRenewal ? activeCycle.amountPending : renewalPrice;
 
+  // Auto-fill amount whenever package or mode changes
   useEffect(() => {
-    const timer = setTimeout(() => {
-      // Auto fill amount on load, but won't force it back if user clears it
-      if (needsRenewal && renewalPrice > 0 && amount === "") {
-        setAmount(String(renewalPrice));
-      }
-    }, 0);
+    if (isRenewal) {
+      setAmount(renewalPrice > 0 ? String(renewalPrice) : "");
+    } else if (activeCycle) {
+      setAmount(String(activeCycle.amountPending));
+    }
+    setError("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isRenewal, selectedPkgId]);
 
-    return () => clearTimeout(timer);
-  }, [needsRenewal, renewalPrice]);
+  const maxPayable = isRenewal ? undefined : (activeCycle?.amountPending ?? 0);
 
   const handleSubmit = async () => {
     setError("");
-    const amt = Number(amount) || 0; // Treat empty strings safely as 0
+    const amt = Number(amount) || 0;
 
-    // Validate if NOT renewing: They must pay > 0
-    if (!needsRenewal && amt <= 0) {
-      setError("Enter a valid amount to pay.");
-      return;
-    }
-
-    if (!needsRenewal && amt > activeCycle.amountPending) {
-      setError(`Amount exceeds balance of PKR ${activeCycle.amountPending}`);
-      return;
+    if (!isRenewal) {
+      if (amt <= 0) {
+        setError("Enter a valid amount greater than 0.");
+        return;
+      }
+      if (activeCycle && amt > activeCycle.amountPending) {
+        setError(
+          `Amount exceeds outstanding balance of PKR ${activeCycle.amountPending.toLocaleString()}.`,
+        );
+        return;
+      }
     }
 
     setSaving(true);
     try {
-      if (needsRenewal) {
+      let resultCycle;
+      if (isRenewal) {
         if (String(selectedPkgId) !== String(customer.packageId)) {
           await updateCustomer(customer.id, {
             packageId: Number(selectedPkgId),
             lockedPackagePrice: renewalPrice,
           });
         }
-
-        // Generate the cycle, carrying over previous debt automatically
-        const newCycle = await renewCycle(customer.id, date, renewalPrice);
-
-        // FIX: Only add an installment record if they actually typed > 0
+        resultCycle = await renewCycle(customer.id, date, renewalPrice);
         if (amt > 0) {
-          await addInstallment(newCycle.id, amt, date, note);
+          await addInstallment(resultCycle.id, amt, date, note);
+          // Re-fetch cycle from store so amountPaid is up to date
+          resultCycle = usePaymentStore.getState().getActiveCycle(customer.id);
         }
       } else {
         await addInstallment(activeCycle.id, amt, date, note);
+        resultCycle = usePaymentStore.getState().getActiveCycle(customer.id);
       }
-      onClose();
+      // Show invoice prompt instead of immediately closing
+      setInvoiceData({
+        cycle: resultCycle,
+        packageName: selectedPkg?.name || "—",
+      });
     } catch (err) {
       setError("Error: " + err.message);
     }
     setSaving(false);
   };
 
+  // ── Derived labels ──
+  const modeTag = isRenewal ? (
+    <span className="inline-flex items-center gap-1 bg-blue-100 text-blue-700 text-xs font-bold px-2.5 py-1 rounded-full">
+      <RefreshCw size={11} />
+      RENEWAL
+    </span>
+  ) : (
+    <span className="inline-flex items-center gap-1 bg-green-100 text-green-700 text-xs font-bold px-2.5 py-1 rounded-full">
+      <CreditCard size={11} />
+      PAYMENT
+    </span>
+  );
+
   return (
-    <div className="space-y-6 p-2">
-      {/* ── SUMMARY SECTION ── */}
-      <div
-        className={`rounded-xl p-5 border ${needsRenewal ? "bg-blue-50 border-blue-100" : "bg-gray-50 border-gray-200"}`}
-      >
-        <div className="flex justify-between items-start mb-2">
-          <div>
-            <h3 className="text-lg font-bold text-gray-800">
-              {customer.fullName}
-            </h3>
-            <p className="text-sm text-gray-500">{customer.userName}</p>
-          </div>
-          {needsRenewal && (
-            <span className="bg-blue-600 text-white text-xs font-bold px-2 py-1 rounded">
-              RENEWAL
+    <div className="space-y-5 p-1">
+      {/* ── HEADER ── */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-bold text-gray-900 leading-tight">
+            {customer.fullName}
+          </h3>
+          <p className="text-xs text-gray-400 mt-0.5">{customer.userName}</p>
+        </div>
+        {modeTag}
+      </div>
+
+      {/* ── SCENARIO BANNER ── */}
+      <ScenarioBanner
+        scenario={scenario}
+        days={days}
+        activeCycle={activeCycle}
+      />
+
+      {/* ── CURRENT CYCLE SUMMARY (shown only when cycle is active & not doing renewal) ── */}
+      {activeCycle && !isRenewal && (
+        <div className="rounded-xl bg-gray-50 border border-gray-200 px-4 py-3 space-y-0.5">
+          <p className="text-xs font-bold uppercase text-gray-400 tracking-wide mb-2">
+            Current Billing Cycle
+          </p>
+          <SummaryRow
+            label="Period"
+            value={`${activeCycle.cycleStartDate} → ${activeCycle.cycleEndDate}`}
+          />
+          <SummaryRow
+            label="Total Bill"
+            value={`PKR ${Number(activeCycle.totalAmount).toLocaleString()}`}
+          />
+          <SummaryRow
+            label="Paid So Far"
+            value={`PKR ${Number(activeCycle.amountPaid).toLocaleString()}`}
+            valueClass="text-green-700"
+          />
+          <SummaryRow
+            label="Outstanding Balance"
+            value={`PKR ${Number(activeCycle.amountPending).toLocaleString()}`}
+            valueClass={
+              activeCycle.amountPending > 0 ? "text-red-600" : "text-green-700"
+            }
+          />
+          {activeCycle.amountPending === 0 && (
+            <div className="flex items-center gap-1.5 mt-2 text-xs text-green-700 font-semibold">
+              <CheckCircle size={13} />
+              Fully paid for this cycle
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── RENEWAL: PACKAGE SELECTOR ── */}
+      {isRenewal && (
+        <div className="rounded-xl bg-blue-50 border border-blue-100 px-4 py-4 space-y-3">
+          <p className="text-xs font-bold uppercase text-blue-700 tracking-wide">
+            New Billing Cycle — Select Package
+          </p>
+          <select
+            value={selectedPkgId}
+            onChange={(e) => {
+              setSelectedPkgId(e.target.value);
+              setAmount("");
+            }}
+            className="w-full bg-white border border-blue-200 rounded-lg px-3 py-2.5 text-sm font-medium text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none"
+          >
+            {packages.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} — PKR {Number(p.price).toLocaleString()}
+              </option>
+            ))}
+          </select>
+
+          {/* Show carried-over debt clearly */}
+          {activeCycle && activeCycle.amountPending > 0 && (
+            <div className="bg-white border border-red-200 rounded-lg px-3 py-2.5 text-sm space-y-1">
+              <p className="font-semibold text-gray-700">New cycle summary:</p>
+              <div className="flex justify-between text-gray-600">
+                <span>Package price</span>
+                <span>PKR {renewalPrice.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between text-red-600 font-medium">
+                <span>Carried over debt</span>
+                <span>
+                  + PKR {Number(activeCycle.amountPending).toLocaleString()}
+                </span>
+              </div>
+              <div className="flex justify-between font-bold text-gray-900 border-t border-gray-100 pt-1 mt-1">
+                <span>Total due</span>
+                <span>
+                  PKR{" "}
+                  {(
+                    renewalPrice + Number(activeCycle.amountPending)
+                  ).toLocaleString()}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── TOGGLE: offer early renewal for partial_active ── */}
+      {scenario === "partial_active" && (
+        <div className="flex items-center gap-3 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3">
+          <input
+            type="checkbox"
+            id="earlyRenew"
+            checked={wantsRenewal}
+            onChange={(e) => setWantsRenewal(e.target.checked)}
+            className="w-4 h-4 accent-blue-600 cursor-pointer"
+          />
+          <label
+            htmlFor="earlyRenew"
+            className="text-sm text-gray-700 cursor-pointer select-none"
+          >
+            <span className="font-semibold">Renew cycle early instead</span>
+            <span className="block text-xs text-gray-400 mt-0.5">
+              This will start a fresh 30-day cycle today and carry over any
+              unpaid balance.
             </span>
+          </label>
+        </div>
+      )}
+
+      {/* ── INPUT FIELDS ── */}
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+            Amount Paid{" "}
+            {isRenewal && (
+              <span className="text-gray-400 font-normal">(Optional)</span>
+            )}
+          </label>
+          <input
+            type="number"
+            min="0"
+            max={maxPayable || undefined}
+            className="w-full border border-gray-300 rounded-lg px-3 h-11 text-base focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            value={amount}
+            onChange={(e) => {
+              setAmount(e.target.value);
+              setError("");
+            }}
+            placeholder={
+              isRenewal
+                ? `Suggested: ${renewalPrice.toLocaleString()}`
+                : `Max: PKR ${(maxPayable || 0).toLocaleString()}`
+            }
+          />
+          {isRenewal && (
+            <p className="text-xs text-gray-400 mt-1">
+              Leave 0 to renew without recording a payment now.
+            </p>
           )}
         </div>
 
-        {needsRenewal ? (
-          <div className="space-y-3">
-            <div className="text-sm text-blue-800">
-              <p>Starting a new billing cycle.</p>
-              {activeCycle && (
-                <p className="text-xs opacity-70 mt-1">
-                  Previous ends: {activeCycle.cycleEndDate}
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold uppercase text-blue-800 mb-1.5">
-                Select Package for Renewal
-              </label>
-              <select
-                value={selectedPkgId}
-                onChange={(e) => {
-                  setSelectedPkgId(e.target.value);
-                  setAmount("");
-                }}
-                className="w-full bg-white border border-blue-200 rounded-lg px-3 py-2 text-sm font-medium text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none"
-              >
-                {packages.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} — PKR {Number(p.price).toLocaleString()}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-        ) : (
-          <div className="text-sm space-y-1">
-            <div className="flex justify-between border-b border-gray-200 pb-2 mb-2">
-              <span className="text-gray-500">Current Cycle</span>
-              <span className="font-medium text-gray-800">
-                {activeCycle?.cycleStartDate} → {activeCycle?.cycleEndDate}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-500">Total Bill</span>
-              <span className="font-medium">
-                PKR {activeCycle?.totalAmount}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-500">Paid So Far</span>
-              <span className="font-medium text-green-600">
-                PKR {activeCycle?.amountPaid}
-              </span>
-            </div>
-            <div className="flex justify-between text-base pt-1">
-              <span className="font-bold text-gray-700">Remaining Due</span>
-              <span className="font-bold text-red-600">
-                PKR {activeCycle?.amountPending}
-              </span>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* ── INPUT FIELDS ── */}
-      <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-5">
-          <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-1.5">
-              Amount Paid{" "}
-              <span className="text-gray-400 font-normal">(Optional)</span>
-            </label>
-            <input
-              type="number"
-              min="0"
-              max={maxPayable || undefined}
-              className="w-full border border-gray-300 rounded-lg px-3 h-11 text-base focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-              value={amount}
-              onChange={(e) => {
-                setAmount(e.target.value);
-                setError("");
-              }}
-              placeholder={
-                needsRenewal ? `0 to just renew` : `Max: ${maxPayable}`
-              }
+        <div>
+          <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+            Date <span className="text-red-500">*</span>
+          </label>
+          <div className="relative">
+            <Calendar
+              size={15}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
             />
-          </div>
-          <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-1.5">
-              Date <span className="text-red-500">*</span>
-            </label>
             <input
               type="date"
               max={today()}
-              className="w-full border border-gray-300 rounded-lg px-3 h-11 text-base focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+              className="w-full border border-gray-300 rounded-lg pl-9 pr-3 h-11 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
               value={date}
               onChange={(e) => setDate(e.target.value)}
             />
           </div>
         </div>
-
-        <div>
-          <label className="block text-sm font-semibold text-gray-700 mb-1.5">
-            Note (optional)
-          </label>
-          <input
-            className="w-full border border-gray-300 rounded-lg px-3 h-11 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder="e.g. Cash, JazzCash, EasyPaisa..."
-          />
-        </div>
       </div>
 
+      <div>
+        <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+          Note <span className="text-gray-400 font-normal">(optional)</span>
+        </label>
+        <input
+          className="w-full border border-gray-300 rounded-lg px-3 h-11 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="e.g. Cash, JazzCash, EasyPaisa..."
+        />
+      </div>
+
+      {/* ── ERROR ── */}
       {error && (
-        <div className="bg-red-50 text-red-600 px-4 py-3 rounded-lg text-sm font-medium">
+        <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm font-medium">
+          <AlertTriangle size={15} className="shrink-0" />
           {error}
         </div>
       )}
 
+      {/* ── QUICK SUMMARY before submit — hidden after successful save ── */}
+      {!invoiceData && (Number(amount) > 0 || isRenewal) && (
+        <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-600 space-y-1">
+          <p className="font-semibold text-gray-800 text-xs uppercase tracking-wide mb-1.5">
+            <Clock size={12} className="inline mr-1 mb-0.5" />
+            Action Summary
+          </p>
+          {isRenewal && (
+            <p>
+              ✅ Start a new 30-day billing cycle for{" "}
+              <strong>{selectedPkg?.name}</strong> at{" "}
+              <strong>PKR {renewalPrice.toLocaleString()}</strong>.
+            </p>
+          )}
+          {Number(amount) > 0 && (
+            <p>
+              💰 Record payment of{" "}
+              <strong>PKR {Number(amount).toLocaleString()}</strong> on{" "}
+              <strong>{date}</strong>
+              {note ? ` via ${note}` : ""}.
+            </p>
+          )}
+          {isRenewal && Number(amount) === 0 && (
+            <p className="text-amber-600">
+              ⚠️ No payment recorded — cycle will be renewed with full amount
+              pending.
+            </p>
+          )}
+        </div>
+      )}
+
       {/* ── ACTIONS ── */}
-      <div className="flex justify-end gap-3 pt-2">
+      <div className="flex justify-end gap-3 pt-1">
         <button
           onClick={onClose}
-          className="px-6 py-2.5 text-sm font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+          className="px-5 py-2.5 text-sm font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
         >
           Cancel
         </button>
         <button
           onClick={handleSubmit}
-          disabled={saving}
-          className="px-6 py-2.5 text-sm font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 shadow-sm transition-colors"
+          disabled={saving || !!invoiceData}
+          className={`px-6 py-2.5 text-sm font-semibold rounded-lg text-white shadow-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2 ${
+            isRenewal
+              ? "bg-blue-600 hover:bg-blue-700"
+              : "bg-green-600 hover:bg-green-700"
+          }`}
         >
-          {saving
-            ? "Processing..."
-            : needsRenewal
-              ? "Renew Cycle"
-              : "Record Payment"}
+          {saving ? (
+            "Processing..."
+          ) : isRenewal ? (
+            <>
+              <RefreshCw size={14} />
+              Renew Cycle
+            </>
+          ) : (
+            <>
+              <CreditCard size={14} />
+              Record Payment
+            </>
+          )}
         </button>
       </div>
+
+      {/* ── SUCCESS: show invoice prompt after save ── */}
+      {invoiceData && (
+        <div className="mt-2 flex items-center justify-between bg-green-50 border border-green-200 rounded-xl px-4 py-3">
+          <div className="flex items-center gap-2 text-sm text-green-800 font-medium">
+            <CheckCircle size={16} className="text-green-600" />
+            Saved successfully!
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setInvoiceData({ ...invoiceData, show: true })}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+            >
+              <FileText size={13} />
+              View Invoice
+            </button>
+            <button
+              onClick={onClose}
+              className="px-3 py-1.5 text-xs font-medium border border-green-300 text-green-700 rounded-lg hover:bg-green-100 transition-colors"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Invoice modal — shown after successful save */}
+      <InvoiceModal
+        isOpen={!!invoiceData?.show}
+        onClose={() => setInvoiceData(null)}
+        customer={customer}
+        cycle={invoiceData?.cycle}
+        packageName={invoiceData?.packageName}
+      />
     </div>
   );
 }

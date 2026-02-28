@@ -7,11 +7,13 @@ import {
   CreditCard,
   Calendar,
   Info,
+  FileText,
 } from "lucide-react";
 import { today, daysUntil } from "../../utils/dateUtils";
 import usePaymentStore from "../../store/usePaymentStore";
 import usePackageStore from "../../store/usePackageStore";
 import useCustomerStore from "../../store/useCustomerStore";
+import InvoiceModal from "../../components/ui/InvoiceModal";
 
 // ─── Scenario helpers ────────────────────────────────────────────────────────
 
@@ -163,6 +165,8 @@ export default function PaymentForm({ customer, onClose }) {
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // After a successful save, store the resulting cycle here to offer invoice
+  const [invoiceData, setInvoiceData] = useState(null);
 
   const selectedPkg = packages.find(
     (p) => String(p.id) === String(selectedPkgId),
@@ -201,22 +205,29 @@ export default function PaymentForm({ customer, onClose }) {
 
     setSaving(true);
     try {
+      let resultCycle;
       if (isRenewal) {
-        // Update package if changed
         if (String(selectedPkgId) !== String(customer.packageId)) {
           await updateCustomer(customer.id, {
             packageId: Number(selectedPkgId),
             lockedPackagePrice: renewalPrice,
           });
         }
-        const newCycle = await renewCycle(customer.id, date, renewalPrice);
+        resultCycle = await renewCycle(customer.id, date, renewalPrice);
         if (amt > 0) {
-          await addInstallment(newCycle.id, amt, date, note);
+          await addInstallment(resultCycle.id, amt, date, note);
+          // Re-fetch cycle from store so amountPaid is up to date
+          resultCycle = usePaymentStore.getState().getActiveCycle(customer.id);
         }
       } else {
         await addInstallment(activeCycle.id, amt, date, note);
+        resultCycle = usePaymentStore.getState().getActiveCycle(customer.id);
       }
-      onClose();
+      // Show invoice prompt instead of immediately closing
+      setInvoiceData({
+        cycle: resultCycle,
+        packageName: selectedPkg?.name || "—",
+      });
     } catch (err) {
       setError("Error: " + err.message);
     }
@@ -435,8 +446,8 @@ export default function PaymentForm({ customer, onClose }) {
         </div>
       )}
 
-      {/* ── QUICK SUMMARY before submit ── */}
-      {(Number(amount) > 0 || isRenewal) && (
+      {/* ── QUICK SUMMARY before submit — hidden after successful save ── */}
+      {!invoiceData && (Number(amount) > 0 || isRenewal) && (
         <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-600 space-y-1">
           <p className="font-semibold text-gray-800 text-xs uppercase tracking-wide mb-1.5">
             <Clock size={12} className="inline mr-1 mb-0.5" />
@@ -476,8 +487,8 @@ export default function PaymentForm({ customer, onClose }) {
         </button>
         <button
           onClick={handleSubmit}
-          disabled={saving}
-          className={`px-6 py-2.5 text-sm font-semibold rounded-lg text-white shadow-sm transition-colors disabled:opacity-50 flex items-center gap-2 ${
+          disabled={saving || !!invoiceData}
+          className={`px-6 py-2.5 text-sm font-semibold rounded-lg text-white shadow-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2 ${
             isRenewal
               ? "bg-blue-600 hover:bg-blue-700"
               : "bg-green-600 hover:bg-green-700"
@@ -498,6 +509,40 @@ export default function PaymentForm({ customer, onClose }) {
           )}
         </button>
       </div>
+
+      {/* ── SUCCESS: show invoice prompt after save ── */}
+      {invoiceData && (
+        <div className="mt-2 flex items-center justify-between bg-green-50 border border-green-200 rounded-xl px-4 py-3">
+          <div className="flex items-center gap-2 text-sm text-green-800 font-medium">
+            <CheckCircle size={16} className="text-green-600" />
+            Saved successfully!
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setInvoiceData({ ...invoiceData, show: true })}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+            >
+              <FileText size={13} />
+              View Invoice
+            </button>
+            <button
+              onClick={onClose}
+              className="px-3 py-1.5 text-xs font-medium border border-green-300 text-green-700 rounded-lg hover:bg-green-100 transition-colors"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Invoice modal — shown after successful save */}
+      <InvoiceModal
+        isOpen={!!invoiceData?.show}
+        onClose={() => setInvoiceData(null)}
+        customer={customer}
+        cycle={invoiceData?.cycle}
+        packageName={invoiceData?.packageName}
+      />
     </div>
   );
 }
