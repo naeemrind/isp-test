@@ -18,6 +18,7 @@ import {
 import useCustomerStore from "../store/useCustomerStore";
 import usePaymentStore from "../store/usePaymentStore";
 import useExpenseStore from "../store/useExpenseStore";
+import useInventoryStore from "../store/useInventoryStore";
 import { daysUntil, formatDate, today } from "../utils/dateUtils";
 import Badge from "../components/ui/Badge";
 import Modal from "../components/ui/Modal";
@@ -54,6 +55,7 @@ export default function Dashboard({ onNavigate }) {
   const customers = useCustomerStore((s) => s.customers);
   const cycles = usePaymentStore((s) => s.cycles);
   const expenses = useExpenseStore((s) => s.expenses);
+  const inventoryItems = useInventoryStore((s) => s.items);
 
   const [payCustomer, setPayCustomer] = useState(null);
   const [mode, setMode] = useState("alltime"); // alltime | monthly | daily
@@ -124,6 +126,12 @@ export default function Dashboard({ onNavigate }) {
     });
   });
 
+  // All-time inventory value
+  const at_inventoryValue = inventoryItems.reduce(
+    (s, i) => s + (i.amount || 0),
+    0,
+  );
+
   const at_totalExpenses = expenses.reduce(
     (s, e) => s + (Number(e.amount) || 0),
     0,
@@ -141,7 +149,8 @@ export default function Dashboard({ onNavigate }) {
     expiringCount: at_expiringCount,
     renewalCount: at_renewalCount,
     totalExpenses: at_totalExpenses,
-    netIncome: at_totalEver - at_totalExpenses,
+    inventoryValue: at_inventoryValue,
+    netIncome: at_totalEver - at_totalExpenses - at_inventoryValue,
   };
 
   // 2. MONTHLY STATS
@@ -195,6 +204,14 @@ export default function Dashboard({ onNavigate }) {
     })
     .reduce((s, e) => s + (Number(e.amount) || 0), 0);
 
+  // Inventory items purchased this month (filtered by item.date)
+  const mo_inventoryValue = inventoryItems
+    .filter((i) => {
+      const d = new Date(i.date);
+      return d >= monthStart && d <= monthEnd;
+    })
+    .reduce((s, i) => s + (i.amount || 0), 0);
+
   const monthly = {
     collected: mo_collected,
     pending: mo_pending,
@@ -206,7 +223,8 @@ export default function Dashboard({ onNavigate }) {
     renewalCount: mo_renewalCount,
     expiringCount: mo_expiringCount,
     totalExpenses: mo_expenses,
-    netIncome: mo_collected - mo_expenses,
+    inventoryValue: mo_inventoryValue,
+    netIncome: mo_collected - mo_expenses - mo_inventoryValue,
   };
 
   // 3. DAILY STATS
@@ -231,11 +249,16 @@ export default function Dashboard({ onNavigate }) {
     .filter((e) => e.date === selDate)
     .reduce((s, e) => s + (Number(e.amount) || 0), 0);
 
+  const day_inventoryValue = inventoryItems
+    .filter((i) => i.date === selDate)
+    .reduce((s, i) => s + (i.amount || 0), 0);
+
   const daily = {
     collected: day_collected,
     newCustomers: day_newCustomers,
     totalExpenses: day_expenses,
-    netIncome: day_collected - day_expenses,
+    inventoryValue: day_inventoryValue,
+    netIncome: day_collected - day_expenses - day_inventoryValue,
   };
 
   // ── Urgent List Logic ─────────────────────────────────────────────
@@ -377,9 +400,11 @@ export default function Dashboard({ onNavigate }) {
             <BigCard
               icon={<XCircle size={20} />}
               label="Total Expenses"
-              value={`PKR ${displayStats.totalExpenses.toLocaleString()}`}
+              value={`PKR ${((displayStats.totalExpenses || 0) + (displayStats.inventoryValue || 0)).toLocaleString()}`}
               sub="Recorded expenses"
               color="red"
+              inventoryValue={displayStats.inventoryValue || 0}
+              expensesValue={displayStats.totalExpenses || 0}
             />
           </div>
 
@@ -433,7 +458,7 @@ export default function Dashboard({ onNavigate }) {
           <BigCard
             icon={<XCircle size={20} />}
             label="Expenses Today"
-            value={`PKR ${daily.totalExpenses.toLocaleString()}`}
+            value={`PKR ${(daily.totalExpenses + (daily.inventoryValue || 0)).toLocaleString()}`}
             sub={`Expenses recorded on ${formatDate(selDate)}`}
             color="red"
           />
@@ -686,9 +711,13 @@ function BigCard({
   isSensitive = false,
   onClick,
   isClickable = false,
+  inventoryValue,
+  expensesValue,
 }) {
   const c = colorMap[color] || colorMap.blue;
   const [revealed, setRevealed] = useState(false);
+  const hasBreakdown =
+    inventoryValue !== undefined && expensesValue !== undefined;
 
   return (
     <div
@@ -721,14 +750,38 @@ function BigCard({
       </div>
 
       <div className="mt-2">
-        <div className="text-2xl font-bold text-gray-900 leading-tight">
+        <div
+          className={`font-bold text-gray-900 leading-tight ${String(value).length > 12 ? "text-lg" : "text-xl"}`}
+        >
           {isSensitive && !revealed ? (
             <span className="tracking-widest text-gray-400">••••••</span>
           ) : (
             value
           )}
         </div>
-        <div className="text-xs text-gray-500 mt-1 font-medium">{sub}</div>
+        {hasBreakdown ? (
+          <div className="mt-1.5 space-y-0.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-gray-500 font-medium">
+                Recorded expenses
+              </span>
+              <span className="font-semibold text-gray-700">
+                PKR {expensesValue.toLocaleString()}
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="flex items-center gap-1 text-blue-600 font-semibold">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500"></span>
+                Inventory Stock
+              </span>
+              <span className="font-semibold text-blue-600">
+                PKR {inventoryValue.toLocaleString()}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="text-xs text-gray-500 mt-1 font-medium">{sub}</div>
+        )}
       </div>
     </div>
   );

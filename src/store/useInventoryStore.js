@@ -6,17 +6,32 @@ const useInventoryStore = create((set) => ({
 
   loadInventory: async () => {
     const items = await db.inventory.toArray();
-    set({ items });
+    // Migrate legacy field names (received → stockIn, issued → stockOut, balanced → inHand)
+    const migrated = items.map((item) => ({
+      ...item,
+      stockIn: item.stockIn ?? item.received ?? 0,
+      stockOut: item.stockOut ?? item.issued ?? 0,
+      inHand: item.inHand ?? item.balanced ?? 0,
+    }));
+    set({ items: migrated });
   },
 
   addItem: async (data) => {
-    // Auto-calculate amount and balanced
+    const stockIn = Number(data.stockIn) || 0;
+    const stockOut = Number(data.stockOut) || 0;
+    const inHand = stockIn - stockOut;
     const amount = (Number(data.quantity) || 0) * (Number(data.unitRate) || 0);
-    const balanced = (Number(data.received) || 0) - (Number(data.issued) || 0);
+
     const id = await db.inventory.add({
       ...data,
+      stockIn,
+      stockOut,
+      inHand,
       amount,
-      balanced,
+      // Keep legacy fields in sync
+      received: stockIn,
+      issued: stockOut,
+      balanced: inHand,
       createdAt: new Date().toISOString(),
     });
     const item = await db.inventory.get(id);
@@ -24,9 +39,22 @@ const useInventoryStore = create((set) => ({
   },
 
   updateItem: async (id, data) => {
+    const stockIn = Number(data.stockIn) || 0;
+    const stockOut = Number(data.stockOut) || 0;
+    const inHand = stockIn - stockOut;
     const amount = (Number(data.quantity) || 0) * (Number(data.unitRate) || 0);
-    const balanced = (Number(data.received) || 0) - (Number(data.issued) || 0);
-    const updates = { ...data, amount, balanced };
+
+    const updates = {
+      ...data,
+      stockIn,
+      stockOut,
+      inHand,
+      amount,
+      // Keep legacy fields in sync
+      received: stockIn,
+      issued: stockOut,
+      balanced: inHand,
+    };
     await db.inventory.update(id, updates);
     set((s) => ({
       items: s.items.map((i) => (i.id === id ? { ...i, ...updates } : i)),

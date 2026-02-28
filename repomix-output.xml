@@ -80,551 +80,6 @@ vite.config.js
 <files>
 This section contains the contents of the repository's files.
 
-<file path="src/components/ui/InvoiceModal.jsx">
-// src/components/ui/InvoiceModal.jsx
-
-import { useRef } from "react";
-import { toPng } from "html-to-image";
-import {
-  X,
-  Printer,
-  Wifi,
-  CheckCircle2,
-  AlertCircle,
-  CornerDownRight,
-  ImageDown,
-} from "lucide-react";
-import { formatDate } from "../../utils/dateUtils";
-
-// ── Invoice number ────────────────────────────────────────────────────────────
-function invoiceNumber(cycle) {
-  const year = cycle.cycleStartDate?.slice(0, 4) || new Date().getFullYear();
-  const seq = String(cycle.id).padStart(4, "0");
-  return `INV-${year}-${seq}`;
-}
-
-// ── Scenario detector ─────────────────────────────────────────────────────────
-function getScenario(cycle) {
-  if (!cycle.isRenewal) return "new";
-  if (Number(cycle.previousBalance) > 0) return "renewal_with_dues";
-  return "renewal_clean";
-}
-
-const SCENARIO_LABELS = {
-  new: {
-    label: "New Connection",
-    color: "#1d4ed8",
-    bg: "#eff6ff",
-    border: "#bfdbfe",
-  },
-  renewal_with_dues: {
-    label: "Renewal — Previous Balance Included",
-    color: "#c2410c",
-    bg: "#fff7ed",
-    border: "#fed7aa",
-  },
-  renewal_clean: {
-    label: "Renewal",
-    color: "#15803d",
-    bg: "#f0fdf4",
-    border: "#bbf7d0",
-  },
-};
-
-// ── Print via new tab ────────────────────────────────────────────────────────
-function buildInvoiceHTML({
-  invNo,
-  scenarioMeta,
-  customer,
-  cycle,
-  packageName,
-  packagePrice,
-  previousBalance,
-  totalAmount,
-  amountPaid,
-  amountPending,
-  installments,
-}) {
-  const isPaid = amountPending === 0;
-
-  const installmentRows = installments
-    .map(
-      (inst) => `
-    <tr>
-      <td style="padding:6px 0; color:#374151; font-size:13px;">
-        ${formatDate(inst.datePaid)}${inst.note ? ` · <span style="color:#9ca3af">${inst.note}</span>` : ""}
-      </td>
-      <td style="padding:6px 0; text-align:right; font-weight:600; color:#15803d; font-size:13px;">
-        PKR ${Number(inst.amountPaid).toLocaleString()}
-      </td>
-    </tr>
-  `,
-    )
-    .join("");
-
-  const installmentsSection =
-    installments.length > 0
-      ? `
-    <div style="border:1px solid #e5e7eb; border-radius:10px; overflow:hidden; margin-bottom:16px;">
-      <div style="background:#f9fafb; padding:8px 16px; border-bottom:1px solid #e5e7eb;">
-        <p style="margin:0; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af;">Payments Received</p>
-      </div>
-      <div style="padding:10px 16px;">
-        <table style="width:100%; border-collapse:collapse;">
-          ${installmentRows}
-          <tr style="border-top:1px solid #f3f4f6;">
-            <td style="padding-top:8px; font-weight:600; color:#374151; font-size:13px;">Total Paid</td>
-            <td style="padding-top:8px; text-align:right; font-weight:700; color:#15803d; font-size:13px;">PKR ${amountPaid.toLocaleString()}</td>
-          </tr>
-        </table>
-      </div>
-    </div>
-  `
-      : "";
-
-  const statusBar = isPaid
-    ? `
-    <div style="display:flex; align-items:center; gap:12px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:10px; padding:12px 16px;">
-      <div style="font-size:20px;">✅</div>
-      <div>
-        <p style="margin:0; font-weight:700; color:#166534; font-size:14px;">Paid in Full</p>
-        <p style="margin:2px 0 0; color:#16a34a; font-size:12px;">No outstanding balance. Thank you!</p>
-      </div>
-    </div>
-  `
-    : `
-    <div style="display:flex; align-items:center; justify-content:space-between; background:#fef2f2; border:1px solid #fecaca; border-radius:10px; padding:12px 16px;">
-      <div style="display:flex; align-items:center; gap:12px;">
-        <div style="font-size:20px;">⚠️</div>
-        <div>
-          <p style="margin:0; font-weight:700; color:#991b1b; font-size:14px;">Balance Due</p>
-          <p style="margin:2px 0 0; color:#dc2626; font-size:12px;">Please pay at your earliest convenience.</p>
-        </div>
-      </div>
-      <p style="margin:0; font-weight:900; color:#b91c1c; font-size:20px;">PKR ${amountPending.toLocaleString()}</p>
-    </div>
-  `;
-
-  const prevBalanceRow =
-    previousBalance > 0
-      ? `
-    <tr>
-      <td style="padding:5px 0; color:#c2410c; font-size:13px;">↩ Previous unpaid balance</td>
-      <td style="padding:5px 0; text-align:right; font-weight:600; color:#c2410c; font-size:13px;">+ PKR ${previousBalance.toLocaleString()}</td>
-    </tr>
-  `
-      : "";
-
-  return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8"/>
-  <title>Invoice ${invNo}</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #1f2937; background: #fff; padding: 24px; font-size: 14px; }
-    @page { margin: 12mm; }
-  </style>
-</head>
-<body>
-
-  <!-- Header -->
-  <div style="display:flex; justify-content:space-between; align-items:flex-start; padding-bottom:16px; border-bottom:2px solid #1f2937; margin-bottom:20px;">
-    <div>
-      <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
-        <span style="font-size:22px;">📡</span>
-        <span style="font-size:22px; font-weight:900; letter-spacing:-0.5px;">Galaxy ISP</span>
-      </div>
-      <p style="color:#6b7280; font-size:12px;">Internet Service Provider</p>
-    </div>
-    <div style="text-align:right;">
-      <p style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:#9ca3af; margin-bottom:2px;">Invoice</p>
-      <p style="font-size:17px; font-weight:900;">${invNo}</p>
-      <p style="font-size:12px; color:#6b7280; margin-top:2px;">Issued: ${formatDate(cycle.cycleStartDate)}</p>
-    </div>
-  </div>
-
-  <!-- Scenario badge -->
-  <div style="display:inline-flex; align-items:center; gap:6px; background:${scenarioMeta.bg}; border:1px solid ${scenarioMeta.border}; border-radius:8px; padding:6px 12px; margin-bottom:20px;">
-    <span style="font-size:11px; font-weight:700; color:${scenarioMeta.color};">${scenarioMeta.label}</span>
-  </div>
-
-  <!-- Customer info -->
-  <table style="width:100%; border-collapse:collapse; margin-bottom:20px;">
-    <tr>
-      <td style="width:50%; vertical-align:top; padding-bottom:12px;">
-        <p style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af; margin-bottom:3px;">Customer</p>
-        <p style="font-size:15px; font-weight:700; color:#111827;">${customer.fullName}</p>
-        <p style="font-size:12px; color:#6b7280;">${customer.userName}</p>
-      </td>
-      <td style="width:50%; vertical-align:top; padding-bottom:12px;">
-        <p style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af; margin-bottom:3px;">Contact</p>
-        <p style="font-size:13px; color:#374151;">${customer.mobileNo || "—"}</p>
-        <p style="font-size:12px; color:#6b7280;">${customer.mainArea || "—"}</p>
-      </td>
-    </tr>
-    <tr>
-      <td style="vertical-align:top;">
-        <p style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af; margin-bottom:3px;">Package</p>
-        <p style="font-size:13px; font-weight:600; color:#374151;">${packageName || "—"}</p>
-      </td>
-      <td style="vertical-align:top;">
-        <p style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af; margin-bottom:3px;">Billing Period</p>
-        <p style="font-size:13px; color:#374151;">${formatDate(cycle.cycleStartDate)} → ${formatDate(cycle.cycleEndDate)}</p>
-      </td>
-    </tr>
-  </table>
-
-  <!-- Billing breakdown -->
-  <div style="border:1px solid #e5e7eb; border-radius:10px; overflow:hidden; margin-bottom:16px;">
-    <div style="background:#f9fafb; padding:8px 16px; border-bottom:1px solid #e5e7eb;">
-      <p style="margin:0; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af;">Billing Breakdown</p>
-    </div>
-    <div style="padding:10px 16px;">
-      <table style="width:100%; border-collapse:collapse;">
-        <tr>
-          <td style="padding:5px 0; color:#4b5563; font-size:13px;">Package charge (${packageName})</td>
-          <td style="padding:5px 0; text-align:right; font-weight:600; color:#1f2937; font-size:13px;">PKR ${packagePrice.toLocaleString()}</td>
-        </tr>
-        ${prevBalanceRow}
-        <tr style="border-top:1px solid #e5e7eb;">
-          <td style="padding-top:10px; font-weight:700; color:#1f2937; font-size:14px;">Total Due</td>
-          <td style="padding-top:10px; text-align:right; font-weight:900; color:#111827; font-size:16px;">PKR ${totalAmount.toLocaleString()}</td>
-        </tr>
-      </table>
-    </div>
-  </div>
-
-  ${installmentsSection}
-  ${statusBar}
-
-  <!-- Footer -->
-  <div style="margin-top:28px; padding-top:12px; border-top:1px solid #e5e7eb; text-align:center;">
-    <p style="font-size:10px; color:#9ca3af;">Galaxy ISP · Thank you for your business</p>
-    <p style="font-size:10px; color:#d1d5db; margin-top:3px;">This is a computer-generated invoice — no signature required.</p>
-  </div>
-
-</body>
-</html>`;
-}
-
-function printInvoice(htmlString) {
-  const tab = window.open("", "_blank");
-  if (!tab) {
-    alert("Please allow pop-ups for this site to enable printing.");
-    return;
-  }
-  tab.document.open();
-  tab.document.write(htmlString);
-  tab.document.close();
-  tab.onload = () => {
-    tab.focus();
-    tab.print();
-    tab.onafterprint = () => tab.close();
-  };
-}
-
-// ── Main component ────────────────────────────────────────────────────────────
-export default function InvoiceModal({
-  isOpen,
-  onClose,
-  customer,
-  cycle,
-  packageName,
-}) {
-  const invoiceRef = useRef(null);
-
-  if (!isOpen || !customer || !cycle) return null;
-
-  const scenario = getScenario(cycle);
-  const scenarioMeta = SCENARIO_LABELS[scenario];
-  const invNo = invoiceNumber(cycle);
-
-  const packagePrice =
-    Number(cycle.totalAmount) - Number(cycle.previousBalance || 0);
-  const previousBalance = Number(cycle.previousBalance || 0);
-  const totalAmount = Number(cycle.totalAmount);
-  const amountPaid = Number(cycle.amountPaid || 0);
-  const amountPending = Number(cycle.amountPending || 0);
-  const installments = cycle.installments || [];
-  const isPaid = amountPending === 0;
-
-  const invoiceProps = {
-    invNo,
-    scenarioMeta,
-    customer,
-    cycle,
-    packageName,
-    packagePrice,
-    previousBalance,
-    totalAmount,
-    amountPaid,
-    amountPending,
-    installments,
-  };
-
-  const handlePrint = () => {
-    const html = buildInvoiceHTML(invoiceProps);
-    printInvoice(html);
-  };
-
-  const handleSavePng = () => {
-    toPng(invoiceRef.current, { pixelRatio: 3 }).then((dataUrl) => {
-      const link = document.createElement("a");
-      link.download = `${invNo}.png`;
-      link.href = dataUrl;
-      link.click();
-    });
-  };
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4 max-h-[92vh] flex flex-col">
-        {/* Modal header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200 shrink-0">
-          <h2 className="text-sm font-semibold text-gray-700">
-            Invoice Preview
-          </h2>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleSavePng}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-            >
-              <ImageDown size={13} />
-              Save PNG
-            </button>
-            <button
-              onClick={handlePrint}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              <Printer size={13} />
-              Print / Save PDF
-            </button>
-            <button
-              onClick={onClose}
-              className="text-gray-400 hover:text-gray-600 p-1 rounded"
-            >
-              <X size={16} />
-            </button>
-          </div>
-        </div>
-
-        {/* Scrollable invoice preview */}
-        <div className="overflow-y-auto flex-1 p-5">
-          <div
-            ref={invoiceRef}
-            className="bg-white p-6 font-sans text-gray-800 text-sm"
-          >
-            {/* Header */}
-            <div className="flex items-start justify-between mb-5 pb-4 border-b-2 border-gray-800">
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <Wifi size={20} className="text-blue-600" />
-                  <span className="text-xl font-black text-gray-900 tracking-tight">
-                    Galaxy ISP
-                  </span>
-                </div>
-                <p className="text-xs text-gray-500">
-                  Internet Service Provider
-                </p>
-              </div>
-              <div className="text-right">
-                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-widest mb-0.5">
-                  Invoice
-                </p>
-                <p className="text-base font-black text-gray-900">{invNo}</p>
-                <p className="text-xs text-gray-500 mt-0.5">
-                  Issued: {formatDate(cycle.cycleStartDate)}
-                </p>
-              </div>
-            </div>
-
-            {/* Scenario badge */}
-            <div
-              className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 mb-4 border text-xs font-semibold"
-              style={{
-                background: scenarioMeta.bg,
-                borderColor: scenarioMeta.border,
-                color: scenarioMeta.color,
-              }}
-            >
-              {scenario === "new" && <Wifi size={12} />}
-              {scenario === "renewal_clean" && <CheckCircle2 size={12} />}
-              {scenario === "renewal_with_dues" && (
-                <CornerDownRight size={12} />
-              )}
-              {scenarioMeta.label}
-            </div>
-
-            {/* Customer info */}
-            <div className="grid grid-cols-2 gap-x-6 gap-y-3 mb-5 text-xs">
-              <div>
-                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-0.5">
-                  Customer
-                </p>
-                <p className="font-bold text-gray-900 text-sm">
-                  {customer.fullName}
-                </p>
-                <p className="text-gray-500">{customer.userName}</p>
-              </div>
-              <div>
-                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-0.5">
-                  Contact
-                </p>
-                <p className="text-gray-700">{customer.mobileNo || "—"}</p>
-                <p className="text-gray-500">{customer.mainArea || "—"}</p>
-              </div>
-              <div>
-                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-0.5">
-                  Package
-                </p>
-                <p className="text-gray-700 font-medium">
-                  {packageName || "—"}
-                </p>
-              </div>
-              <div>
-                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-0.5">
-                  Billing Period
-                </p>
-                <p className="text-gray-700">
-                  {formatDate(cycle.cycleStartDate)} →{" "}
-                  {formatDate(cycle.cycleEndDate)}
-                </p>
-              </div>
-            </div>
-
-            {/* Billing breakdown */}
-            <div className="border border-gray-200 rounded-xl overflow-hidden mb-4">
-              <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
-                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-widest">
-                  Billing Breakdown
-                </p>
-              </div>
-              <div className="px-4 py-3 space-y-2">
-                <div className="flex justify-between items-center text-sm">
-                  <span className="text-gray-600">
-                    Package charge ({packageName})
-                  </span>
-                  <span className="font-semibold text-gray-800">
-                    PKR {packagePrice.toLocaleString()}
-                  </span>
-                </div>
-                {previousBalance > 0 && (
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-orange-600 flex items-center gap-1.5">
-                      <CornerDownRight size={12} /> Previous unpaid balance
-                    </span>
-                    <span className="font-semibold text-orange-700">
-                      + PKR {previousBalance.toLocaleString()}
-                    </span>
-                  </div>
-                )}
-                <div className="border-t border-gray-200 pt-2 flex justify-between items-center">
-                  <span className="font-bold text-gray-800">Total Due</span>
-                  <span className="font-black text-gray-900 text-base">
-                    PKR {totalAmount.toLocaleString()}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Payments received */}
-            {installments.length > 0 && (
-              <div className="border border-gray-200 rounded-xl overflow-hidden mb-4">
-                <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
-                  <p className="text-[10px] font-bold uppercase text-gray-400 tracking-widest">
-                    Payments Received
-                  </p>
-                </div>
-                <div className="px-4 py-3 space-y-2">
-                  {installments.map((inst, i) => (
-                    <div
-                      key={inst.id || i}
-                      className="flex justify-between items-center text-sm"
-                    >
-                      <div className="flex items-center gap-2">
-                        <CheckCircle2
-                          size={13}
-                          className="text-green-500 shrink-0"
-                        />
-                        <span className="text-gray-600">
-                          {formatDate(inst.datePaid)}
-                          {inst.note && (
-                            <span className="text-gray-400 ml-1">
-                              · {inst.note}
-                            </span>
-                          )}
-                        </span>
-                      </div>
-                      <span className="font-semibold text-green-700">
-                        PKR {Number(inst.amountPaid).toLocaleString()}
-                      </span>
-                    </div>
-                  ))}
-                  <div className="border-t border-gray-100 pt-2 flex justify-between text-sm">
-                    <span className="font-semibold text-gray-700">
-                      Total Paid
-                    </span>
-                    <span className="font-bold text-green-700">
-                      PKR {amountPaid.toLocaleString()}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Status */}
-            {isPaid ? (
-              <div className="flex items-center gap-3 bg-green-50 border border-green-200 rounded-xl px-4 py-3">
-                <CheckCircle2 size={20} className="text-green-600 shrink-0" />
-                <div>
-                  <p className="font-bold text-green-800 text-sm">
-                    Paid in Full
-                  </p>
-                  <p className="text-xs text-green-600">
-                    No outstanding balance. Thank you!
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center justify-between bg-red-50 border border-red-200 rounded-xl px-4 py-3">
-                <div className="flex items-center gap-3">
-                  <AlertCircle size={20} className="text-red-500 shrink-0" />
-                  <div>
-                    <p className="font-bold text-red-800 text-sm">
-                      Balance Due
-                    </p>
-                    <p className="text-xs text-red-600">
-                      Please pay at your earliest convenience.
-                    </p>
-                  </div>
-                </div>
-                <p className="font-black text-red-700 text-lg">
-                  PKR {amountPending.toLocaleString()}
-                </p>
-              </div>
-            )}
-
-            {/* Footer */}
-            <div className="mt-5 pt-3 border-t border-gray-200 text-center text-[10px] text-gray-400">
-              <p>Galaxy ISP · Thank you for your business</p>
-              <p className="mt-0.5">
-                This is a computer-generated invoice — no signature required.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-</file>
-
 <file path="eslint.config.js">
 import js from '@eslint/js'
 import globals from 'globals'
@@ -1055,6 +510,588 @@ export default function ConfirmDialog({
         </div>
       </div>
     </Modal>
+  );
+}
+</file>
+
+<file path="src/components/ui/InvoiceModal.jsx">
+// src/components/ui/InvoiceModal.jsx
+
+import { useRef } from "react";
+import { toPng } from "html-to-image";
+import {
+  X,
+  Printer,
+  Wifi,
+  CheckCircle2,
+  AlertCircle,
+  CornerDownRight,
+  ImageDown,
+} from "lucide-react";
+import { formatDate } from "../../utils/dateUtils";
+
+// ── Invoice number ────────────────────────────────────────────────────────────
+function invoiceNumber(cycle) {
+  const year = cycle.cycleStartDate?.slice(0, 4) || new Date().getFullYear();
+  const seq = String(cycle.id).padStart(4, "0");
+  return `INV-${year}-${seq}`;
+}
+
+// ── Scenario detector ─────────────────────────────────────────────────────────
+function getScenario(cycle) {
+  if (!cycle.isRenewal) return "new";
+  if (Number(cycle.previousBalance) > 0) return "renewal_with_dues";
+  return "renewal_clean";
+}
+
+const SCENARIO_LABELS = {
+  new: {
+    label: "New Connection",
+    color: "#1d4ed8",
+    bg: "#eff6ff",
+    border: "#bfdbfe",
+  },
+  renewal_with_dues: {
+    label: "Renewal — Previous Balance Included",
+    color: "#c2410c",
+    bg: "#fff7ed",
+    border: "#fed7aa",
+  },
+  renewal_clean: {
+    label: "Renewal",
+    color: "#15803d",
+    bg: "#f0fdf4",
+    border: "#bbf7d0",
+  },
+};
+
+// ── Print via new tab ────────────────────────────────────────────────────────
+function buildInvoiceHTML({
+  invNo,
+  scenarioMeta,
+  customer,
+  cycle,
+  packageName,
+  packagePrice,
+  previousBalance,
+  totalAmount,
+  amountPaid,
+  amountPending,
+  installments,
+}) {
+  const installmentRows = installments
+    .map(
+      (inst) => `
+    <tr>
+      <td style="padding:6px 0; color:#374151; font-size:13px;">
+        ${formatDate(inst.datePaid)}${inst.note ? ` · <span style="color:#9ca3af">${inst.note}</span>` : ""}
+      </td>
+      <td style="padding:6px 0; text-align:right; font-weight:600; color:#15803d; font-size:13px;">
+        PKR ${Number(inst.amountPaid).toLocaleString()}
+      </td>
+    </tr>
+  `,
+    )
+    .join("");
+
+  const installmentsSection =
+    installments.length > 0
+      ? `
+    <div style="border:1px solid #e5e7eb; border-radius:10px; overflow:hidden; margin-bottom:16px;">
+      <div style="background:#f9fafb; padding:8px 16px; border-bottom:1px solid #e5e7eb;">
+        <p style="margin:0; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af;">Payments Received</p>
+      </div>
+      <div style="padding:10px 16px;">
+        <table style="width:100%; border-collapse:collapse;">
+          ${installmentRows}
+          <tr style="border-top:1px solid #f3f4f6;">
+            <td style="padding-top:8px; font-weight:600; color:#374151; font-size:13px;">Total Paid</td>
+            <td style="padding-top:8px; text-align:right; font-weight:700; color:#15803d; font-size:13px;">PKR ${amountPaid.toLocaleString()}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  `
+      : "";
+
+  const shiftedAmount = Number(cycle.shiftedAmount || 0);
+  const isCarriedForwardHtml = shiftedAmount > 0;
+  const isPaidHtml = amountPending === 0 && !isCarriedForwardHtml;
+
+  const statusBar = isCarriedForwardHtml
+    ? `
+    <div style="display:flex; align-items:center; justify-content:space-between; background:#fff7ed; border:1px solid #fed7aa; border-radius:10px; padding:12px 16px;">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <div style="font-size:20px;">↪️</div>
+        <div>
+          <p style="margin:0; font-weight:700; color:#9a3412; font-size:14px;">Unpaid — Carried Forward</p>
+          <p style="margin:2px 0 0; color:#c2410c; font-size:12px;">PKR ${shiftedAmount.toLocaleString()} was moved to the next cycle.</p>
+        </div>
+      </div>
+      <p style="margin:0; font-weight:900; color:#c2410c; font-size:20px;">PKR ${shiftedAmount.toLocaleString()}</p>
+    </div>
+  `
+    : isPaidHtml
+      ? `
+    <div style="display:flex; align-items:center; gap:12px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:10px; padding:12px 16px;">
+      <div style="font-size:20px;">✅</div>
+      <div>
+        <p style="margin:0; font-weight:700; color:#166534; font-size:14px;">Paid in Full</p>
+        <p style="margin:2px 0 0; color:#16a34a; font-size:12px;">No outstanding balance. Thank you!</p>
+      </div>
+    </div>
+  `
+      : `
+    <div style="display:flex; align-items:center; justify-content:space-between; background:#fef2f2; border:1px solid #fecaca; border-radius:10px; padding:12px 16px;">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <div style="font-size:20px;">⚠️</div>
+        <div>
+          <p style="margin:0; font-weight:700; color:#991b1b; font-size:14px;">Balance Due</p>
+          <p style="margin:2px 0 0; color:#dc2626; font-size:12px;">Please pay at your earliest convenience.</p>
+        </div>
+      </div>
+      <p style="margin:0; font-weight:900; color:#b91c1c; font-size:20px;">PKR ${amountPending.toLocaleString()}</p>
+    </div>
+  `;
+
+  const prevBalanceRow =
+    previousBalance > 0
+      ? `
+    <tr>
+      <td style="padding:5px 0; color:#c2410c; font-size:13px;">↩ Previous unpaid balance</td>
+      <td style="padding:5px 0; text-align:right; font-weight:600; color:#c2410c; font-size:13px;">+ PKR ${previousBalance.toLocaleString()}</td>
+    </tr>
+  `
+      : "";
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8"/>
+  <title>Invoice ${invNo}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #1f2937; background: #fff; padding: 24px; font-size: 14px; }
+    @page { margin: 12mm; }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; padding-bottom:16px; border-bottom:2px solid #1f2937; margin-bottom:20px;">
+    <div>
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+        <span style="font-size:22px;">📡</span>
+        <span style="font-size:22px; font-weight:900; letter-spacing:-0.5px;">Galaxy ISP</span>
+      </div>
+      <p style="color:#6b7280; font-size:12px;">Internet Service Provider</p>
+    </div>
+    <div style="text-align:right;">
+      <p style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:#9ca3af; margin-bottom:2px;">Invoice</p>
+      <p style="font-size:17px; font-weight:900;">${invNo}</p>
+      <p style="font-size:12px; color:#6b7280; margin-top:2px;">Issued: ${formatDate(cycle.cycleStartDate)}</p>
+    </div>
+  </div>
+
+  <!-- Scenario badge -->
+  <div style="display:inline-flex; align-items:center; gap:6px; background:${scenarioMeta.bg}; border:1px solid ${scenarioMeta.border}; border-radius:8px; padding:6px 12px; margin-bottom:20px;">
+    <span style="font-size:11px; font-weight:700; color:${scenarioMeta.color};">${scenarioMeta.label}</span>
+  </div>
+
+  <!-- Customer info -->
+  <table style="width:100%; border-collapse:collapse; margin-bottom:20px;">
+    <tr>
+      <td style="width:50%; vertical-align:top; padding-bottom:12px;">
+        <p style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af; margin-bottom:3px;">Customer</p>
+        <p style="font-size:15px; font-weight:700; color:#111827;">${customer.fullName}</p>
+        <p style="font-size:12px; color:#6b7280;">${customer.userName}</p>
+      </td>
+      <td style="width:50%; vertical-align:top; padding-bottom:12px;">
+        <p style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af; margin-bottom:3px;">Contact</p>
+        <p style="font-size:13px; color:#374151;">${customer.mobileNo || "—"}</p>
+        <p style="font-size:12px; color:#6b7280;">${customer.mainArea || "—"}</p>
+      </td>
+    </tr>
+    <tr>
+      <td style="vertical-align:top;">
+        <p style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af; margin-bottom:3px;">Package</p>
+        <p style="font-size:13px; font-weight:600; color:#374151;">${packageName || "—"}</p>
+      </td>
+      <td style="vertical-align:top;">
+        <p style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af; margin-bottom:3px;">Billing Period</p>
+        <p style="font-size:13px; color:#374151;">${formatDate(cycle.cycleStartDate)} → ${formatDate(cycle.cycleEndDate)}</p>
+      </td>
+    </tr>
+  </table>
+
+  <!-- Billing breakdown -->
+  <div style="border:1px solid #e5e7eb; border-radius:10px; overflow:hidden; margin-bottom:16px;">
+    <div style="background:#f9fafb; padding:8px 16px; border-bottom:1px solid #e5e7eb;">
+      <p style="margin:0; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af;">Billing Breakdown</p>
+    </div>
+    <div style="padding:10px 16px;">
+      <table style="width:100%; border-collapse:collapse;">
+        <tr>
+          <td style="padding:5px 0; color:#4b5563; font-size:13px;">Package charge (${packageName})</td>
+          <td style="padding:5px 0; text-align:right; font-weight:600; color:#1f2937; font-size:13px;">PKR ${packagePrice.toLocaleString()}</td>
+        </tr>
+        ${prevBalanceRow}
+        <tr style="border-top:1px solid #e5e7eb;">
+          <td style="padding-top:10px; font-weight:700; color:#1f2937; font-size:14px;">Total Due</td>
+          <td style="padding-top:10px; text-align:right; font-weight:900; color:#111827; font-size:16px;">PKR ${totalAmount.toLocaleString()}</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  ${installmentsSection}
+  ${statusBar}
+
+  <!-- Footer -->
+  <div style="margin-top:28px; padding-top:12px; border-top:1px solid #e5e7eb; text-align:center;">
+    <p style="font-size:10px; color:#9ca3af;">Galaxy ISP · Thank you for your business</p>
+    <p style="font-size:10px; color:#d1d5db; margin-top:3px;">This is a computer-generated invoice — no signature required.</p>
+  </div>
+
+</body>
+</html>`;
+}
+
+function printInvoice(htmlString) {
+  const tab = window.open("", "_blank");
+  if (!tab) {
+    alert("Please allow pop-ups for this site to enable printing.");
+    return;
+  }
+  tab.document.open();
+  tab.document.write(htmlString);
+  tab.document.close();
+  tab.onload = () => {
+    tab.focus();
+    tab.print();
+    tab.onafterprint = () => tab.close();
+  };
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+export default function InvoiceModal({
+  isOpen,
+  onClose,
+  customer,
+  cycle,
+  packageName,
+}) {
+  const invoiceRef = useRef(null);
+
+  if (!isOpen || !customer || !cycle) return null;
+
+  const scenario = getScenario(cycle);
+  const scenarioMeta = SCENARIO_LABELS[scenario];
+  const invNo = invoiceNumber(cycle);
+
+  const packagePrice =
+    Number(cycle.totalAmount) - Number(cycle.previousBalance || 0);
+  const previousBalance = Number(cycle.previousBalance || 0);
+  const totalAmount = Number(cycle.totalAmount);
+  const amountPaid = Number(cycle.amountPaid || 0);
+  const amountPending = Number(cycle.amountPending || 0);
+  const installments = cycle.installments || [];
+  const isCarriedForward = Number(cycle.shiftedAmount) > 0;
+  const isPaid = amountPending === 0 && !isCarriedForward;
+
+  const invoiceProps = {
+    invNo,
+    scenarioMeta,
+    customer,
+    cycle,
+    packageName,
+    packagePrice,
+    previousBalance,
+    totalAmount,
+    amountPaid,
+    amountPending,
+    installments,
+  };
+
+  const handlePrint = () => {
+    const html = buildInvoiceHTML(invoiceProps);
+    printInvoice(html);
+  };
+
+  const handleSavePng = () => {
+    toPng(invoiceRef.current, { pixelRatio: 3 }).then((dataUrl) => {
+      const link = document.createElement("a");
+      link.download = `${invNo}.png`;
+      link.href = dataUrl;
+      link.click();
+    });
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4 max-h-[92vh] flex flex-col">
+        {/* Modal header */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200 shrink-0">
+          <h2 className="text-sm font-semibold text-gray-700">
+            Invoice Preview
+          </h2>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleSavePng}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+            >
+              <ImageDown size={13} />
+              Save PNG
+            </button>
+            <button
+              onClick={handlePrint}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              <Printer size={13} />
+              Print / Save PDF
+            </button>
+            <button
+              onClick={onClose}
+              className="text-gray-400 hover:text-gray-600 p-1 rounded"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+
+        {/* Scrollable invoice preview */}
+        <div className="overflow-y-auto flex-1 p-5">
+          <div
+            ref={invoiceRef}
+            className="bg-white p-6 font-sans text-gray-800 text-sm"
+          >
+            {/* Header */}
+            <div className="flex items-start justify-between mb-5 pb-4 border-b-2 border-gray-800">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <Wifi size={20} className="text-blue-600" />
+                  <span className="text-xl font-black text-gray-900 tracking-tight">
+                    Galaxy ISP
+                  </span>
+                </div>
+                <p className="text-xs text-gray-500">
+                  Internet Service Provider
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-widest mb-0.5">
+                  Invoice
+                </p>
+                <p className="text-base font-black text-gray-900">{invNo}</p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Issued: {formatDate(cycle.cycleStartDate)}
+                </p>
+              </div>
+            </div>
+
+            {/* Scenario badge */}
+            <div
+              className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 mb-4 border text-xs font-semibold"
+              style={{
+                background: scenarioMeta.bg,
+                borderColor: scenarioMeta.border,
+                color: scenarioMeta.color,
+              }}
+            >
+              {scenario === "new" && <Wifi size={12} />}
+              {scenario === "renewal_clean" && <CheckCircle2 size={12} />}
+              {scenario === "renewal_with_dues" && (
+                <CornerDownRight size={12} />
+              )}
+              {scenarioMeta.label}
+            </div>
+
+            {/* Customer info */}
+            <div className="grid grid-cols-2 gap-x-6 gap-y-3 mb-5 text-xs">
+              <div>
+                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-0.5">
+                  Customer
+                </p>
+                <p className="font-bold text-gray-900 text-sm">
+                  {customer.fullName}
+                </p>
+                <p className="text-gray-500">{customer.userName}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-0.5">
+                  Contact
+                </p>
+                <p className="text-gray-700">{customer.mobileNo || "—"}</p>
+                <p className="text-gray-500">{customer.mainArea || "—"}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-0.5">
+                  Package
+                </p>
+                <p className="text-gray-700 font-medium">
+                  {packageName || "—"}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-0.5">
+                  Billing Period
+                </p>
+                <p className="text-gray-700">
+                  {formatDate(cycle.cycleStartDate)} →{" "}
+                  {formatDate(cycle.cycleEndDate)}
+                </p>
+              </div>
+            </div>
+
+            {/* Billing breakdown */}
+            <div className="border border-gray-200 rounded-xl overflow-hidden mb-4">
+              <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-widest">
+                  Billing Breakdown
+                </p>
+              </div>
+              <div className="px-4 py-3 space-y-2">
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-gray-600">
+                    Package charge ({packageName})
+                  </span>
+                  <span className="font-semibold text-gray-800">
+                    PKR {packagePrice.toLocaleString()}
+                  </span>
+                </div>
+                {previousBalance > 0 && (
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-orange-600 flex items-center gap-1.5">
+                      <CornerDownRight size={12} /> Previous unpaid balance
+                    </span>
+                    <span className="font-semibold text-orange-700">
+                      + PKR {previousBalance.toLocaleString()}
+                    </span>
+                  </div>
+                )}
+                <div className="border-t border-gray-200 pt-2 flex justify-between items-center">
+                  <span className="font-bold text-gray-800">Total Due</span>
+                  <span className="font-black text-gray-900 text-base">
+                    PKR {totalAmount.toLocaleString()}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Payments received */}
+            {installments.length > 0 && (
+              <div className="border border-gray-200 rounded-xl overflow-hidden mb-4">
+                <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                  <p className="text-[10px] font-bold uppercase text-gray-400 tracking-widest">
+                    Payments Received
+                  </p>
+                </div>
+                <div className="px-4 py-3 space-y-2">
+                  {installments.map((inst, i) => (
+                    <div
+                      key={inst.id || i}
+                      className="flex justify-between items-center text-sm"
+                    >
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2
+                          size={13}
+                          className="text-green-500 shrink-0"
+                        />
+                        <span className="text-gray-600">
+                          {formatDate(inst.datePaid)}
+                          {inst.note && (
+                            <span className="text-gray-400 ml-1">
+                              · {inst.note}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <span className="font-semibold text-green-700">
+                        PKR {Number(inst.amountPaid).toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+                  <div className="border-t border-gray-100 pt-2 flex justify-between text-sm">
+                    <span className="font-semibold text-gray-700">
+                      Total Paid
+                    </span>
+                    <span className="font-bold text-green-700">
+                      PKR {amountPaid.toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Status */}
+            {isCarriedForward ? (
+              <div className="flex items-center justify-between bg-orange-50 border border-orange-200 rounded-xl px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <CornerDownRight
+                    size={20}
+                    className="text-orange-500 shrink-0"
+                  />
+                  <div>
+                    <p className="font-bold text-orange-800 text-sm">
+                      Unpaid — Carried Forward
+                    </p>
+                    <p className="text-xs text-orange-600">
+                      PKR {Number(cycle.shiftedAmount).toLocaleString()} was
+                      moved to the next cycle.
+                    </p>
+                  </div>
+                </div>
+                <p className="font-black text-orange-700 text-lg">
+                  PKR {Number(cycle.shiftedAmount).toLocaleString()}
+                </p>
+              </div>
+            ) : isPaid ? (
+              <div className="flex items-center gap-3 bg-green-50 border border-green-200 rounded-xl px-4 py-3">
+                <CheckCircle2 size={20} className="text-green-600 shrink-0" />
+                <div>
+                  <p className="font-bold text-green-800 text-sm">
+                    Paid in Full
+                  </p>
+                  <p className="text-xs text-green-600">
+                    No outstanding balance. Thank you!
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between bg-red-50 border border-red-200 rounded-xl px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <AlertCircle size={20} className="text-red-500 shrink-0" />
+                  <div>
+                    <p className="font-bold text-red-800 text-sm">
+                      Balance Due
+                    </p>
+                    <p className="text-xs text-red-600">
+                      Please pay at your earliest convenience.
+                    </p>
+                  </div>
+                </div>
+                <p className="font-black text-red-700 text-lg">
+                  PKR {amountPending.toLocaleString()}
+                </p>
+              </div>
+            )}
+
+            {/* Footer */}
+            <div className="mt-5 pt-3 border-t border-gray-200 text-center text-[10px] text-gray-400">
+              <p>Galaxy ISP · Thank you for your business</p>
+              <p className="mt-0.5">
+                This is a computer-generated invoice — no signature required.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 </file>
@@ -3922,178 +3959,6 @@ function _toYMD(date) {
 }
 </file>
 
-<file path="src/utils/devTools.js">
-// src/utils/devTools.js
-import db from "../db/database";
-import usePaymentStore from "../store/usePaymentStore";
-import useCustomerStore from "../store/useCustomerStore";
-import useExpenseStore from "../store/useExpenseStore";
-import useInventoryStore from "../store/useInventoryStore";
-import { addDays, today, CYCLE_LENGTH_DAYS } from "./dateUtils";
-
-export const setupDevTools = () => {
-  // 1. List Customers
-  window.listCustomers = () => {
-    const customers = useCustomerStore.getState().customers;
-    console.table(
-      customers.map((c) => ({
-        ID: c.id,
-        Name: c.fullName,
-        Username: c.userName,
-        Status: c.status,
-      })),
-    );
-  };
-
-  // 2. Generate History for ONE customer
-  window.generateTestCycles = async (
-    customerId,
-    packagePrice = 2500,
-    numCycles = 10,
-  ) => {
-    if (!customerId) return console.error("❌ Please provide a customerId.");
-    try {
-      const allCycles = await db.paymentCycles.toArray();
-      const customerCycles = allCycles.filter(
-        (c) => Number(c.customerId) === Number(customerId),
-      );
-      for (const c of customerCycles) await db.paymentCycles.delete(c.id);
-
-      // Start 10 days ago, each cycle is exactly 30 days inclusive (offset = 29)
-      let currentStart = addDays(today(), -10);
-      let currentEnd = addDays(currentStart, CYCLE_LENGTH_DAYS);
-
-      for (let i = 0; i < numCycles; i++) {
-        const isCurrent = i === 0;
-        await db.paymentCycles.add({
-          customerId: Number(customerId),
-          cycleStartDate: currentStart,
-          cycleEndDate: currentEnd,
-          totalAmount: packagePrice,
-          amountPaid: isCurrent ? 0 : packagePrice,
-          amountPending: isCurrent ? packagePrice : 0,
-          status: isCurrent ? "pending" : "clear",
-          installments: isCurrent
-            ? []
-            : [
-                {
-                  id: crypto.randomUUID(),
-                  amountPaid: packagePrice,
-                  datePaid: currentStart,
-                  note: `Auto-payment (Test Data - Month ${i})`,
-                  createdAt: new Date().toISOString(),
-                },
-              ],
-          isRenewal: i > 0,
-          createdAt: new Date().toISOString(),
-        });
-        // Walk backwards: previous cycle ends the day before this one starts
-        currentEnd = addDays(currentStart, -1);
-        currentStart = addDays(currentEnd, -CYCLE_LENGTH_DAYS);
-      }
-      await usePaymentStore.getState().loadCycles();
-      console.log(
-        `✅ Added ${numCycles} historical cycles for customer ID: ${customerId}`,
-      );
-    } catch (error) {
-      console.error("❌ Failed:", error);
-    }
-  };
-
-  // 3. Generate Bulk Dummy Data
-  window.generateNeedsAttentionData = async (count = 15) => {
-    console.log(`⏳ Generating ${count} dummy customers...`);
-    try {
-      for (let i = 1; i <= count; i++) {
-        const customerId = await db.customers.add({
-          fullName: `Urgent Tester ${i}`,
-          userName: `urg_${Date.now()}_${i}`,
-          mobileNo: `0300${String(i).padStart(7, "0")}`,
-          mainArea: "Test Area",
-          packageId: null,
-          status: "active",
-          createdAt: new Date().toISOString(),
-        });
-
-        const daysLeft = Math.floor(Math.random() * 10) - 5;
-        const endDate = addDays(today(), daysLeft);
-        // startDate is exactly 30 days inclusive before endDate
-        const startDate = addDays(endDate, -CYCLE_LENGTH_DAYS);
-        const isPaid = Math.random() > 0.5;
-        const packagePrice = 2000 + Math.floor(Math.random() * 3) * 500;
-
-        await db.paymentCycles.add({
-          customerId: Number(customerId),
-          cycleStartDate: startDate,
-          cycleEndDate: endDate,
-          totalAmount: packagePrice,
-          amountPaid: isPaid ? packagePrice : 0,
-          amountPending: isPaid ? 0 : packagePrice,
-          status: isPaid ? "clear" : "pending",
-          installments: isPaid
-            ? [
-                {
-                  id: crypto.randomUUID(),
-                  amountPaid: packagePrice,
-                  datePaid: startDate,
-                  note: "Paid dummy",
-                  createdAt: new Date().toISOString(),
-                },
-              ]
-            : [],
-          isRenewal: false,
-          createdAt: new Date().toISOString(),
-        });
-      }
-      await useCustomerStore.getState().loadCustomers();
-      await usePaymentStore.getState().loadCycles();
-      console.log(`✅ Success! Generated ${count} customers.`);
-    } catch (error) {
-      console.error("❌ Failed:", error);
-    }
-  };
-
-  // 4. Clear All Data
-  window.clearAllData = async () => {
-    if (
-      !confirm(
-        "⚠️ ARE YOU SURE? This will delete ALL customers, payments, inventory, and expenses. Settings (Packages/Areas) will be kept.",
-      )
-    )
-      return;
-
-    console.log("🧹 Wiping database...");
-
-    try {
-      const customers = await db.customers.toArray();
-      const cycles = await db.paymentCycles.toArray();
-      const expenses = await db.expenses.toArray();
-      const inventory = await db.inventory.toArray();
-
-      for (const c of customers) await db.customers.delete(c.id);
-      for (const c of cycles) await db.paymentCycles.delete(c.id);
-      for (const e of expenses) await db.expenses.delete(e.id);
-      for (const i of inventory) await db.inventory.delete(i.id);
-
-      await Promise.all([
-        useCustomerStore.getState().loadCustomers(),
-        usePaymentStore.getState().loadCycles(),
-        useExpenseStore.getState().loadExpenses(),
-        useInventoryStore.getState().loadInventory(),
-      ]);
-
-      console.log("✨ All data cleared. App is fresh.");
-    } catch (err) {
-      console.error("Error clearing data:", err);
-    }
-  };
-
-  console.log("🛠️ DevTools Ready:");
-  console.log("👉 window.generateNeedsAttentionData(15) -> Add Dummy Data");
-  console.log("👉 window.clearAllData() -> DELETE ALL DATA");
-};
-</file>
-
 <file path="src/App.jsx">
 import { useEffect, useState } from "react";
 import Navbar from "./components/layout/Navbar";
@@ -5686,6 +5551,414 @@ const usePaymentStore = create((set, get) => ({
 }));
 
 export default usePaymentStore;
+</file>
+
+<file path="src/utils/devTools.js">
+// src/utils/devTools.js
+import db from "../db/database";
+import usePaymentStore from "../store/usePaymentStore";
+import useCustomerStore from "../store/useCustomerStore";
+import useExpenseStore from "../store/useExpenseStore";
+import useInventoryStore from "../store/useInventoryStore";
+import { addDays, today, CYCLE_LENGTH_DAYS } from "./dateUtils";
+
+export const setupDevTools = () => {
+  // 1. List Customers
+  window.listCustomers = () => {
+    const customers = useCustomerStore.getState().customers;
+    console.table(
+      customers.map((c) => ({
+        ID: c.id,
+        Name: c.fullName,
+        Username: c.userName,
+        Status: c.status,
+      })),
+    );
+  };
+
+  // 2. Generate History for ONE customer
+  //    Every even index (0, 2, 4...) = unpaid → carried forward
+  //    Every odd index  (1, 3, 5...) = fully paid
+  //    Unpaid cycles set shiftedAmount on themselves and previousBalance on
+  //    the following cycle — identical to what renewCycle() does in production.
+  window.generateTestCycles = async (
+    customerId,
+    packagePrice = 2500,
+    numCycles = 10,
+  ) => {
+    if (!customerId) return console.error("❌ Please provide a customerId.");
+    try {
+      // ── 1. Wipe existing cycles for this customer ──────────────────────────
+      const allCycles = await db.paymentCycles.toArray();
+      const customerCycles = allCycles.filter(
+        (c) => Number(c.customerId) === Number(customerId),
+      );
+      for (const c of customerCycles) await db.paymentCycles.delete(c.id);
+
+      // ── 2. Build date ranges oldest → newest ──────────────────────────────
+      // Newest cycle (i=0) starts 10 days ago. Walk backwards from there.
+      const ranges = [];
+      let end = addDays(addDays(today(), -10), CYCLE_LENGTH_DAYS);
+      let start = addDays(today(), -10);
+      for (let i = 0; i < numCycles; i++) {
+        ranges.unshift({ start, end }); // prepend so index 0 = oldest
+        end = addDays(start, -1);
+        start = addDays(end, -CYCLE_LENGTH_DAYS);
+      }
+      // ranges[0] = oldest cycle, ranges[numCycles-1] = newest (current) cycle
+
+      // ── 3. Insert cycles oldest → newest so carry-forward links are correct ─
+      // "pendingFromPrev" carries unpaid amount into the next cycle's totalAmount
+      let pendingFromPrev = 0;
+
+      for (let i = 0; i < ranges.length; i++) {
+        const { start: cycleStart, end: cycleEnd } = ranges[i];
+        const isNewest = i === ranges.length - 1;
+        // Alternate: even index = unpaid, odd index = paid
+        // The newest cycle is always left as-is (pending, no shiftedAmount yet)
+        const isPaid = isNewest ? false : i % 2 !== 0;
+
+        const totalAmount = packagePrice + pendingFromPrev;
+        const previousBalance = pendingFromPrev;
+
+        if (isPaid) {
+          // Fully paid cycle — normal clear cycle
+          await db.paymentCycles.add({
+            customerId: Number(customerId),
+            cycleStartDate: cycleStart,
+            cycleEndDate: cycleEnd,
+            totalAmount,
+            amountPaid: totalAmount,
+            amountPending: 0,
+            status: "clear",
+            shiftedAmount: 0,
+            previousBalance,
+            installments: [
+              {
+                id: crypto.randomUUID(),
+                amountPaid: totalAmount,
+                datePaid: cycleStart,
+                note: `Payment (Test Data - cycle ${i + 1})`,
+                createdAt: new Date().toISOString(),
+              },
+            ],
+            isRenewal: i > 0,
+            createdAt: new Date().toISOString(),
+          });
+          pendingFromPrev = 0; // debt cleared, nothing to carry forward
+        } else if (!isNewest) {
+          // Unpaid historical cycle — debt carried forward to next cycle
+          await db.paymentCycles.add({
+            customerId: Number(customerId),
+            cycleStartDate: cycleStart,
+            cycleEndDate: cycleEnd,
+            totalAmount,
+            amountPaid: 0,
+            amountPending: 0, // cleared by system (shifted, not paid)
+            status: "clear",
+            shiftedAmount: totalAmount, // ← what makes it show "Carried Forward"
+            previousBalance,
+            installments: [],
+            isRenewal: i > 0,
+            createdAt: new Date().toISOString(),
+          });
+          pendingFromPrev = totalAmount; // full amount moves to next cycle
+        } else {
+          // Newest (current) cycle — always pending
+          await db.paymentCycles.add({
+            customerId: Number(customerId),
+            cycleStartDate: cycleStart,
+            cycleEndDate: cycleEnd,
+            totalAmount,
+            amountPaid: 0,
+            amountPending: totalAmount,
+            status: "pending",
+            shiftedAmount: 0,
+            previousBalance,
+            installments: [],
+            isRenewal: i > 0,
+            createdAt: new Date().toISOString(),
+          });
+        }
+      }
+
+      await usePaymentStore.getState().loadCycles();
+      console.log(
+        `✅ Added ${numCycles} realistic cycles for customer ID: ${customerId}`,
+      );
+      console.log(`   Even cycles (1,3,5…) = Paid ✅`);
+      console.log(`   Odd cycles  (2,4,6…) = Carried Forward ↪️`);
+      console.log(`   Newest cycle         = Pending 🔴`);
+    } catch (error) {
+      console.error("❌ Failed:", error);
+    }
+  };
+
+  // 3. Consecutive unpaid streak then one big clearance payment
+  //    Usage: generateStreakTest(customerId, packagePrice, unpaidStreak, totalCycles)
+  //    Example: generateStreakTest(3, 1500, 4, 8)
+  //    → cycles 1-4 unpaid (carried forward), cycle 5 pays ALL accumulated dues,
+  //      cycles 6+ back to normal alternating paid/unpaid
+  window.generateStreakTest = async (
+    customerId,
+    packagePrice = 1500,
+    unpaidStreak = 4,
+    totalCycles = 8,
+  ) => {
+    if (!customerId) return console.error("❌ Please provide a customerId.");
+    if (unpaidStreak >= totalCycles)
+      return console.error("❌ unpaidStreak must be less than totalCycles.");
+    try {
+      // Wipe existing cycles for this customer
+      const allCycles = await db.paymentCycles.toArray();
+      for (const c of allCycles.filter(
+        (c) => Number(c.customerId) === Number(customerId),
+      ))
+        await db.paymentCycles.delete(c.id);
+
+      // Build date ranges oldest → newest
+      const ranges = [];
+      let end = addDays(addDays(today(), -10), CYCLE_LENGTH_DAYS);
+      let start = addDays(today(), -10);
+      for (let i = 0; i < totalCycles; i++) {
+        ranges.unshift({ start, end });
+        end = addDays(start, -1);
+        start = addDays(end, -CYCLE_LENGTH_DAYS);
+      }
+
+      // Pattern (oldest = index 0):
+      // 0 .. unpaidStreak-1  → unpaid (carried forward)
+      // unpaidStreak         → MEGA PAYMENT clears all accumulated debt
+      // unpaidStreak+1 ..    → alternating paid/unpaid (normal)
+      // last (newest)        → always pending
+      let pendingFromPrev = 0;
+
+      for (let i = 0; i < ranges.length; i++) {
+        const { start: cycleStart, end: cycleEnd } = ranges[i];
+        const isNewest = i === ranges.length - 1;
+        const totalAmount = packagePrice + pendingFromPrev;
+        const previousBalance = pendingFromPrev;
+
+        const isInStreak = i < unpaidStreak;
+        const isMegaPayment = i === unpaidStreak;
+        const isPaidAfterStreak = !isNewest && (i - unpaidStreak) % 2 === 1;
+
+        if (isInStreak) {
+          // Unpaid — debt carried forward to next cycle
+          await db.paymentCycles.add({
+            customerId: Number(customerId),
+            cycleStartDate: cycleStart,
+            cycleEndDate: cycleEnd,
+            totalAmount,
+            amountPaid: 0,
+            amountPending: 0,
+            status: "clear",
+            shiftedAmount: totalAmount,
+            previousBalance,
+            installments: [],
+            isRenewal: i > 0,
+            createdAt: new Date().toISOString(),
+          });
+          pendingFromPrev = totalAmount;
+        } else if (isMegaPayment) {
+          // Customer pays everything at once — clears all accumulated dues
+          await db.paymentCycles.add({
+            customerId: Number(customerId),
+            cycleStartDate: cycleStart,
+            cycleEndDate: cycleEnd,
+            totalAmount,
+            amountPaid: totalAmount,
+            amountPending: 0,
+            status: "clear",
+            shiftedAmount: 0,
+            previousBalance,
+            installments: [
+              {
+                id: crypto.randomUUID(),
+                amountPaid: totalAmount,
+                datePaid: cycleStart,
+                note: `Full clearance — PKR ${totalAmount.toLocaleString()} (${unpaidStreak} cycles cleared at once)`,
+                createdAt: new Date().toISOString(),
+              },
+            ],
+            isRenewal: i > 0,
+            createdAt: new Date().toISOString(),
+          });
+          pendingFromPrev = 0;
+        } else if (isNewest) {
+          // Current cycle — always pending
+          await db.paymentCycles.add({
+            customerId: Number(customerId),
+            cycleStartDate: cycleStart,
+            cycleEndDate: cycleEnd,
+            totalAmount,
+            amountPaid: 0,
+            amountPending: totalAmount,
+            status: "pending",
+            shiftedAmount: 0,
+            previousBalance,
+            installments: [],
+            isRenewal: i > 0,
+            createdAt: new Date().toISOString(),
+          });
+        } else if (isPaidAfterStreak) {
+          // Normal paid cycle after the streak
+          await db.paymentCycles.add({
+            customerId: Number(customerId),
+            cycleStartDate: cycleStart,
+            cycleEndDate: cycleEnd,
+            totalAmount,
+            amountPaid: totalAmount,
+            amountPending: 0,
+            status: "clear",
+            shiftedAmount: 0,
+            previousBalance,
+            installments: [
+              {
+                id: crypto.randomUUID(),
+                amountPaid: totalAmount,
+                datePaid: cycleStart,
+                note: `Payment (Test Data - cycle ${i + 1})`,
+                createdAt: new Date().toISOString(),
+              },
+            ],
+            isRenewal: i > 0,
+            createdAt: new Date().toISOString(),
+          });
+          pendingFromPrev = 0;
+        } else {
+          // Normal unpaid cycle after the streak (also carried forward)
+          await db.paymentCycles.add({
+            customerId: Number(customerId),
+            cycleStartDate: cycleStart,
+            cycleEndDate: cycleEnd,
+            totalAmount,
+            amountPaid: 0,
+            amountPending: 0,
+            status: "clear",
+            shiftedAmount: totalAmount,
+            previousBalance,
+            installments: [],
+            isRenewal: i > 0,
+            createdAt: new Date().toISOString(),
+          });
+          pendingFromPrev = totalAmount;
+        }
+      }
+
+      await usePaymentStore.getState().loadCycles();
+      console.log(`✅ Streak test generated for customer ID: ${customerId}`);
+      console.log(`   Cycles 1–${unpaidStreak}   → ↪️  Carried Forward`);
+      console.log(
+        `   Cycle  ${unpaidStreak + 1}       → 💰 MEGA PAYMENT (all dues cleared at once)`,
+      );
+      console.log(
+        `   Cycles ${unpaidStreak + 2}+      → alternating paid / carried forward`,
+      );
+      console.log(`   Newest cycle    → 🔴 Pending`);
+    } catch (error) {
+      console.error("❌ Failed:", error);
+    }
+  };
+
+  // 4. Generate Bulk Dummy Data
+  window.generateNeedsAttentionData = async (count = 15) => {
+    console.log(`⏳ Generating ${count} dummy customers...`);
+    try {
+      for (let i = 1; i <= count; i++) {
+        const customerId = await db.customers.add({
+          fullName: `Urgent Tester ${i}`,
+          userName: `urg_${Date.now()}_${i}`,
+          mobileNo: `0300${String(i).padStart(7, "0")}`,
+          mainArea: "Test Area",
+          packageId: null,
+          status: "active",
+          createdAt: new Date().toISOString(),
+        });
+
+        const daysLeft = Math.floor(Math.random() * 10) - 5;
+        const endDate = addDays(today(), daysLeft);
+        const startDate = addDays(endDate, -CYCLE_LENGTH_DAYS);
+        const isPaid = Math.random() > 0.5;
+        const packagePrice = 2000 + Math.floor(Math.random() * 3) * 500;
+
+        await db.paymentCycles.add({
+          customerId: Number(customerId),
+          cycleStartDate: startDate,
+          cycleEndDate: endDate,
+          totalAmount: packagePrice,
+          amountPaid: isPaid ? packagePrice : 0,
+          amountPending: isPaid ? 0 : packagePrice,
+          status: isPaid ? "clear" : "pending",
+          installments: isPaid
+            ? [
+                {
+                  id: crypto.randomUUID(),
+                  amountPaid: packagePrice,
+                  datePaid: startDate,
+                  note: "Paid dummy",
+                  createdAt: new Date().toISOString(),
+                },
+              ]
+            : [],
+          isRenewal: false,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      await useCustomerStore.getState().loadCustomers();
+      await usePaymentStore.getState().loadCycles();
+      console.log(`✅ Success! Generated ${count} customers.`);
+    } catch (error) {
+      console.error("❌ Failed:", error);
+    }
+  };
+
+  // 4. Clear All Data
+  window.clearAllData = async () => {
+    if (
+      !confirm(
+        "⚠️ ARE YOU SURE? This will delete ALL customers, payments, inventory, and expenses. Settings (Packages/Areas) will be kept.",
+      )
+    )
+      return;
+
+    console.log("🧹 Wiping database...");
+
+    try {
+      const customers = await db.customers.toArray();
+      const cycles = await db.paymentCycles.toArray();
+      const expenses = await db.expenses.toArray();
+      const inventory = await db.inventory.toArray();
+
+      for (const c of customers) await db.customers.delete(c.id);
+      for (const c of cycles) await db.paymentCycles.delete(c.id);
+      for (const e of expenses) await db.expenses.delete(e.id);
+      for (const i of inventory) await db.inventory.delete(i.id);
+
+      await Promise.all([
+        useCustomerStore.getState().loadCustomers(),
+        usePaymentStore.getState().loadCycles(),
+        useExpenseStore.getState().loadExpenses(),
+        useInventoryStore.getState().loadInventory(),
+      ]);
+
+      console.log("✨ All data cleared. App is fresh.");
+    } catch (err) {
+      console.error("Error clearing data:", err);
+    }
+  };
+
+  console.log("🛠️ DevTools Ready:");
+  console.log("👉 listCustomers() -> See all customer IDs");
+  console.log(
+    "👉 generateTestCycles(id, price, count) -> Realistic mixed history",
+  );
+  console.log(
+    "👉 generateStreakTest(id, price, streak, total) -> e.g. generateStreakTest(3, 1500, 4, 10)",
+  );
+  console.log("👉 generateNeedsAttentionData(15) -> Add Dummy Customers");
+  console.log("👉 clearAllData() -> DELETE ALL DATA");
+};
 </file>
 
 <file path="src/pages/Customers/CustomerTable.jsx">
