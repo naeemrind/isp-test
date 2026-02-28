@@ -8,10 +8,8 @@ import {
   XCircle,
   Calendar,
   CreditCard,
-  Activity,
   ChevronLeft,
   ChevronRight,
-  RefreshCw,
   Eye,
   EyeOff,
 } from "lucide-react";
@@ -93,11 +91,11 @@ export default function Dashboard({ onNavigate }) {
     at_pending = 0,
     at_overdueMoney = 0;
   let at_overdueCount = 0;
-  let at_expiringCount = 0;
-  let at_renewalCount = 0;
   let at_activeCount = 0,
     at_suspendedCount = 0,
     at_totalEver = 0;
+  let at_pendingStatusBalance = 0,
+    at_suspendedBalance = 0;
 
   activeCustomers.forEach((c) => {
     if (c.status === "active") at_activeCount++;
@@ -108,6 +106,12 @@ export default function Dashboard({ onNavigate }) {
     at_collected += cycle.amountPaid || 0;
     at_pending += cycle.amountPending || 0;
 
+    const bal = cycle.amountPending || 0;
+    if (bal > 0) {
+      if (c.status === "suspended") at_suspendedBalance += bal;
+      else at_pendingStatusBalance += bal;
+    }
+
     const days = daysUntil(cycle.cycleEndDate);
 
     // Overdue Logic (Pending AND Expired)
@@ -115,9 +119,6 @@ export default function Dashboard({ onNavigate }) {
       at_overdueCount++;
       at_overdueMoney += cycle.amountPending;
     }
-
-    if (days >= 0 && days <= 5) at_expiringCount++;
-    if (days < 0) at_renewalCount++;
   });
 
   cycles.forEach((cy) => {
@@ -146,8 +147,8 @@ export default function Dashboard({ onNavigate }) {
     overdueMoney: at_overdueMoney,
     totalEverCollected: at_totalEver,
     overdueCount: at_overdueCount,
-    expiringCount: at_expiringCount,
-    renewalCount: at_renewalCount,
+    pendingStatusBalance: at_pendingStatusBalance,
+    suspendedBalance: at_suspendedBalance,
     totalExpenses: at_totalExpenses,
     inventoryValue: at_inventoryValue,
     netIncome: at_totalEver - at_totalExpenses - at_inventoryValue,
@@ -162,9 +163,7 @@ export default function Dashboard({ onNavigate }) {
     mo_newCustomers = 0;
   let mo_clearedCount = 0,
     mo_pendingCount = 0,
-    mo_overdueCount = 0,
-    mo_renewalCount = 0,
-    mo_expiringCount = 0;
+    mo_overdueCount = 0;
 
   cycles.forEach((cy) => {
     // Collected in this month
@@ -187,8 +186,6 @@ export default function Dashboard({ onNavigate }) {
         mo_overdueMoney += cy.amountPending;
         mo_overdueCount++;
       }
-      if (days < 0) mo_renewalCount++;
-      if (days >= 0 && days <= 5) mo_expiringCount++;
     }
   });
 
@@ -220,8 +217,6 @@ export default function Dashboard({ onNavigate }) {
     clearedCount: mo_clearedCount,
     pendingCount: mo_pendingCount,
     overdueCount: mo_overdueCount,
-    renewalCount: mo_renewalCount,
-    expiringCount: mo_expiringCount,
     totalExpenses: mo_expenses,
     inventoryValue: mo_inventoryValue,
     netIncome: mo_collected - mo_expenses - mo_inventoryValue,
@@ -349,10 +344,10 @@ export default function Dashboard({ onNavigate }) {
 
       {mode !== "daily" ? (
         <>
-          {/* Top Row: 5 Columns */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+          {/* Top Row: 4 Columns */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <BigCard
-              icon={<Users size={20} />}
+              icon={<Users size={16} />}
               label="Total Customers"
               value={
                 mode === "monthly"
@@ -367,38 +362,21 @@ export default function Dashboard({ onNavigate }) {
               color="blue"
             />
             <BigCard
-              icon={<CheckCircle size={20} />}
-              label="Total Collected"
+              icon={<CheckCircle size={16} />}
+              label={
+                mode === "monthly" ? "Collected This Month" : "Ever Collected"
+              }
               value={`PKR ${mode === "monthly" ? monthly.collected.toLocaleString() : allTime.totalEverCollected.toLocaleString()}`}
               sub={
-                mode === "monthly" ? "Received this month" : "All payments ever"
+                mode === "monthly"
+                  ? "Payments received this month"
+                  : "Sum of all payments ever"
               }
               color="green"
               isSensitive={true}
             />
             <BigCard
-              icon={<Clock size={20} />}
-              label="Currently Pending"
-              value={`PKR ${displayStats.pending.toLocaleString()}`}
-              sub="Click to view details"
-              color="amber"
-              // Navigate to Customers > Pending
-              onClick={() => onNavigate("customers", "pending")}
-              isClickable
-            />
-            <BigCard
-              icon={<AlertTriangle size={20} />}
-              label="Total Overdue"
-              value={`PKR ${displayStats.overdueMoney.toLocaleString()}`}
-              sub="Expired + Unpaid"
-              color="red"
-              highlight={displayStats.overdueMoney > 0}
-              // Navigate to Customers > Overdue
-              onClick={() => onNavigate("customers", "overdue")}
-              isClickable
-            />
-            <BigCard
-              icon={<XCircle size={20} />}
+              icon={<XCircle size={16} />}
               label="Total Expenses"
               value={`PKR ${((displayStats.totalExpenses || 0) + (displayStats.inventoryValue || 0)).toLocaleString()}`}
               sub="Recorded expenses"
@@ -406,12 +384,23 @@ export default function Dashboard({ onNavigate }) {
               inventoryValue={displayStats.inventoryValue || 0}
               expensesValue={displayStats.totalExpenses || 0}
             />
+            <BigCard
+              icon={<Clock size={16} />}
+              label="Total Balance Due"
+              value={`PKR ${displayStats.pending.toLocaleString()}`}
+              sub="Click to view all"
+              color="amber"
+              onClick={() => onNavigate("customers", "balance-due")}
+              isClickable
+              pendingStatusBalance={displayStats.pendingStatusBalance || 0}
+              suspendedBalance={displayStats.suspendedBalance || 0}
+            />
           </div>
 
-          {/* Bottom Row: 4 Columns */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Bottom Row: 3 Columns */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <BigCard
-              icon={<Users size={20} />}
+              icon={<Users size={16} />}
               label="Overdue Customers"
               value={displayStats.overdueCount}
               sub="Count of customers overdue"
@@ -419,23 +408,17 @@ export default function Dashboard({ onNavigate }) {
               highlight={displayStats.overdueCount > 0}
             />
             <BigCard
-              icon={<RefreshCw size={20} />}
-              label="Needs Renewal"
-              value={displayStats.renewalCount}
-              sub="Cycle expired, renew now"
+              icon={<AlertTriangle size={16} />}
+              label="Total Overdue"
+              value={`PKR ${displayStats.overdueMoney.toLocaleString()}`}
+              sub="Expired + Unpaid"
               color="red"
-              highlight={displayStats.renewalCount > 0}
+              highlight={displayStats.overdueMoney > 0}
+              onClick={() => onNavigate("customers", "overdue")}
+              isClickable
             />
             <BigCard
-              icon={<Activity size={20} />}
-              label="Expiring in 5 Days"
-              value={displayStats.expiringCount}
-              sub="Collect before cutoff"
-              color="amber"
-              highlight={displayStats.expiringCount > 0}
-            />
-            <BigCard
-              icon={<TrendingUp size={20} />}
+              icon={<TrendingUp size={16} />}
               label="Net Income"
               value={`PKR ${displayStats.netIncome.toLocaleString()}`}
               sub="Total collected − expenses"
@@ -448,7 +431,7 @@ export default function Dashboard({ onNavigate }) {
         /* Daily View */
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <BigCard
-            icon={<CreditCard size={20} />}
+            icon={<CreditCard size={16} />}
             label="Collected Today"
             value={`PKR ${daily.collected.toLocaleString()}`}
             sub={`Payments received on ${formatDate(selDate)}`}
@@ -456,14 +439,14 @@ export default function Dashboard({ onNavigate }) {
             isSensitive={true}
           />
           <BigCard
-            icon={<XCircle size={20} />}
+            icon={<XCircle size={16} />}
             label="Expenses Today"
             value={`PKR ${(daily.totalExpenses + (daily.inventoryValue || 0)).toLocaleString()}`}
             sub={`Expenses recorded on ${formatDate(selDate)}`}
             color="red"
           />
           <BigCard
-            icon={<TrendingUp size={20} />}
+            icon={<TrendingUp size={16} />}
             label="Daily Net Income"
             value={`PKR ${daily.netIncome.toLocaleString()}`}
             sub="Collected − expenses"
@@ -471,7 +454,7 @@ export default function Dashboard({ onNavigate }) {
             isSensitive={true}
           />
           <BigCard
-            icon={<Users size={20} />}
+            icon={<Users size={16} />}
             label="New Customers"
             value={daily.newCustomers}
             sub="Joined today"
@@ -713,21 +696,25 @@ function BigCard({
   isClickable = false,
   inventoryValue,
   expensesValue,
+  pendingStatusBalance,
+  suspendedBalance,
 }) {
   const c = colorMap[color] || colorMap.blue;
   const [revealed, setRevealed] = useState(false);
-  const hasBreakdown =
+  const hasExpenseBreakdown =
     inventoryValue !== undefined && expensesValue !== undefined;
+  const hasBalanceBreakdown =
+    pendingStatusBalance !== undefined && suspendedBalance !== undefined;
 
   return (
     <div
       onClick={isClickable ? onClick : undefined}
-      className={`rounded-xl p-5 ${c.bg} flex flex-col justify-between ${highlight ? "ring-2 ring-offset-1 ring-red-300" : ""} ${isClickable ? "cursor-pointer hover:shadow-md transition-shadow active:scale-95" : ""}`}
+      className={`rounded-xl px-4 py-3 ${c.bg} flex flex-col justify-between ${highlight ? "ring-2 ring-offset-1 ring-red-300" : ""} ${isClickable ? "cursor-pointer hover:shadow-md transition-shadow active:scale-95" : ""}`}
     >
       <div>
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center justify-between mb-2">
           <div
-            className={`w-10 h-10 rounded-lg flex items-center justify-center ${c.iconBox} ${c.icon}`}
+            className={`w-8 h-8 rounded-lg flex items-center justify-center ${c.iconBox} ${c.icon}`}
           >
             {icon}
           </div>
@@ -740,18 +727,18 @@ function BigCard({
               className="text-gray-400 hover:text-gray-600 transition-colors"
               title={revealed ? "Hide Amount" : "Show Amount"}
             >
-              {revealed ? <EyeOff size={18} /> : <Eye size={18} />}
+              {revealed ? <EyeOff size={15} /> : <Eye size={15} />}
             </button>
           )}
         </div>
-        <div className="text-sm font-semibold text-gray-500 uppercase tracking-wide">
+        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
           {label}
         </div>
       </div>
 
-      <div className="mt-2">
+      <div className="mt-1">
         <div
-          className={`font-bold text-gray-900 leading-tight ${String(value).length > 12 ? "text-lg" : "text-xl"}`}
+          className={`font-bold text-gray-900 leading-tight ${String(value).length > 12 ? "text-base" : "text-lg"}`}
         >
           {isSensitive && !revealed ? (
             <span className="tracking-widest text-gray-400">••••••</span>
@@ -759,8 +746,8 @@ function BigCard({
             value
           )}
         </div>
-        {hasBreakdown ? (
-          <div className="mt-1.5 space-y-0.5">
+        {hasExpenseBreakdown ? (
+          <div className="mt-1 space-y-0.5">
             <div className="flex items-center justify-between text-xs">
               <span className="text-gray-500 font-medium">
                 Recorded expenses
@@ -779,8 +766,36 @@ function BigCard({
               </span>
             </div>
           </div>
+        ) : hasBalanceBreakdown ? (
+          <div className="mt-1 space-y-0.5">
+            {pendingStatusBalance > 0 && (
+              <div className="flex items-center justify-between text-xs">
+                <span className="flex items-center gap-1 text-amber-600 font-medium">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                  Pending
+                </span>
+                <span className="font-semibold text-amber-700">
+                  PKR {pendingStatusBalance.toLocaleString()}
+                </span>
+              </div>
+            )}
+            {suspendedBalance > 0 && (
+              <div className="flex items-center justify-between text-xs">
+                <span className="flex items-center gap-1 text-orange-600 font-medium">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-orange-400"></span>
+                  Suspended
+                </span>
+                <span className="font-semibold text-orange-700">
+                  PKR {suspendedBalance.toLocaleString()}
+                </span>
+              </div>
+            )}
+            <div className="text-xs text-gray-400 mt-0.5">
+              Click to view all
+            </div>
+          </div>
         ) : (
-          <div className="text-xs text-gray-500 mt-1 font-medium">{sub}</div>
+          <div className="text-xs text-gray-500 mt-0.5 font-medium">{sub}</div>
         )}
       </div>
     </div>

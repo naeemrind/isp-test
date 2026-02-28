@@ -54,7 +54,8 @@ export default function CustomerTable({
         <table className="w-full text-sm border-collapse">
           <thead>
             <tr className="bg-gray-100 text-gray-600 text-left">
-              <th className="px-3 py-2 font-medium">Customer</th>
+              <th className="px-3 py-2 font-medium w-10 text-center">#</th>
+              <th className="px-3 py-2 font-medium min-w-48">Customer</th>
               <th className="px-3 py-2 font-medium">Area</th>
               <th className="px-3 py-2 font-medium">Package</th>
               <th className="px-3 py-2 font-medium">Expires</th>
@@ -64,7 +65,7 @@ export default function CustomerTable({
             </tr>
           </thead>
           <tbody>
-            {filtered.map((customer) => {
+            {filtered.map((customer, idx) => {
               const cycle = getActiveCycle(customer.id);
               const pkg = packages.find((p) => p.id === customer.packageId);
               const days = cycle ? daysUntil(cycle.cycleEndDate) : null;
@@ -115,6 +116,9 @@ export default function CustomerTable({
                   key={customer.id}
                   className={`border-b border-gray-100 ${rowBg} hover:bg-gray-50`}
                 >
+                  <td className="px-3 py-2 text-center text-xs text-gray-400 font-medium w-10">
+                    {idx + 1}
+                  </td>
                   <td className="px-3 py-2">
                     <div className="font-medium text-gray-800">
                       {customer.fullName}
@@ -194,31 +198,35 @@ export default function CustomerTable({
                   <td className="px-3 py-2">
                     <Badge
                       status={
-                        customer.status === "active"
-                          ? cycleStatus
-                          : customer.status
+                        customer.status === "suspended" &&
+                        (!cycle || cycle.amountPending === 0)
+                          ? "clear"
+                          : customer.status === "active"
+                            ? cycleStatus
+                            : customer.status
                       }
                     />
                   </td>
                   <td className="px-3 py-2">
-                    <div className="flex items-center gap-2 flex-wrap">
+                    <div className="flex items-center gap-1.5">
+                      {/* Labeled action buttons */}
                       <button
                         onClick={() => onPay(customer)}
-                        className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-blue-50 text-blue-700 rounded hover:bg-blue-100 border border-blue-200 transition-colors"
+                        className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium bg-blue-50 text-blue-700 rounded hover:bg-blue-100 border border-blue-200 transition-colors whitespace-nowrap"
                         title="Record Payment"
                       >
-                        <CreditCard size={13} /> Pay
+                        <CreditCard size={12} /> Pay
                       </button>
                       <button
                         onClick={() => onEdit(customer)}
-                        className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-white text-gray-700 rounded hover:bg-gray-50 border border-gray-300 transition-colors"
+                        className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium bg-white text-gray-700 rounded hover:bg-gray-50 border border-gray-300 transition-colors"
                         title="Edit Customer"
                       >
-                        <Pencil size={13} /> Edit
+                        <Pencil size={12} /> Edit
                       </button>
                       <button
                         onClick={() => onDelete(customer)}
-                        className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-white text-red-600 rounded hover:bg-red-50 border border-gray-200 transition-colors"
+                        className="flex items-center justify-center w-7 h-7 text-xs font-medium bg-white text-red-500 rounded hover:bg-red-50 border border-gray-200 transition-colors"
                         title="Delete Customer"
                       >
                         <Trash2 size={13} />
@@ -230,15 +238,17 @@ export default function CustomerTable({
                           label="Send"
                         />
                       )}
+                      {/* Divider */}
+                      <div className="w-px h-5 bg-gray-200 mx-0.5" />
+                      {/* Icon-only utility buttons */}
                       <button
                         onClick={() => setHistoryTarget(customer)}
-                        className="flex items-center justify-center w-7 h-7 rounded border bg-white border-gray-300 text-gray-500 hover:bg-gray-50 transition-colors"
+                        className="flex items-center justify-center w-7 h-7 rounded border bg-white border-gray-200 text-gray-400 hover:bg-gray-50 hover:text-gray-700 transition-colors"
                         title="View Payment History"
                       >
-                        <History size={15} />
+                        <History size={14} />
                       </button>
-                      {/* Invoice button — opens latest cycle's invoice */}
-                      {cycle && (
+                      {cycle ? (
                         <button
                           onClick={() =>
                             setInvoiceTarget({
@@ -247,11 +257,13 @@ export default function CustomerTable({
                               packageName: pkg?.name || "—",
                             })
                           }
-                          className="flex items-center justify-center w-7 h-7 rounded border bg-white border-gray-300 text-gray-500 hover:bg-purple-50 hover:border-purple-300 hover:text-purple-600 transition-colors"
+                          className="flex items-center justify-center w-7 h-7 rounded border bg-white border-gray-200 text-gray-400 hover:bg-purple-50 hover:border-purple-200 hover:text-purple-600 transition-colors"
                           title="View / Print Latest Invoice"
                         >
-                          <FileText size={15} />
+                          <FileText size={14} />
                         </button>
+                      ) : (
+                        <div className="w-7 h-7" />
                       )}
                     </div>
                   </td>
@@ -261,7 +273,7 @@ export default function CustomerTable({
             {filtered.length === 0 && (
               <tr>
                 <td
-                  colSpan={7}
+                  colSpan={8}
                   className="px-3 py-8 text-center text-gray-400 text-sm"
                 >
                   No customers found.

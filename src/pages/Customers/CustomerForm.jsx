@@ -154,6 +154,8 @@ export default function CustomerForm({ customer, onClose }) {
       const pkg = packages.find((p) => Number(p.id) === pkgId);
       const lockedPrice = pkg ? Number(pkg.price) : 0;
 
+      const isTerminating = isEdit && form.status === "terminated";
+
       const customerData = {
         fullName: form.fullName.trim(),
         userName: form.userName.trim(),
@@ -165,6 +167,12 @@ export default function CustomerForm({ customer, onClose }) {
         lockedPackagePrice: lockedPrice,
         status: isEdit ? form.status : "active",
         notes: form.notes,
+        // Auto-archive when terminated
+        ...(isTerminating && {
+          isArchived: true,
+          archivedAt: new Date().toISOString(),
+          archiveReason: "Terminated",
+        }),
       };
 
       if (isEdit) {
