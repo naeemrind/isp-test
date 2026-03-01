@@ -12,6 +12,8 @@ import {
   ChevronRight,
   Eye,
   EyeOff,
+  Package,
+  RefreshCw,
 } from "lucide-react";
 import useCustomerStore from "../store/useCustomerStore";
 import usePaymentStore from "../store/usePaymentStore";
@@ -127,9 +129,9 @@ export default function Dashboard({ onNavigate }) {
     });
   });
 
-  // All-time inventory value
+  // All-time inventory value — FIXED: inHand × unitRate (real current value)
   const at_inventoryValue = inventoryItems.reduce(
-    (s, i) => s + (i.amount || 0),
+    (s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0),
     0,
   );
 
@@ -165,33 +167,27 @@ export default function Dashboard({ onNavigate }) {
     mo_pendingCount = 0,
     mo_overdueCount = 0;
 
-  cycles.forEach((cy) => {
-    // Collected in this month
-    (cy.installments || []).forEach((inst) => {
-      const d = new Date(inst.datePaid);
-      if (d >= monthStart && d <= monthEnd)
-        mo_collected += inst.amountPaid || 0;
-    });
-
-    // Check if cycle is relevant to this month
-    const cStart = new Date(cy.cycleStartDate);
-    const cEnd = new Date(cy.cycleEndDate);
-    if (cStart <= monthEnd && cEnd >= monthStart) {
-      mo_pending += cy.amountPending || 0;
-      if (cy.status === "clear") mo_clearedCount++;
-      else mo_pendingCount++;
-
-      const days = daysUntil(cy.cycleEndDate);
-      if (days < 0 && cy.amountPending > 0) {
-        mo_overdueMoney += cy.amountPending;
-        mo_overdueCount++;
-      }
-    }
-  });
-
   activeCustomers.forEach((c) => {
-    const d = new Date(c.createdAt);
-    if (d >= monthStart && d <= monthEnd) mo_newCustomers++;
+    if (c.createdAt) {
+      const d = new Date(c.createdAt);
+      if (d >= monthStart && d <= monthEnd) mo_newCustomers++;
+    }
+    const cycle = getLatestCycle(cycles, c.id);
+    if (!cycle) return;
+
+    const cycleStart = new Date(cycle.cycleStartDate);
+    const cycleEnd = new Date(cycle.cycleEndDate);
+    if (cycleStart > monthEnd || cycleEnd < monthStart) return;
+
+    mo_collected += cycle.amountPaid || 0;
+    mo_pending += cycle.amountPending || 0;
+
+    const days = daysUntil(cycle.cycleEndDate);
+    if (cycle.amountPending === 0) mo_clearedCount++;
+    else if (days < 0) {
+      mo_overdueCount++;
+      mo_overdueMoney += cycle.amountPending;
+    } else mo_pendingCount++;
   });
 
   const mo_expenses = expenses
@@ -201,13 +197,13 @@ export default function Dashboard({ onNavigate }) {
     })
     .reduce((s, e) => s + (Number(e.amount) || 0), 0);
 
-  // Inventory items purchased this month (filtered by item.date)
+  // Monthly inventory value — FIXED: inHand × unitRate
   const mo_inventoryValue = inventoryItems
     .filter((i) => {
       const d = new Date(i.date);
       return d >= monthStart && d <= monthEnd;
     })
-    .reduce((s, i) => s + (i.amount || 0), 0);
+    .reduce((s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0), 0);
 
   const monthly = {
     collected: mo_collected,
@@ -244,9 +240,10 @@ export default function Dashboard({ onNavigate }) {
     .filter((e) => e.date === selDate)
     .reduce((s, e) => s + (Number(e.amount) || 0), 0);
 
+  // Daily inventory value — FIXED: inHand × unitRate
   const day_inventoryValue = inventoryItems
     .filter((i) => i.date === selDate)
-    .reduce((s, i) => s + (i.amount || 0), 0);
+    .reduce((s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0), 0);
 
   const daily = {
     collected: day_collected,
@@ -256,7 +253,17 @@ export default function Dashboard({ onNavigate }) {
     netIncome: day_collected - day_expenses - day_inventoryValue,
   };
 
-  // ── Urgent List Logic ─────────────────────────────────────────────
+  // ── Inventory Stock Alerts ─────────────────────────────────────────
+  const outOfStockInventory = inventoryItems.filter(
+    (i) => (i.inHand ?? 0) <= 0 && (i.quantity || 0) > 0,
+  );
+  const lowStockInventory = inventoryItems.filter((i) => {
+    if (!i.quantity) return false;
+    const ratio = (i.inHand ?? 0) / i.quantity;
+    return ratio <= 0.2 && (i.inHand ?? 0) > 0;
+  });
+
+  // ── Urgent Customers Logic ─────────────────────────────────────────
   const urgentCustomers = activeCustomers
     .map((c) => ({ customer: c, cycle: getLatestCycle(cycles, c.id) }))
     .filter(({ cycle }) => {
@@ -271,6 +278,11 @@ export default function Dashboard({ onNavigate }) {
     });
 
   const displayStats = mode === "monthly" ? monthly : allTime;
+
+  const totalAttentionCount =
+    urgentCustomers.length +
+    outOfStockInventory.length +
+    lowStockInventory.length;
 
   return (
     <div className="p-5 space-y-5 max-w-7xl mx-auto">
@@ -463,26 +475,81 @@ export default function Dashboard({ onNavigate }) {
         </div>
       )}
 
-      {/* NEEDS ATTENTION TABLE */}
+      {/* NEEDS ATTENTION SECTION */}
       <div>
         <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2 mb-3">
           <AlertTriangle size={18} className="text-red-500" />
           Needs Attention
-          {urgentCustomers.length > 0 && (
+          {totalAttentionCount > 0 && (
             <span className="bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
-              {urgentCustomers.length}
+              {totalAttentionCount}
             </span>
           )}
         </h2>
 
-        {urgentCustomers.length === 0 ? (
+        {/* Out of Stock Alerts */}
+        {outOfStockInventory.map((item) => (
+          <div
+            key={`oos-${item.id}`}
+            className="bg-red-50 border-2 border-red-200 rounded-xl px-5 py-3 flex items-center justify-between gap-3 mb-3"
+          >
+            <div className="flex items-center gap-3">
+              <Package size={18} className="text-red-500 shrink-0" />
+              <div>
+                <span className="font-bold text-red-700 text-sm">
+                  {item.description}
+                </span>
+                <span className="text-xs text-red-500 ml-2">
+                  — Out of Stock. 0 {item.unit} remaining. Restock required.
+                </span>
+              </div>
+            </div>
+            <button
+              onClick={() => onNavigate("inventory")}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors whitespace-nowrap"
+            >
+              <RefreshCw size={11} /> Restock Now
+            </button>
+          </div>
+        ))}
+
+        {/* Low Stock Alerts */}
+        {lowStockInventory.map((item) => (
+          <div
+            key={`low-${item.id}`}
+            className="bg-amber-50 border-2 border-amber-200 rounded-xl px-5 py-3 flex items-center justify-between gap-3 mb-3"
+          >
+            <div className="flex items-center gap-3">
+              <Package size={18} className="text-amber-500 shrink-0" />
+              <div>
+                <span className="font-bold text-amber-700 text-sm">
+                  {item.description}
+                </span>
+                <span className="text-xs text-amber-600 ml-2">
+                  — Low Stock: {item.inHand} {item.unit} left (
+                  {Math.round(((item.inHand ?? 0) / item.quantity) * 100)}% of
+                  original)
+                </span>
+              </div>
+            </div>
+            <button
+              onClick={() => onNavigate("inventory")}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors whitespace-nowrap"
+            >
+              <RefreshCw size={11} /> Go to Inventory
+            </button>
+          </div>
+        ))}
+
+        {/* All clear state */}
+        {totalAttentionCount === 0 ? (
           <div className="bg-green-50 border-2 border-green-200 rounded-xl px-5 py-4 flex items-center gap-3">
             <CheckCircle size={22} className="text-green-600" />
             <span className="text-green-800 font-semibold text-base">
               All accounts are in good standing.
             </span>
           </div>
-        ) : (
+        ) : urgentCustomers.length > 0 ? (
           <div className="bg-white border-2 border-gray-200 rounded-xl overflow-hidden overflow-x-auto">
             <table className="w-full">
               <thead>
@@ -640,7 +707,7 @@ export default function Dashboard({ onNavigate }) {
               </tbody>
             </table>
           </div>
-        )}
+        ) : null}
       </div>
 
       <Modal

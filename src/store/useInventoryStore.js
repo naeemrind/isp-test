@@ -32,6 +32,8 @@ const useInventoryStore = create((set) => ({
       received: stockIn,
       issued: stockOut,
       balanced: inHand,
+      restockLog: [],
+      issueLog: data.issueLog || [],
       createdAt: new Date().toISOString(),
     });
     const item = await db.inventory.get(id);
@@ -55,6 +57,66 @@ const useInventoryStore = create((set) => ({
       issued: stockOut,
       balanced: inHand,
     };
+    await db.inventory.update(id, updates);
+    set((s) => ({
+      items: s.items.map((i) => (i.id === id ? { ...i, ...updates } : i)),
+    }));
+  },
+
+  /**
+   * restockItem — adds more stock to an existing item (bulk purchase).
+   * Increases stockIn, quantity, and inHand.
+   * Appends a structured entry to item.restockLog for full history.
+   *
+   * @param {number} id        - item id
+   * @param {object} restock   - { qty, unitRate, invoiceNo, date, note }
+   */
+  restockItem: async (id, restock) => {
+    const item = await db.inventory.get(id);
+    if (!item) throw new Error("Item not found");
+
+    const addedQty = Number(restock.qty) || 0;
+    const newRate = Number(restock.unitRate) || item.unitRate || 0;
+
+    const newStockIn = (item.stockIn || 0) + addedQty;
+    const newQuantity = (item.quantity || 0) + addedQty;
+    const newInHand = newStockIn - (item.stockOut || 0);
+
+    // Weighted average cost per unit (optional but professional)
+    const oldValue = (item.inHand || 0) * (item.unitRate || 0);
+    const addedValue = addedQty * newRate;
+    const newAvgRate =
+      newInHand > 0 ? Math.round((oldValue + addedValue) / newInHand) : newRate;
+
+    const newAmount = newQuantity * newAvgRate;
+
+    const logEntry = {
+      date: restock.date,
+      qty: addedQty,
+      unitRate: newRate,
+      invoiceNo: restock.invoiceNo?.trim() || null,
+      note: restock.note?.trim() || null,
+      stockInAfter: newStockIn,
+      inHandAfter: newInHand,
+      createdAt: new Date().toISOString(),
+    };
+
+    const existingRestockLog = Array.isArray(item.restockLog)
+      ? item.restockLog
+      : [];
+
+    const updates = {
+      ...item,
+      stockIn: newStockIn,
+      quantity: newQuantity,
+      inHand: newInHand,
+      unitRate: newAvgRate,
+      amount: newAmount,
+      received: newStockIn,
+      balanced: newInHand,
+      restockLog: [...existingRestockLog, logEntry],
+    };
+
     await db.inventory.update(id, updates);
     set((s) => ({
       items: s.items.map((i) => (i.id === id ? { ...i, ...updates } : i)),

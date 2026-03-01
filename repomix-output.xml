@@ -3474,509 +3474,6 @@ export default function HistoryModal({ customer, onClose }) {
 }
 </file>
 
-<file path="src/pages/Customers/CustomerForm.jsx">
-import { useState, useEffect, useCallback } from "react";
-import { checkDuplicate } from "../../utils/duplicateCheck";
-import { today } from "../../utils/dateUtils";
-import usePackageStore from "../../store/usePackageStore";
-import useCustomerStore from "../../store/useCustomerStore";
-import usePaymentStore from "../../store/usePaymentStore";
-import db from "../../db/database";
-
-const INITIAL = {
-  fullName: "",
-  userName: "",
-  mobileNo: "",
-  cnic: "", // New CNIC field
-  mainArea: "",
-  recoveryAgent: "",
-  packageId: "",
-  status: "active",
-  notes: "",
-  startDate: today(),
-};
-
-const PAYMENT_INITIAL = {
-  recordPayment: false,
-  amountPaid: "",
-  paymentDate: today(),
-  paymentNote: "",
-};
-
-// Helper to format CNIC as 00000-0000000-0
-const formatCNIC = (val) => {
-  // Remove non-digits and limit to 13 digits
-  const digits = val.replace(/\D/g, "").slice(0, 13);
-  let res = "";
-  if (digits.length > 0) res += digits.slice(0, 5);
-  if (digits.length > 5) res += "-" + digits.slice(5, 12);
-  if (digits.length > 12) res += "-" + digits.slice(12, 13);
-  return res;
-};
-
-export default function CustomerForm({ customer, onClose }) {
-  const addCustomer = useCustomerStore((s) => s.addCustomer);
-  const updateCustomer = useCustomerStore((s) => s.updateCustomer);
-  const createInitialCycle = usePaymentStore((s) => s.createInitialCycle);
-  const addInstallment = usePaymentStore((s) => s.addInstallment);
-  const allPackages = usePackageStore((s) => s.packages);
-  const packages = allPackages.filter((p) => p.isActive !== false);
-  const isEdit = !!customer;
-
-  // Initialize form. Ensure 'cnic' exists even for old records.
-  const [form, setFormState] = useState(
-    isEdit ? { cnic: "", ...customer, startDate: today() } : INITIAL,
-  );
-  const [payment, setPaymentState] = useState(PAYMENT_INITIAL);
-  const [errors, setErrors] = useState({});
-  const [dupWarning, setDupWarning] = useState(null);
-  const [areas, setAreas] = useState([]);
-  const [agents, setAgents] = useState([]);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    db.settings.get("areas").then((r) => setAreas(r?.value || []));
-    db.settings.get("agents").then((r) => setAgents(r?.value || []));
-  }, []);
-
-  // When package changes, auto-fill amountPaid with full price as default
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (!isEdit && form.packageId) {
-        const pkg = packages.find(
-          (p) => Number(p.id) === Number(form.packageId),
-        );
-        if (pkg && !payment.amountPaid) {
-          setPaymentState((p) => ({ ...p, amountPaid: String(pkg.price) }));
-        }
-      }
-    }, 0);
-    return clearTimeout(timer);
-  }, [form.packageId, isEdit, packages, payment]);
-
-  const setField = (field, value) => {
-    setFormState((f) => ({ ...f, [field]: value }));
-    setErrors((e) => ({ ...e, [field]: "" }));
-  };
-
-  const setPayField = (field, value) => {
-    setPaymentState((p) => ({ ...p, [field]: value }));
-    setErrors((e) => ({ ...e, [field]: "" }));
-  };
-
-  const checkDup = useCallback(
-    async (field, value) => {
-      if (!value) return setDupWarning(null);
-      const result = await checkDuplicate(
-        field === "userName" ? value : form.userName,
-        field === "mobileNo" ? value : form.mobileNo,
-        isEdit ? customer.id : null,
-      );
-      if (result.hasDuplicate) {
-        setDupWarning(
-          `${field === "userName" ? "Username" : "Mobile"} already used by: ${result.existing.fullName}`,
-        );
-      } else {
-        setDupWarning(null);
-      }
-    },
-    [form.userName, form.mobileNo, isEdit, customer],
-  );
-
-  const validate = () => {
-    const e = {};
-    if (!form.fullName.trim()) e.fullName = "Required";
-    if (!form.userName.trim()) e.userName = "Required";
-    if (!form.packageId) e.packageId = "Select a package";
-    if (!form.mainArea) e.mainArea = "Select an area";
-
-    // Mobile Validation (Strict Pakistani Format)
-    if (form.mobileNo) {
-      if (!/^0\d{10}$/.test(form.mobileNo)) {
-        e.mobileNo = "Must be 11 digits starting with 0 (e.g., 03001234567)";
-      }
-    }
-
-    // CNIC Validation (Format: 00000-0000000-0)
-    if (form.cnic) {
-      if (form.cnic.length < 15) {
-        e.cnic = "Invalid CNIC format (13 digits required)";
-      }
-    }
-
-    // Validate payment section only if enabled
-    if (!isEdit && payment.recordPayment) {
-      const amt = Number(payment.amountPaid);
-      if (!payment.amountPaid || amt <= 0)
-        e.amountPaid = "Enter a valid amount";
-      const pkg = packages.find((p) => Number(p.id) === Number(form.packageId));
-      if (pkg && amt > pkg.price)
-        e.amountPaid = `Cannot exceed PKR ${pkg.price} (package price)`;
-      if (!payment.paymentDate) e.paymentDate = "Required";
-    }
-    return e;
-  };
-
-  const handleSubmit = async () => {
-    const e = validate();
-    if (Object.keys(e).length) {
-      setErrors(e);
-      return;
-    }
-    if (dupWarning) return;
-
-    setSaving(true);
-    try {
-      const pkgId = Number(form.packageId);
-      const pkg = packages.find((p) => Number(p.id) === pkgId);
-      const lockedPrice = pkg ? Number(pkg.price) : 0;
-
-      const customerData = {
-        fullName: form.fullName.trim(),
-        userName: form.userName.trim(),
-        mobileNo: form.mobileNo,
-        cnic: form.cnic, // Save CNIC
-        mainArea: form.mainArea,
-        recoveryAgent: form.recoveryAgent,
-        packageId: pkgId,
-        lockedPackagePrice: lockedPrice,
-        status: isEdit ? form.status : "active",
-        notes: form.notes,
-      };
-
-      if (isEdit) {
-        await updateCustomer(customer.id, customerData);
-      } else {
-        const newCustomer = await addCustomer(customerData);
-
-        // Always create the billing cycle first
-        const newCycle = await createInitialCycle(
-          newCustomer.id,
-          form.startDate,
-          lockedPrice,
-        );
-
-        // If staff also entered a payment, record it immediately
-        if (payment.recordPayment && Number(payment.amountPaid) > 0) {
-          await addInstallment(
-            newCycle.id,
-            Number(payment.amountPaid),
-            payment.paymentDate,
-            payment.paymentNote || "",
-          );
-        }
-      }
-      onClose();
-    } catch (err) {
-      alert("Error saving: " + err.message);
-    }
-    setSaving(false);
-  };
-
-  // Derived: selected package price for display
-  const selectedPkg = packages.find(
-    (p) => Number(p.id) === Number(form.packageId),
-  );
-  const packagePrice = selectedPkg ? Number(selectedPkg.price) : 0;
-  const amountPaidNum = Number(payment.amountPaid) || 0;
-  const remaining = packagePrice - amountPaidNum;
-
-  return (
-    <div className="space-y-5">
-      {/* ── DUPLICATE WARNING ── */}
-      {dupWarning && (
-        <div className="bg-red-50 border border-red-300 text-red-700 text-sm px-3 py-2 rounded-lg">
-          ⚠ Duplicate detected: {dupWarning}
-        </div>
-      )}
-
-      {/* ── CUSTOMER INFO ── */}
-      <div>
-        <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-3">
-          Customer Information
-        </p>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Full Name *" error={errors.fullName}>
-            <input
-              className={inp(errors.fullName)}
-              value={form.fullName}
-              onChange={(e) => setField("fullName", e.target.value)}
-              placeholder="e.g. Muhammad Qasim"
-            />
-          </Field>
-
-          <Field label="Username *" error={errors.userName}>
-            <input
-              className={inp(errors.userName)}
-              value={form.userName}
-              onChange={(e) => {
-                setField("userName", e.target.value);
-                checkDup("userName", e.target.value);
-              }}
-              placeholder="e.g. Qasim6655"
-            />
-          </Field>
-
-          <Field label="Mobile No" error={errors.mobileNo}>
-            <input
-              className={inp(errors.mobileNo)}
-              value={form.mobileNo}
-              onChange={(e) => {
-                // Digits only, max 11 chars
-                const val = e.target.value.replace(/\D/g, "").slice(0, 11);
-                setField("mobileNo", val);
-                checkDup("mobileNo", val);
-              }}
-              placeholder="03001234567"
-              type="tel"
-            />
-          </Field>
-
-          <Field label="CNIC (Optional)" error={errors.cnic}>
-            <input
-              className={inp(errors.cnic)}
-              value={form.cnic}
-              onChange={(e) => {
-                // Apply CNIC masking
-                const val = formatCNIC(e.target.value);
-                setField("cnic", val);
-              }}
-              placeholder="35202-1234567-1"
-              maxLength={15} // 13 digits + 2 dashes
-            />
-          </Field>
-
-          <Field label="Package *" error={errors.packageId}>
-            <select
-              className={inp(errors.packageId)}
-              value={form.packageId}
-              onChange={(e) => {
-                setField("packageId", e.target.value);
-                // Reset payment amount so it auto-fills with new price
-                setPaymentState((p) => ({ ...p, amountPaid: "" }));
-              }}
-            >
-              <option value="">— Select Package —</option>
-              {packages.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} — PKR {Number(p.price).toLocaleString()}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <Field label="Main Area *" error={errors.mainArea}>
-            <select
-              className={inp(errors.mainArea)}
-              value={form.mainArea}
-              onChange={(e) => setField("mainArea", e.target.value)}
-            >
-              <option value="">— Select Area —</option>
-              {areas.map((a) => (
-                <option key={a} value={a}>
-                  {a}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <Field label="Recovery Agent">
-            <select
-              className={inp()}
-              value={form.recoveryAgent}
-              onChange={(e) => setField("recoveryAgent", e.target.value)}
-            >
-              <option value="">— Select Agent —</option>
-              {agents.map((a) => (
-                <option key={a} value={a}>
-                  {a}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          {!isEdit && (
-            <Field label="Subscription Start Date *">
-              <input
-                type="date"
-                className={inp()}
-                value={form.startDate}
-                max={today()}
-                onChange={(e) => setField("startDate", e.target.value)}
-              />
-            </Field>
-          )}
-
-          {isEdit && (
-            <Field label="Status">
-              <select
-                className={inp()}
-                value={form.status}
-                onChange={(e) => setField("status", e.target.value)}
-              >
-                <option value="active">Active</option>
-                <option value="suspended">Suspended</option>
-                <option value="terminated">Terminated</option>
-              </select>
-            </Field>
-          )}
-        </div>
-
-        <div className="mt-4">
-          <Field label="Notes">
-            <textarea
-              className={inp() + " resize-none"}
-              rows={2}
-              value={form.notes}
-              onChange={(e) => setField("notes", e.target.value)}
-              placeholder="Optional notes..."
-            />
-          </Field>
-        </div>
-      </div>
-
-      {/* ── PAYMENT SECTION (Add mode only) ── */}
-      {!isEdit && (
-        <div className="border-t border-gray-200 pt-4">
-          {/* Toggle */}
-          <label className="flex items-center gap-3 cursor-pointer select-none mb-4">
-            <div
-              onClick={() =>
-                setPayField("recordPayment", !payment.recordPayment)
-              }
-              className={`relative w-11 h-6 rounded-full transition-colors ${
-                payment.recordPayment ? "bg-blue-600" : "bg-gray-300"
-              }`}
-            >
-              <div
-                className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                  payment.recordPayment ? "translate-x-5" : "translate-x-0"
-                }`}
-              />
-            </div>
-            <div>
-              <span className="text-sm font-bold text-gray-800">
-                Record First Payment Now
-              </span>
-              <p className="text-xs text-gray-400">
-                Optionally log a payment while adding the customer
-              </p>
-            </div>
-          </label>
-
-          {payment.recordPayment && (
-            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-4">
-              {/* Package price hint */}
-              {selectedPkg && (
-                <div className="flex items-center justify-between bg-white border border-blue-100 rounded-lg px-4 py-2 text-sm">
-                  <span className="text-gray-500">Package Total</span>
-                  <span className="font-bold text-gray-800">
-                    PKR {packagePrice.toLocaleString()}
-                  </span>
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-4">
-                <Field label="Amount Paid *" error={errors.amountPaid}>
-                  <input
-                    type="number"
-                    min="1"
-                    max={packagePrice || undefined}
-                    className={inp(errors.amountPaid)}
-                    value={payment.amountPaid}
-                    onChange={(e) => setPayField("amountPaid", e.target.value)}
-                    placeholder={`Max PKR ${packagePrice.toLocaleString()}`}
-                  />
-                </Field>
-
-                <Field label="Payment Date *" error={errors.paymentDate}>
-                  <input
-                    type="date"
-                    className={inp(errors.paymentDate)}
-                    value={payment.paymentDate}
-                    max={today()}
-                    onChange={(e) => setPayField("paymentDate", e.target.value)}
-                  />
-                </Field>
-              </div>
-
-              <Field label="Payment Note (optional)">
-                <input
-                  className={inp()}
-                  value={payment.paymentNote}
-                  onChange={(e) => setPayField("paymentNote", e.target.value)}
-                  placeholder="e.g. Cash received, Bank transfer..."
-                />
-              </Field>
-
-              {/* Live remaining balance */}
-              {selectedPkg && amountPaidNum > 0 && (
-                <div
-                  className={`flex items-center justify-between rounded-lg px-4 py-2 text-sm font-semibold ${
-                    remaining <= 0
-                      ? "bg-green-100 text-green-800"
-                      : "bg-yellow-100 text-yellow-800"
-                  }`}
-                >
-                  <span>
-                    {remaining <= 0 ? "✓ Fully Paid" : "Remaining Balance"}
-                  </span>
-                  <span>
-                    {remaining <= 0
-                      ? "PKR 0"
-                      : `PKR ${remaining.toLocaleString()}`}
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── FOOTER BUTTONS ── */}
-      <div className="flex justify-end gap-3 pt-1">
-        <button
-          onClick={onClose}
-          className="px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={handleSubmit}
-          disabled={saving || !!dupWarning}
-          className="px-5 py-2 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50"
-        >
-          {saving
-            ? "Saving..."
-            : isEdit
-              ? "Save Changes"
-              : payment.recordPayment
-                ? "Add Customer & Record Payment"
-                : "Add Customer"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-const inp = (err) =>
-  `w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-    err ? "border-red-400 bg-red-50" : "border-gray-300 bg-white"
-  }`;
-
-function Field({ label, error, children }) {
-  return (
-    <div>
-      <label className="block text-xs font-semibold text-gray-600 mb-1.5">
-        {label}
-      </label>
-      {children}
-      {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
-    </div>
-  );
-}
-</file>
-
 <file path="src/pages/Inventory/Inventory.jsx">
 import { useState } from "react";
 import {
@@ -5272,428 +4769,512 @@ export default db;
 export { readAll, writeAll, invalidate };
 </file>
 
-<file path="src/pages/Customers/Customers.jsx">
-import { useState, useEffect } from "react";
-import {
-  Plus,
-  Search,
-  Archive,
-  ArchiveRestore,
-  Trash2,
-  ArrowUpDown,
-} from "lucide-react";
-import Modal from "../../components/ui/Modal";
-import ConfirmDialog from "../../components/ui/ConfirmDialog";
-import CustomerTable from "./CustomerTable";
-import CustomerForm from "./CustomerForm";
-import PaymentForm from "../Payments/PaymentForm";
+<file path="src/pages/Customers/CustomerForm.jsx">
+import { useState, useEffect, useCallback } from "react";
+import { checkDuplicate } from "../../utils/duplicateCheck";
+import { today } from "../../utils/dateUtils";
+import usePackageStore from "../../store/usePackageStore";
 import useCustomerStore from "../../store/useCustomerStore";
 import usePaymentStore from "../../store/usePaymentStore";
-import { formatDate, daysUntil } from "../../utils/dateUtils";
+import db from "../../db/database";
 
-export default function Customers({ initialFilter }) {
-  const customers = useCustomerStore((s) => s.customers);
-  const archiveCustomer = useCustomerStore((s) => s.archiveCustomer);
-  const restoreCustomer = useCustomerStore((s) => s.restoreCustomer);
-  const permanentlyDeleteCustomer = useCustomerStore(
-    (s) => s.permanentlyDeleteCustomer,
+const INITIAL = {
+  fullName: "",
+  userName: "",
+  mobileNo: "",
+  cnic: "", // New CNIC field
+  mainArea: "",
+  recoveryAgent: "",
+  packageId: "",
+  status: "active",
+  notes: "",
+  startDate: today(),
+};
+
+const PAYMENT_INITIAL = {
+  recordPayment: false,
+  amountPaid: "",
+  paymentDate: today(),
+  paymentNote: "",
+};
+
+// Helper to format CNIC as 00000-0000000-0
+const formatCNIC = (val) => {
+  // Remove non-digits and limit to 13 digits
+  const digits = val.replace(/\D/g, "").slice(0, 13);
+  let res = "";
+  if (digits.length > 0) res += digits.slice(0, 5);
+  if (digits.length > 5) res += "-" + digits.slice(5, 12);
+  if (digits.length > 12) res += "-" + digits.slice(12, 13);
+  return res;
+};
+
+export default function CustomerForm({ customer, onClose }) {
+  const addCustomer = useCustomerStore((s) => s.addCustomer);
+  const updateCustomer = useCustomerStore((s) => s.updateCustomer);
+  const createInitialCycle = usePaymentStore((s) => s.createInitialCycle);
+  const addInstallment = usePaymentStore((s) => s.addInstallment);
+  const allPackages = usePackageStore((s) => s.packages);
+  const packages = allPackages.filter((p) => p.isActive !== false);
+  const isEdit = !!customer;
+
+  // Initialize form. Ensure 'cnic' exists even for old records.
+  const [form, setFormState] = useState(
+    isEdit ? { cnic: "", ...customer, startDate: today() } : INITIAL,
   );
-  const getCyclesForCustomer = usePaymentStore((s) => s.getCyclesForCustomer);
-  const getActiveCycle = usePaymentStore((s) => s.getActiveCycle);
+  const [payment, setPaymentState] = useState(PAYMENT_INITIAL);
+  const [errors, setErrors] = useState({});
+  const [dupWarning, setDupWarning] = useState(null);
+  const [areas, setAreas] = useState([]);
+  const [agents, setAgents] = useState([]);
+  const [saving, setSaving] = useState(false);
 
-  const [view, setView] = useState("active");
-  const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState("all");
-  const [sortBy, setSortBy] = useState("newest");
+  useEffect(() => {
+    db.settings.get("areas").then((r) => setAreas(r?.value || []));
+    db.settings.get("agents").then((r) => setAgents(r?.value || []));
+  }, []);
 
-  const [showAdd, setShowAdd] = useState(false);
-  const [editCustomer, setEditCustomer] = useState(null);
-  const [payCustomer, setPayCustomer] = useState(null);
-  const [archiveTarget, setArchiveTarget] = useState(null);
-  const [restoreTarget, setRestoreTarget] = useState(null);
-  const [purgeTarget, setPurgeTarget] = useState(null);
-
-  // Sync prop filter to local state when prop changes
+  // When package changes, auto-fill amountPaid with full price as default
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (initialFilter) {
-        setFilter(initialFilter);
+      if (!isEdit && form.packageId) {
+        const pkg = packages.find(
+          (p) => Number(p.id) === Number(form.packageId),
+        );
+        if (pkg && !payment.amountPaid) {
+          setPaymentState((p) => ({ ...p, amountPaid: String(pkg.price) }));
+        }
       }
     }, 0);
-    return () => clearTimeout(timer);
-  }, [initialFilter]);
+    return clearTimeout(timer);
+  }, [form.packageId, isEdit, packages, payment]);
 
-  const activeCustomers = customers.filter((c) => !c.isArchived);
-  const archivedCustomers = customers.filter((c) => c.isArchived);
+  const setField = (field, value) => {
+    setFormState((f) => ({ ...f, [field]: value }));
+    setErrors((e) => ({ ...e, [field]: "" }));
+  };
 
-  // 1. FILTERING
-  const q = search.toLowerCase();
-  const matchSearch = (c) =>
-    !search ||
-    c.fullName?.toLowerCase().includes(q) ||
-    c.userName?.toLowerCase().includes(q) ||
-    c.mobileNo?.includes(q) ||
-    c.mainArea?.toLowerCase().includes(q);
+  const setPayField = (field, value) => {
+    setPaymentState((p) => ({ ...p, [field]: value }));
+    setErrors((e) => ({ ...e, [field]: "" }));
+  };
 
-  const filteredActive = activeCustomers.filter((c) => {
-    // Check search first
-    if (!matchSearch(c)) return false;
+  const checkDup = useCallback(
+    async (field, value) => {
+      if (!value) return setDupWarning(null);
+      const result = await checkDuplicate(
+        field === "userName" ? value : form.userName,
+        field === "mobileNo" ? value : form.mobileNo,
+        isEdit ? customer.id : null,
+      );
+      if (result.hasDuplicate) {
+        setDupWarning(
+          `${field === "userName" ? "Username" : "Mobile"} already used by: ${result.existing.fullName}`,
+        );
+      } else {
+        setDupWarning(null);
+      }
+    },
+    [form.userName, form.mobileNo, isEdit, customer],
+  );
 
-    // Check Filter
-    if (filter === "all") return true;
-    if (filter === "active") return c.status === "active";
-    if (filter === "suspended") return c.status === "suspended";
-    if (filter === "terminated") return c.status === "terminated";
+  const validate = () => {
+    const e = {};
+    if (!form.fullName.trim()) e.fullName = "Required";
+    if (!form.userName.trim()) e.userName = "Required";
+    if (!form.packageId) e.packageId = "Select a package";
+    if (!form.mainArea) e.mainArea = "Select an area";
 
-    // New filters based on payment status
-    const cycle = getActiveCycle(c.id);
-    const days = cycle ? daysUntil(cycle.cycleEndDate) : 0;
-    const pending = cycle ? cycle.amountPending : 0;
-
-    if (filter === "overdue") {
-      // Must be active AND have pending balance AND be overdue (days < 0)
-      return c.status === "active" && pending > 0 && days < 0;
+    // Mobile Validation (Strict Pakistani Format)
+    if (form.mobileNo) {
+      if (!/^0\d{10}$/.test(form.mobileNo)) {
+        e.mobileNo = "Must be 11 digits starting with 0 (e.g., 03001234567)";
+      }
     }
-    if (filter === "pending") {
-      // Must be active AND have pending balance BUT NOT overdue (days >= 0)
-      return c.status === "active" && pending > 0 && days >= 0;
+
+    // CNIC Validation (Format: 00000-0000000-0)
+    if (form.cnic) {
+      if (form.cnic.length < 15) {
+        e.cnic = "Invalid CNIC format (13 digits required)";
+      }
     }
 
-    return true;
-  });
-
-  // 2. SORTING
-  const sortedActive = [...filteredActive].sort((a, b) => {
-    const cycleA = getActiveCycle(a.id);
-    const cycleB = getActiveCycle(b.id);
-
-    switch (sortBy) {
-      case "name":
-        return a.fullName.localeCompare(b.fullName);
-
-      case "pending":
-        // Highest balance first
-        return (cycleB?.amountPending || 0) - (cycleA?.amountPending || 0);
-
-      case "expiring":
-        // Soonest expiry date first.
-        if (!cycleA) return 1;
-        if (!cycleB) return -1;
-        return new Date(cycleA.cycleEndDate) - new Date(cycleB.cycleEndDate);
-
-      case "newest":
-      default:
-        // IDs are auto-incrementing
-        return b.id - a.id;
+    // Validate payment section only if enabled
+    if (!isEdit && payment.recordPayment) {
+      const amt = Number(payment.amountPaid);
+      if (!payment.amountPaid || amt <= 0)
+        e.amountPaid = "Enter a valid amount";
+      const pkg = packages.find((p) => Number(p.id) === Number(form.packageId));
+      if (pkg && amt > pkg.price)
+        e.amountPaid = `Cannot exceed PKR ${pkg.price} (package price)`;
+      if (!payment.paymentDate) e.paymentDate = "Required";
     }
-  });
+    return e;
+  };
 
-  const filteredArchived = archivedCustomers.filter(matchSearch);
+  const handleSubmit = async () => {
+    const e = validate();
+    if (Object.keys(e).length) {
+      setErrors(e);
+      return;
+    }
+    if (dupWarning) return;
 
-  const filterOptions = [
-    { id: "all", label: "All" },
-    { id: "active", label: "Active" },
-    { id: "pending", label: "Pending" }, // Added
-    { id: "overdue", label: "Overdue" }, // Added
-    { id: "suspended", label: "Suspended" },
-  ];
+    setSaving(true);
+    try {
+      const pkgId = Number(form.packageId);
+      const pkg = packages.find((p) => Number(p.id) === pkgId);
+      const lockedPrice = pkg ? Number(pkg.price) : 0;
+
+      const isTerminating = isEdit && form.status === "terminated";
+
+      const customerData = {
+        fullName: form.fullName.trim(),
+        userName: form.userName.trim(),
+        mobileNo: form.mobileNo,
+        cnic: form.cnic, // Save CNIC
+        mainArea: form.mainArea,
+        recoveryAgent: form.recoveryAgent,
+        packageId: pkgId,
+        lockedPackagePrice: lockedPrice,
+        status: isEdit ? form.status : "active",
+        notes: form.notes,
+        // Auto-archive when terminated
+        ...(isTerminating && {
+          isArchived: true,
+          archivedAt: new Date().toISOString(),
+          archiveReason: "Terminated",
+        }),
+      };
+
+      if (isEdit) {
+        await updateCustomer(customer.id, customerData);
+      } else {
+        const newCustomer = await addCustomer(customerData);
+
+        // Always create the billing cycle first
+        const newCycle = await createInitialCycle(
+          newCustomer.id,
+          form.startDate,
+          lockedPrice,
+        );
+
+        // If staff also entered a payment, record it immediately
+        if (payment.recordPayment && Number(payment.amountPaid) > 0) {
+          await addInstallment(
+            newCycle.id,
+            Number(payment.amountPaid),
+            payment.paymentDate,
+            payment.paymentNote || "",
+          );
+        }
+      }
+      onClose();
+    } catch (err) {
+      alert("Error saving: " + err.message);
+    }
+    setSaving(false);
+  };
+
+  // Derived: selected package price for display
+  const selectedPkg = packages.find(
+    (p) => Number(p.id) === Number(form.packageId),
+  );
+  const packagePrice = selectedPkg ? Number(selectedPkg.price) : 0;
+  const amountPaidNum = Number(payment.amountPaid) || 0;
+  const remaining = packagePrice - amountPaidNum;
 
   return (
-    <div className="p-4 space-y-3">
-      {/* HEADER */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h1 className="text-base font-semibold text-gray-800">Customers</h1>
-
-          {/* Active / Archived tab switcher */}
-          <div className="flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5">
-            <button
-              onClick={() => setView("active")}
-              className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
-                view === "active"
-                  ? "bg-white text-gray-900 shadow-sm"
-                  : "text-gray-500 hover:text-gray-700"
-              }`}
-            >
-              Active
-              <span className="ml-1.5 bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full text-xs">
-                {activeCustomers.length}
-              </span>
-            </button>
-            <button
-              onClick={() => setView("archived")}
-              className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
-                view === "archived"
-                  ? "bg-white text-gray-900 shadow-sm"
-                  : "text-gray-500 hover:text-gray-700"
-              }`}
-            >
-              Archived
-              {archivedCustomers.length > 0 && (
-                <span className="ml-1.5 bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full text-xs">
-                  {archivedCustomers.length}
-                </span>
-              )}
-            </button>
-          </div>
-        </div>
-
-        {view === "active" && (
-          <button
-            onClick={() => setShowAdd(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
-          >
-            <Plus size={14} /> Add Customer
-          </button>
-        )}
-      </div>
-
-      {/* SEARCH + FILTER + SORT */}
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        {/* Left Side: Search & Status Filters */}
-        <div className="flex items-center gap-2 flex-1 min-w-62.5">
-          <div className="relative flex-1 max-w-xs">
-            <Search
-              size={14}
-              className="absolute left-2.5 top-2 text-gray-400"
-            />
-            <input
-              className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-              placeholder="Search..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
-          {view === "active" && (
-            <div className="flex gap-1">
-              {filterOptions.map((f) => (
-                <button
-                  key={f.id}
-                  onClick={() => setFilter(f.id)}
-                  className={`px-3 py-1.5 text-xs rounded capitalize transition-colors ${
-                    filter === f.id
-                      ? "bg-gray-800 text-white"
-                      : "border border-gray-300 text-gray-600 hover:bg-gray-50"
-                  }`}
-                >
-                  {f.label}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Right Side: Sorting Dropdown */}
-        {view === "active" && (
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-500 font-medium">Sort by:</span>
-            <div className="relative">
-              <ArrowUpDown
-                size={14}
-                className="absolute left-2.5 top-2 text-gray-500 pointer-events-none"
-              />
-              <select
-                className="pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white text-gray-700 cursor-pointer appearance-none min-w-35"
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value)}
-              >
-                <option value="newest">Newest First</option>
-                <option value="name">Name (A-Z)</option>
-                <option value="expiring">Expiring Soon</option>
-                <option value="pending">Highest Debt</option>
-              </select>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* ACTIVE TABLE */}
-      {view === "active" && (
-        <div className="bg-white border border-gray-200 rounded overflow-hidden">
-          <CustomerTable
-            customers={sortedActive}
-            searchQuery={""} // Search handled above
-            onEdit={(c) => setEditCustomer(c)}
-            onPay={(c) => setPayCustomer(c)}
-            onDelete={(c) => setArchiveTarget(c)}
-          />
+    <div className="space-y-5">
+      {/* ── DUPLICATE WARNING ── */}
+      {dupWarning && (
+        <div className="bg-red-50 border border-red-300 text-red-700 text-sm px-3 py-2 rounded-lg">
+          ⚠ Duplicate detected: {dupWarning}
         </div>
       )}
 
-      {/* ARCHIVED TABLE */}
-      {view === "archived" && (
-        <div className="bg-white border border-gray-200 rounded overflow-hidden">
-          {filteredArchived.length === 0 ? (
-            <div className="py-16 flex flex-col items-center gap-2 text-gray-400">
-              <Archive size={36} className="text-gray-300" />
-              <p className="text-sm font-medium">No archived customers</p>
-              <p className="text-xs text-gray-300">
-                Deleted customers appear here — nothing is ever lost.
+      {/* ── CUSTOMER INFO ── */}
+      <div>
+        <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-3">
+          Customer Information
+        </p>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Full Name *" error={errors.fullName}>
+            <input
+              className={inp(errors.fullName)}
+              value={form.fullName}
+              onChange={(e) => setField("fullName", e.target.value)}
+              placeholder="e.g. Muhammad Qasim"
+            />
+          </Field>
+
+          <Field label="Username *" error={errors.userName}>
+            <input
+              className={inp(errors.userName)}
+              value={form.userName}
+              onChange={(e) => {
+                setField("userName", e.target.value);
+                checkDup("userName", e.target.value);
+              }}
+              placeholder="e.g. Qasim6655"
+            />
+          </Field>
+
+          <Field label="Mobile No" error={errors.mobileNo}>
+            <input
+              className={inp(errors.mobileNo)}
+              value={form.mobileNo}
+              onChange={(e) => {
+                // Digits only, max 11 chars
+                const val = e.target.value.replace(/\D/g, "").slice(0, 11);
+                setField("mobileNo", val);
+                checkDup("mobileNo", val);
+              }}
+              placeholder="03001234567"
+              type="tel"
+            />
+          </Field>
+
+          <Field label="CNIC (Optional)" error={errors.cnic}>
+            <input
+              className={inp(errors.cnic)}
+              value={form.cnic}
+              onChange={(e) => {
+                // Apply CNIC masking
+                const val = formatCNIC(e.target.value);
+                setField("cnic", val);
+              }}
+              placeholder="35202-1234567-1"
+              maxLength={15} // 13 digits + 2 dashes
+            />
+          </Field>
+
+          <Field label="Package *" error={errors.packageId}>
+            <select
+              className={inp(errors.packageId)}
+              value={form.packageId}
+              onChange={(e) => {
+                setField("packageId", e.target.value);
+                // Reset payment amount so it auto-fills with new price
+                setPaymentState((p) => ({ ...p, amountPaid: "" }));
+              }}
+            >
+              <option value="">— Select Package —</option>
+              {packages.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} — PKR {Number(p.price).toLocaleString()}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field label="Main Area *" error={errors.mainArea}>
+            <select
+              className={inp(errors.mainArea)}
+              value={form.mainArea}
+              onChange={(e) => setField("mainArea", e.target.value)}
+            >
+              <option value="">— Select Area —</option>
+              {areas.map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field label="Recovery Agent">
+            <select
+              className={inp()}
+              value={form.recoveryAgent}
+              onChange={(e) => setField("recoveryAgent", e.target.value)}
+            >
+              <option value="">— Select Agent —</option>
+              {agents.map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          {!isEdit && (
+            <Field label="Subscription Start Date *">
+              <input
+                type="date"
+                className={inp()}
+                value={form.startDate}
+                max={today()}
+                onChange={(e) => setField("startDate", e.target.value)}
+              />
+            </Field>
+          )}
+
+          {isEdit && (
+            <Field label="Status">
+              <select
+                className={inp()}
+                value={form.status}
+                onChange={(e) => setField("status", e.target.value)}
+              >
+                <option value="active">Active</option>
+                <option value="suspended">Suspended</option>
+                <option value="terminated">Terminated</option>
+              </select>
+            </Field>
+          )}
+        </div>
+
+        <div className="mt-4">
+          <Field label="Notes">
+            <textarea
+              className={inp() + " resize-none"}
+              rows={2}
+              value={form.notes}
+              onChange={(e) => setField("notes", e.target.value)}
+              placeholder="Optional notes..."
+            />
+          </Field>
+        </div>
+      </div>
+
+      {/* ── PAYMENT SECTION (Add mode only) ── */}
+      {!isEdit && (
+        <div className="border-t border-gray-200 pt-4">
+          {/* Toggle */}
+          <label className="flex items-center gap-3 cursor-pointer select-none mb-4">
+            <div
+              onClick={() =>
+                setPayField("recordPayment", !payment.recordPayment)
+              }
+              className={`relative w-11 h-6 rounded-full transition-colors ${
+                payment.recordPayment ? "bg-blue-600" : "bg-gray-300"
+              }`}
+            >
+              <div
+                className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
+                  payment.recordPayment ? "translate-x-5" : "translate-x-0"
+                }`}
+              />
+            </div>
+            <div>
+              <span className="text-sm font-bold text-gray-800">
+                Record First Payment Now
+              </span>
+              <p className="text-xs text-gray-400">
+                Optionally log a payment while adding the customer
               </p>
             </div>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-gray-800 text-white text-left text-xs">
-                  <th className="px-4 py-2.5 font-medium">Customer</th>
-                  <th className="px-4 py-2.5 font-medium">Area</th>
-                  <th className="px-4 py-2.5 font-medium">Archived On</th>
-                  <th className="px-4 py-2.5 font-medium">Reason</th>
-                  <th className="px-4 py-2.5 font-medium">Total Ever Paid</th>
-                  <th className="px-4 py-2.5 font-medium">Cycles</th>
-                  <th className="px-4 py-2.5 font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredArchived.map((c) => {
-                  const cycles = getCyclesForCustomer(c.id);
-                  const totalPaid = cycles.reduce(
-                    (sum, cy) =>
-                      sum +
-                      (cy.installments || []).reduce(
-                        (s, i) => s + (i.amountPaid || 0),
-                        0,
-                      ),
-                    0,
-                  );
-                  return (
-                    <tr
-                      key={c.id}
-                      className="border-t border-gray-100 hover:bg-gray-50"
-                    >
-                      <td className="px-4 py-3">
-                        <div className="font-medium text-gray-800">
-                          {c.fullName}
-                        </div>
-                        <div className="text-xs text-gray-400">
-                          {c.userName}
-                        </div>
-                        {c.mobileNo && (
-                          <div className="text-xs text-gray-400">
-                            {c.mobileNo}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-gray-500">
-                        {c.mainArea || "—"}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-gray-500">
-                        {c.archivedAt ? formatDate(c.archivedAt) : "—"}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-gray-500 max-w-50">
-                        {c.archiveReason || (
-                          <span className="text-gray-300 italic">
-                            No reason given
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 font-semibold text-gray-800">
-                        PKR {totalPaid.toLocaleString()}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-gray-500">
-                        {cycles.length}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            onClick={() => setRestoreTarget(c)}
-                            className="flex items-center gap-1 px-2.5 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 font-medium"
-                          >
-                            <ArchiveRestore size={12} /> Restore
-                          </button>
-                          <button
-                            onClick={() => setPurgeTarget(c)}
-                            title="Permanently delete all data"
-                            className="flex items-center gap-1 px-2.5 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 font-medium"
-                          >
-                            <Trash2 size={12} /> Purge
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          </label>
+
+          {payment.recordPayment && (
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-4">
+              {/* Package price hint */}
+              {selectedPkg && (
+                <div className="flex items-center justify-between bg-white border border-blue-100 rounded-lg px-4 py-2 text-sm">
+                  <span className="text-gray-500">Package Total</span>
+                  <span className="font-bold text-gray-800">
+                    PKR {packagePrice.toLocaleString()}
+                  </span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Amount Paid *" error={errors.amountPaid}>
+                  <input
+                    type="number"
+                    min="1"
+                    max={packagePrice || undefined}
+                    className={inp(errors.amountPaid)}
+                    value={payment.amountPaid}
+                    onChange={(e) => setPayField("amountPaid", e.target.value)}
+                    placeholder={`Max PKR ${packagePrice.toLocaleString()}`}
+                  />
+                </Field>
+
+                <Field label="Payment Date *" error={errors.paymentDate}>
+                  <input
+                    type="date"
+                    className={inp(errors.paymentDate)}
+                    value={payment.paymentDate}
+                    max={today()}
+                    onChange={(e) => setPayField("paymentDate", e.target.value)}
+                  />
+                </Field>
+              </div>
+
+              <Field label="Payment Note (optional)">
+                <input
+                  className={inp()}
+                  value={payment.paymentNote}
+                  onChange={(e) => setPayField("paymentNote", e.target.value)}
+                  placeholder="e.g. Cash received, Bank transfer..."
+                />
+              </Field>
+
+              {/* Live remaining balance */}
+              {selectedPkg && amountPaidNum > 0 && (
+                <div
+                  className={`flex items-center justify-between rounded-lg px-4 py-2 text-sm font-semibold ${
+                    remaining <= 0
+                      ? "bg-green-100 text-green-800"
+                      : "bg-yellow-100 text-yellow-800"
+                  }`}
+                >
+                  <span>
+                    {remaining <= 0 ? "✓ Fully Paid" : "Remaining Balance"}
+                  </span>
+                  <span>
+                    {remaining <= 0
+                      ? "PKR 0"
+                      : `PKR ${remaining.toLocaleString()}`}
+                  </span>
+                </div>
+              )}
+            </div>
           )}
         </div>
       )}
 
-      {/* MODALS */}
-      <Modal
-        isOpen={showAdd}
-        onClose={() => setShowAdd(false)}
-        title="Add New Customer"
-        size="lg"
-      >
-        <CustomerForm onClose={() => setShowAdd(false)} />
-      </Modal>
+      {/* ── FOOTER BUTTONS ── */}
+      <div className="flex justify-end gap-3 pt-1">
+        <button
+          onClick={onClose}
+          className="px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleSubmit}
+          disabled={saving || !!dupWarning}
+          className="px-5 py-2 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50"
+        >
+          {saving
+            ? "Saving..."
+            : isEdit
+              ? "Save Changes"
+              : payment.recordPayment
+                ? "Add Customer & Record Payment"
+                : "Add Customer"}
+        </button>
+      </div>
+    </div>
+  );
+}
 
-      <Modal
-        isOpen={!!editCustomer}
-        onClose={() => setEditCustomer(null)}
-        title="Edit Customer"
-        size="lg"
-      >
-        {editCustomer && (
-          <CustomerForm
-            customer={editCustomer}
-            onClose={() => setEditCustomer(null)}
-          />
-        )}
-      </Modal>
+const inp = (err) =>
+  `w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+    err ? "border-red-400 bg-red-50" : "border-gray-300 bg-white"
+  }`;
 
-      <Modal
-        isOpen={!!payCustomer}
-        onClose={() => setPayCustomer(null)}
-        title="Record Payment"
-        size="md"
-      >
-        {payCustomer && (
-          <PaymentForm
-            customer={payCustomer}
-            onClose={() => setPayCustomer(null)}
-          />
-        )}
-      </Modal>
-
-      {/* Archive dialog */}
-      <ConfirmDialog
-        isOpen={!!archiveTarget}
-        onClose={() => setArchiveTarget(null)}
-        onConfirm={(reason) => archiveCustomer(archiveTarget.id, reason)}
-        title="Archive Customer"
-        message={`"${archiveTarget?.fullName}" will be moved to the Archived tab. All payment history is preserved and you can restore them at any time.`}
-        confirmLabel="Archive Customer"
-        confirmText={archiveTarget?.fullName}
-        showReason
-        reasonLabel="Reason for archiving (optional)"
-        danger
-      />
-
-      {/* Restore dialog */}
-      <ConfirmDialog
-        isOpen={!!restoreTarget}
-        onClose={() => setRestoreTarget(null)}
-        onConfirm={() => restoreCustomer(restoreTarget.id)}
-        title="Restore Customer"
-        message={`Restore "${restoreTarget?.fullName}" back to Active customers? Their full payment history will remain intact.`}
-        confirmLabel="Yes, Restore"
-        danger={false}
-      />
-
-      {/* Purge dialog */}
-      <ConfirmDialog
-        isOpen={!!purgeTarget}
-        onClose={() => setPurgeTarget(null)}
-        onConfirm={() => permanentlyDeleteCustomer(purgeTarget.id)}
-        title="Permanently Delete"
-        message={`This will PERMANENTLY delete "${purgeTarget?.fullName}" and every payment record forever. This cannot be undone.`}
-        confirmLabel="Permanently Delete"
-        confirmText={purgeTarget?.fullName}
-        requirePassword
-        danger
-      />
+function Field({ label, error, children }) {
+  return (
+    <div>
+      <label className="block text-xs font-semibold text-gray-600 mb-1.5">
+        {label}
+      </label>
+      {children}
+      {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
     </div>
   );
 }
@@ -6255,6 +5836,624 @@ export const setupDevTools = () => {
 };
 </file>
 
+<file path="src/pages/Customers/Customers.jsx">
+import { useState, useEffect } from "react";
+import {
+  Plus,
+  Search,
+  Archive,
+  ArchiveRestore,
+  Trash2,
+  ArrowUpDown,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
+import Modal from "../../components/ui/Modal";
+import ConfirmDialog from "../../components/ui/ConfirmDialog";
+import CustomerTable from "./CustomerTable";
+import CustomerForm from "./CustomerForm";
+import PaymentForm from "../Payments/PaymentForm";
+import useCustomerStore from "../../store/useCustomerStore";
+import usePaymentStore from "../../store/usePaymentStore";
+import { formatDate, daysUntil } from "../../utils/dateUtils";
+
+function Pagination({ page, total, count, pageSize, onChange }) {
+  const start = (page - 1) * pageSize + 1;
+  const end = Math.min(page * pageSize, count);
+  return (
+    <div className="flex items-center justify-between px-1">
+      <span className="text-xs text-gray-400">
+        Showing {start}–{end} of {count}
+      </span>
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => onChange(page - 1)}
+          disabled={page === 1}
+          className="p-1.5 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          <ChevronLeft size={14} />
+        </button>
+        {Array.from({ length: total }, (_, i) => i + 1)
+          .filter((p) => p === 1 || p === total || Math.abs(p - page) <= 1)
+          .reduce((acc, p, idx, arr) => {
+            if (idx > 0 && p - arr[idx - 1] > 1) acc.push("...");
+            acc.push(p);
+            return acc;
+          }, [])
+          .map((p, idx) =>
+            p === "..." ? (
+              <span
+                key={`ellipsis-${idx}`}
+                className="px-1 text-xs text-gray-400"
+              >
+                …
+              </span>
+            ) : (
+              <button
+                key={p}
+                onClick={() => onChange(p)}
+                className={`min-w-7 h-7 rounded-lg text-xs font-semibold border ${
+                  p === page
+                    ? "bg-gray-900 text-white border-gray-900"
+                    : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
+                }`}
+              >
+                {p}
+              </button>
+            ),
+          )}
+        <button
+          onClick={() => onChange(page + 1)}
+          disabled={page === total}
+          className="p-1.5 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          <ChevronRight size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default function Customers({ initialFilter }) {
+  const customers = useCustomerStore((s) => s.customers);
+  const archiveCustomer = useCustomerStore((s) => s.archiveCustomer);
+  const restoreCustomer = useCustomerStore((s) => s.restoreCustomer);
+  const permanentlyDeleteCustomer = useCustomerStore(
+    (s) => s.permanentlyDeleteCustomer,
+  );
+  const getCyclesForCustomer = usePaymentStore((s) => s.getCyclesForCustomer);
+  const getActiveCycle = usePaymentStore((s) => s.getActiveCycle);
+
+  const [view, setView] = useState("active");
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("newest");
+
+  const [archiveFilter, setArchiveFilter] = useState("all"); // all | deleted | terminated
+  const [archiveSort, setArchiveSort] = useState("newest"); // newest | oldest | name
+  const [activePage, setActivePage] = useState(1);
+  const [archivePage, setArchivePage] = useState(1);
+  const PAGE_SIZE = 20;
+
+  const [showAdd, setShowAdd] = useState(false);
+  const [editCustomer, setEditCustomer] = useState(null);
+  const [payCustomer, setPayCustomer] = useState(null);
+  const [archiveTarget, setArchiveTarget] = useState(null);
+  const [restoreTarget, setRestoreTarget] = useState(null);
+  const [purgeTarget, setPurgeTarget] = useState(null);
+
+  // Sync prop filter to local state when prop changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (initialFilter) {
+        setFilter(initialFilter);
+        setActivePage(1);
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [initialFilter]);
+
+  // Reset pages on search change
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setActivePage(1);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [search, filter, sortBy]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setArchivePage(1);
+    }, 0);
+
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const activeCustomers = customers.filter((c) => !c.isArchived);
+  const archivedCustomers = customers.filter((c) => c.isArchived);
+
+  // 1. FILTERING
+  const q = search.toLowerCase();
+  const matchSearch = (c) =>
+    !search ||
+    c.fullName?.toLowerCase().includes(q) ||
+    c.userName?.toLowerCase().includes(q) ||
+    c.mobileNo?.includes(q) ||
+    c.mainArea?.toLowerCase().includes(q);
+
+  const filteredActive = activeCustomers.filter((c) => {
+    // Check search first
+    if (!matchSearch(c)) return false;
+
+    // Check Filter
+    if (filter === "all") return true;
+    if (filter === "active") return c.status === "active";
+    if (filter === "suspended") return c.status === "suspended";
+    // New filters based on payment status
+    const cycle = getActiveCycle(c.id);
+    const days = cycle ? daysUntil(cycle.cycleEndDate) : 0;
+    const pending = cycle ? cycle.amountPending : 0;
+
+    if (filter === "balance-due") {
+      // Any customer with an outstanding balance, regardless of status
+      return pending > 0;
+    }
+    if (filter === "overdue") {
+      // Must be active AND have pending balance AND be overdue (days < 0)
+      return c.status === "active" && pending > 0 && days < 0;
+    }
+    if (filter === "pending") {
+      // Must be active AND have pending balance BUT NOT overdue (days >= 0)
+      return c.status === "active" && pending > 0 && days >= 0;
+    }
+
+    return true;
+  });
+
+  // 2. SORTING
+  const sortedActive = [...filteredActive].sort((a, b) => {
+    const cycleA = getActiveCycle(a.id);
+    const cycleB = getActiveCycle(b.id);
+
+    switch (sortBy) {
+      case "name":
+        return a.fullName.localeCompare(b.fullName);
+
+      case "pending":
+        // Highest balance first
+        return (cycleB?.amountPending || 0) - (cycleA?.amountPending || 0);
+
+      case "expiring":
+        // Soonest expiry date first.
+        if (!cycleA) return 1;
+        if (!cycleB) return -1;
+        return new Date(cycleA.cycleEndDate) - new Date(cycleB.cycleEndDate);
+
+      case "newest":
+      default:
+        // IDs are auto-incrementing
+        return b.id - a.id;
+    }
+  });
+
+  // Archive filtering
+  const filteredArchived = archivedCustomers
+    .filter((c) => {
+      if (!matchSearch(c)) return false;
+      if (archiveFilter === "terminated")
+        return c.archiveReason === "Terminated";
+      if (archiveFilter === "deleted") return c.archiveReason !== "Terminated";
+      return true;
+    })
+    .sort((a, b) => {
+      if (archiveSort === "name") return a.fullName.localeCompare(b.fullName);
+      if (archiveSort === "oldest")
+        return new Date(a.archivedAt || 0) - new Date(b.archivedAt || 0);
+      // newest (default)
+      return new Date(b.archivedAt || 0) - new Date(a.archivedAt || 0);
+    });
+
+  // Pagination helpers
+  const totalActivePages = Math.max(
+    1,
+    Math.ceil(sortedActive.length / PAGE_SIZE),
+  );
+  const totalArchivePages = Math.max(
+    1,
+    Math.ceil(filteredArchived.length / PAGE_SIZE),
+  );
+  const pagedActive = sortedActive.slice(
+    (activePage - 1) * PAGE_SIZE,
+    activePage * PAGE_SIZE,
+  );
+  const pagedArchived = filteredArchived.slice(
+    (archivePage - 1) * PAGE_SIZE,
+    archivePage * PAGE_SIZE,
+  );
+
+  const filterOptions = [
+    { id: "all", label: "All" },
+    { id: "active", label: "Active" },
+    { id: "pending", label: "Pending" },
+    { id: "overdue", label: "Overdue" },
+    { id: "balance-due", label: "Balance Due" },
+    { id: "suspended", label: "Suspended" },
+  ];
+
+  return (
+    <div className="p-4 space-y-3">
+      {/* HEADER */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h1 className="text-base font-semibold text-gray-800">Customers</h1>
+
+          {/* Active / Archived tab switcher */}
+          <div className="flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5">
+            <button
+              onClick={() => setView("active")}
+              className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
+                view === "active"
+                  ? "bg-white text-gray-900 shadow-sm"
+                  : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              Active
+              <span className="ml-1.5 bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full text-xs">
+                {activeCustomers.length}
+              </span>
+            </button>
+            <button
+              onClick={() => setView("archived")}
+              className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
+                view === "archived"
+                  ? "bg-white text-gray-900 shadow-sm"
+                  : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              Archived
+              {archivedCustomers.length > 0 && (
+                <span className="ml-1.5 bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full text-xs">
+                  {archivedCustomers.length}
+                </span>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {view === "active" && (
+          <button
+            onClick={() => setShowAdd(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
+          >
+            <Plus size={14} /> Add Customer
+          </button>
+        )}
+      </div>
+
+      {/* SEARCH + FILTER + SORT */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        {/* Left Side: Search & Status Filters */}
+        <div className="flex items-center gap-2 flex-1 min-w-62.5">
+          <div className="relative flex-1 max-w-xs">
+            <Search
+              size={14}
+              className="absolute left-2.5 top-2 text-gray-400"
+            />
+            <input
+              className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+              placeholder="Search..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          {view === "active" && (
+            <div className="flex gap-1">
+              {filterOptions.map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => setFilter(f.id)}
+                  className={`px-3 py-1.5 text-xs rounded capitalize transition-colors ${
+                    filter === f.id
+                      ? "bg-gray-800 text-white"
+                      : "border border-gray-300 text-gray-600 hover:bg-gray-50"
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Right Side: Sorting Dropdown */}
+        {view === "active" && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-500 font-medium">Sort by:</span>
+            <div className="relative">
+              <ArrowUpDown
+                size={14}
+                className="absolute left-2.5 top-2 text-gray-500 pointer-events-none"
+              />
+              <select
+                className="pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white text-gray-700 cursor-pointer appearance-none min-w-35"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+              >
+                <option value="newest">Newest First</option>
+                <option value="name">Name (A-Z)</option>
+                <option value="expiring">Expiring Soon</option>
+                <option value="pending">Highest Debt</option>
+              </select>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ACTIVE TABLE */}
+      {view === "active" && (
+        <div className="space-y-2">
+          <div className="bg-white border border-gray-200 rounded overflow-hidden">
+            <CustomerTable
+              customers={pagedActive}
+              searchQuery={""} // Search handled above
+              onEdit={(c) => setEditCustomer(c)}
+              onPay={(c) => setPayCustomer(c)}
+              onDelete={(c) => setArchiveTarget(c)}
+            />
+          </div>
+          {totalActivePages > 1 && (
+            <Pagination
+              page={activePage}
+              total={totalActivePages}
+              count={sortedActive.length}
+              pageSize={PAGE_SIZE}
+              onChange={(p) => setActivePage(p)}
+            />
+          )}
+        </div>
+      )}
+
+      {/* ARCHIVED TABLE */}
+      {view === "archived" && (
+        <div className="space-y-2">
+          {/* Archive toolbar: filter + sort */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-0.5">
+              {[
+                { id: "all", label: "All" },
+                { id: "deleted", label: "Deleted" },
+                { id: "terminated", label: "Terminated" },
+              ].map((opt) => (
+                <button
+                  key={opt.id}
+                  onClick={() => {
+                    setArchiveFilter(opt.id);
+                    setArchivePage(1);
+                  }}
+                  className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
+                    archiveFilter === opt.id
+                      ? "bg-white text-gray-900 shadow-sm"
+                      : "text-gray-500 hover:text-gray-700"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <select
+              value={archiveSort}
+              onChange={(e) => {
+                setArchiveSort(e.target.value);
+                setArchivePage(1);
+              }}
+              className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 font-medium"
+            >
+              <option value="newest">Newest First</option>
+              <option value="oldest">Oldest First</option>
+              <option value="name">Name A–Z</option>
+            </select>
+            <span className="text-xs text-gray-400 ml-1">
+              {filteredArchived.length} record
+              {filteredArchived.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+
+          <div className="bg-white border border-gray-200 rounded overflow-hidden">
+            {filteredArchived.length === 0 ? (
+              <div className="py-16 flex flex-col items-center gap-2 text-gray-400">
+                <Archive size={36} className="text-gray-300" />
+                <p className="text-sm font-medium">No archived customers</p>
+                <p className="text-xs text-gray-300">
+                  Deleted customers appear here — nothing is ever lost.
+                </p>
+              </div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-800 text-white text-left text-xs">
+                    <th className="px-4 py-2.5 font-medium">Customer</th>
+                    <th className="px-4 py-2.5 font-medium">Area</th>
+                    <th className="px-4 py-2.5 font-medium">Archived On</th>
+                    <th className="px-4 py-2.5 font-medium">Reason</th>
+                    <th className="px-4 py-2.5 font-medium">Total Ever Paid</th>
+                    <th className="px-4 py-2.5 font-medium">Cycles</th>
+                    <th className="px-4 py-2.5 font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pagedArchived.map((c) => {
+                    const cycles = getCyclesForCustomer(c.id);
+                    const totalPaid = cycles.reduce(
+                      (sum, cy) =>
+                        sum +
+                        (cy.installments || []).reduce(
+                          (s, i) => s + (i.amountPaid || 0),
+                          0,
+                        ),
+                      0,
+                    );
+                    const isTerminated = c.archiveReason === "Terminated";
+                    return (
+                      <tr
+                        key={c.id}
+                        className="border-t border-gray-100 hover:bg-gray-50"
+                      >
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-gray-800">
+                            {c.fullName}
+                          </div>
+                          <div className="text-xs text-gray-400">
+                            {c.userName}
+                          </div>
+                          {c.mobileNo && (
+                            <div className="text-xs text-gray-400">
+                              {c.mobileNo}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-gray-500">
+                          {c.mainArea || "—"}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-gray-500">
+                          {c.archivedAt ? formatDate(c.archivedAt) : "—"}
+                        </td>
+                        <td className="px-4 py-3 text-xs">
+                          {isTerminated ? (
+                            <span className="inline-block px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-semibold text-xs">
+                              Terminated
+                            </span>
+                          ) : c.archiveReason ? (
+                            <span className="text-gray-500">
+                              {c.archiveReason}
+                            </span>
+                          ) : (
+                            <span className="text-gray-300 italic">
+                              No reason given
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 font-semibold text-gray-800">
+                          PKR {totalPaid.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-gray-500">
+                          {cycles.length}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => setRestoreTarget(c)}
+                              className="flex items-center gap-1 px-2.5 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 font-medium"
+                            >
+                              <ArchiveRestore size={12} /> Restore
+                            </button>
+                            <button
+                              onClick={() => setPurgeTarget(c)}
+                              title="Permanently delete all data"
+                              className="flex items-center gap-1 px-2.5 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 font-medium"
+                            >
+                              <Trash2 size={12} /> Purge
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+          {totalArchivePages > 1 && (
+            <Pagination
+              page={archivePage}
+              total={totalArchivePages}
+              count={filteredArchived.length}
+              pageSize={PAGE_SIZE}
+              onChange={(p) => setArchivePage(p)}
+            />
+          )}
+        </div>
+      )}
+
+      {/* MODALS */}
+      <Modal
+        isOpen={showAdd}
+        onClose={() => setShowAdd(false)}
+        title="Add New Customer"
+        size="lg"
+      >
+        <CustomerForm onClose={() => setShowAdd(false)} />
+      </Modal>
+
+      <Modal
+        isOpen={!!editCustomer}
+        onClose={() => setEditCustomer(null)}
+        title="Edit Customer"
+        size="lg"
+      >
+        {editCustomer && (
+          <CustomerForm
+            customer={editCustomer}
+            onClose={() => setEditCustomer(null)}
+          />
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={!!payCustomer}
+        onClose={() => setPayCustomer(null)}
+        title="Record Payment"
+        size="md"
+      >
+        {payCustomer && (
+          <PaymentForm
+            customer={payCustomer}
+            onClose={() => setPayCustomer(null)}
+          />
+        )}
+      </Modal>
+
+      {/* Archive dialog */}
+      <ConfirmDialog
+        isOpen={!!archiveTarget}
+        onClose={() => setArchiveTarget(null)}
+        onConfirm={(reason) => archiveCustomer(archiveTarget.id, reason)}
+        title="Archive Customer"
+        message={`"${archiveTarget?.fullName}" will be moved to the Archived tab. All payment history is preserved and you can restore them at any time.`}
+        confirmLabel="Archive Customer"
+        confirmText={archiveTarget?.fullName}
+        showReason
+        reasonLabel="Reason for archiving (optional)"
+        danger
+      />
+
+      {/* Restore dialog */}
+      <ConfirmDialog
+        isOpen={!!restoreTarget}
+        onClose={() => setRestoreTarget(null)}
+        onConfirm={() => restoreCustomer(restoreTarget.id)}
+        title="Restore Customer"
+        message={`Restore "${restoreTarget?.fullName}" back to Active customers? Their full payment history will remain intact.`}
+        confirmLabel="Yes, Restore"
+        danger={false}
+      />
+
+      {/* Purge dialog */}
+      <ConfirmDialog
+        isOpen={!!purgeTarget}
+        onClose={() => setPurgeTarget(null)}
+        onConfirm={() => permanentlyDeleteCustomer(purgeTarget.id)}
+        title="Permanently Delete"
+        message={`This will PERMANENTLY delete "${purgeTarget?.fullName}" and every payment record forever. This cannot be undone.`}
+        confirmLabel="Permanently Delete"
+        confirmText={purgeTarget?.fullName}
+        requirePassword
+        danger
+      />
+    </div>
+  );
+}
+</file>
+
 <file path="src/pages/Dashboard.jsx">
 import { useState } from "react";
 import {
@@ -6266,10 +6465,8 @@ import {
   XCircle,
   Calendar,
   CreditCard,
-  Activity,
   ChevronLeft,
   ChevronRight,
-  RefreshCw,
   Eye,
   EyeOff,
 } from "lucide-react";
@@ -6351,11 +6548,11 @@ export default function Dashboard({ onNavigate }) {
     at_pending = 0,
     at_overdueMoney = 0;
   let at_overdueCount = 0;
-  let at_expiringCount = 0;
-  let at_renewalCount = 0;
   let at_activeCount = 0,
     at_suspendedCount = 0,
     at_totalEver = 0;
+  let at_pendingStatusBalance = 0,
+    at_suspendedBalance = 0;
 
   activeCustomers.forEach((c) => {
     if (c.status === "active") at_activeCount++;
@@ -6366,6 +6563,12 @@ export default function Dashboard({ onNavigate }) {
     at_collected += cycle.amountPaid || 0;
     at_pending += cycle.amountPending || 0;
 
+    const bal = cycle.amountPending || 0;
+    if (bal > 0) {
+      if (c.status === "suspended") at_suspendedBalance += bal;
+      else at_pendingStatusBalance += bal;
+    }
+
     const days = daysUntil(cycle.cycleEndDate);
 
     // Overdue Logic (Pending AND Expired)
@@ -6373,9 +6576,6 @@ export default function Dashboard({ onNavigate }) {
       at_overdueCount++;
       at_overdueMoney += cycle.amountPending;
     }
-
-    if (days >= 0 && days <= 5) at_expiringCount++;
-    if (days < 0) at_renewalCount++;
   });
 
   cycles.forEach((cy) => {
@@ -6404,8 +6604,8 @@ export default function Dashboard({ onNavigate }) {
     overdueMoney: at_overdueMoney,
     totalEverCollected: at_totalEver,
     overdueCount: at_overdueCount,
-    expiringCount: at_expiringCount,
-    renewalCount: at_renewalCount,
+    pendingStatusBalance: at_pendingStatusBalance,
+    suspendedBalance: at_suspendedBalance,
     totalExpenses: at_totalExpenses,
     inventoryValue: at_inventoryValue,
     netIncome: at_totalEver - at_totalExpenses - at_inventoryValue,
@@ -6420,9 +6620,7 @@ export default function Dashboard({ onNavigate }) {
     mo_newCustomers = 0;
   let mo_clearedCount = 0,
     mo_pendingCount = 0,
-    mo_overdueCount = 0,
-    mo_renewalCount = 0,
-    mo_expiringCount = 0;
+    mo_overdueCount = 0;
 
   cycles.forEach((cy) => {
     // Collected in this month
@@ -6445,8 +6643,6 @@ export default function Dashboard({ onNavigate }) {
         mo_overdueMoney += cy.amountPending;
         mo_overdueCount++;
       }
-      if (days < 0) mo_renewalCount++;
-      if (days >= 0 && days <= 5) mo_expiringCount++;
     }
   });
 
@@ -6478,8 +6674,6 @@ export default function Dashboard({ onNavigate }) {
     clearedCount: mo_clearedCount,
     pendingCount: mo_pendingCount,
     overdueCount: mo_overdueCount,
-    renewalCount: mo_renewalCount,
-    expiringCount: mo_expiringCount,
     totalExpenses: mo_expenses,
     inventoryValue: mo_inventoryValue,
     netIncome: mo_collected - mo_expenses - mo_inventoryValue,
@@ -6607,10 +6801,10 @@ export default function Dashboard({ onNavigate }) {
 
       {mode !== "daily" ? (
         <>
-          {/* Top Row: 5 Columns */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+          {/* Top Row: 4 Columns */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <BigCard
-              icon={<Users size={20} />}
+              icon={<Users size={16} />}
               label="Total Customers"
               value={
                 mode === "monthly"
@@ -6625,38 +6819,21 @@ export default function Dashboard({ onNavigate }) {
               color="blue"
             />
             <BigCard
-              icon={<CheckCircle size={20} />}
-              label="Total Collected"
+              icon={<CheckCircle size={16} />}
+              label={
+                mode === "monthly" ? "Collected This Month" : "Ever Collected"
+              }
               value={`PKR ${mode === "monthly" ? monthly.collected.toLocaleString() : allTime.totalEverCollected.toLocaleString()}`}
               sub={
-                mode === "monthly" ? "Received this month" : "All payments ever"
+                mode === "monthly"
+                  ? "Payments received this month"
+                  : "Sum of all payments ever"
               }
               color="green"
               isSensitive={true}
             />
             <BigCard
-              icon={<Clock size={20} />}
-              label="Currently Pending"
-              value={`PKR ${displayStats.pending.toLocaleString()}`}
-              sub="Click to view details"
-              color="amber"
-              // Navigate to Customers > Pending
-              onClick={() => onNavigate("customers", "pending")}
-              isClickable
-            />
-            <BigCard
-              icon={<AlertTriangle size={20} />}
-              label="Total Overdue"
-              value={`PKR ${displayStats.overdueMoney.toLocaleString()}`}
-              sub="Expired + Unpaid"
-              color="red"
-              highlight={displayStats.overdueMoney > 0}
-              // Navigate to Customers > Overdue
-              onClick={() => onNavigate("customers", "overdue")}
-              isClickable
-            />
-            <BigCard
-              icon={<XCircle size={20} />}
+              icon={<XCircle size={16} />}
               label="Total Expenses"
               value={`PKR ${((displayStats.totalExpenses || 0) + (displayStats.inventoryValue || 0)).toLocaleString()}`}
               sub="Recorded expenses"
@@ -6664,12 +6841,23 @@ export default function Dashboard({ onNavigate }) {
               inventoryValue={displayStats.inventoryValue || 0}
               expensesValue={displayStats.totalExpenses || 0}
             />
+            <BigCard
+              icon={<Clock size={16} />}
+              label="Total Balance Due"
+              value={`PKR ${displayStats.pending.toLocaleString()}`}
+              sub="Click to view all"
+              color="amber"
+              onClick={() => onNavigate("customers", "balance-due")}
+              isClickable
+              pendingStatusBalance={displayStats.pendingStatusBalance || 0}
+              suspendedBalance={displayStats.suspendedBalance || 0}
+            />
           </div>
 
-          {/* Bottom Row: 4 Columns */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Bottom Row: 3 Columns */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <BigCard
-              icon={<Users size={20} />}
+              icon={<Users size={16} />}
               label="Overdue Customers"
               value={displayStats.overdueCount}
               sub="Count of customers overdue"
@@ -6677,23 +6865,17 @@ export default function Dashboard({ onNavigate }) {
               highlight={displayStats.overdueCount > 0}
             />
             <BigCard
-              icon={<RefreshCw size={20} />}
-              label="Needs Renewal"
-              value={displayStats.renewalCount}
-              sub="Cycle expired, renew now"
+              icon={<AlertTriangle size={16} />}
+              label="Total Overdue"
+              value={`PKR ${displayStats.overdueMoney.toLocaleString()}`}
+              sub="Expired + Unpaid"
               color="red"
-              highlight={displayStats.renewalCount > 0}
+              highlight={displayStats.overdueMoney > 0}
+              onClick={() => onNavigate("customers", "overdue")}
+              isClickable
             />
             <BigCard
-              icon={<Activity size={20} />}
-              label="Expiring in 5 Days"
-              value={displayStats.expiringCount}
-              sub="Collect before cutoff"
-              color="amber"
-              highlight={displayStats.expiringCount > 0}
-            />
-            <BigCard
-              icon={<TrendingUp size={20} />}
+              icon={<TrendingUp size={16} />}
               label="Net Income"
               value={`PKR ${displayStats.netIncome.toLocaleString()}`}
               sub="Total collected − expenses"
@@ -6706,7 +6888,7 @@ export default function Dashboard({ onNavigate }) {
         /* Daily View */
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <BigCard
-            icon={<CreditCard size={20} />}
+            icon={<CreditCard size={16} />}
             label="Collected Today"
             value={`PKR ${daily.collected.toLocaleString()}`}
             sub={`Payments received on ${formatDate(selDate)}`}
@@ -6714,14 +6896,14 @@ export default function Dashboard({ onNavigate }) {
             isSensitive={true}
           />
           <BigCard
-            icon={<XCircle size={20} />}
+            icon={<XCircle size={16} />}
             label="Expenses Today"
             value={`PKR ${(daily.totalExpenses + (daily.inventoryValue || 0)).toLocaleString()}`}
             sub={`Expenses recorded on ${formatDate(selDate)}`}
             color="red"
           />
           <BigCard
-            icon={<TrendingUp size={20} />}
+            icon={<TrendingUp size={16} />}
             label="Daily Net Income"
             value={`PKR ${daily.netIncome.toLocaleString()}`}
             sub="Collected − expenses"
@@ -6729,7 +6911,7 @@ export default function Dashboard({ onNavigate }) {
             isSensitive={true}
           />
           <BigCard
-            icon={<Users size={20} />}
+            icon={<Users size={16} />}
             label="New Customers"
             value={daily.newCustomers}
             sub="Joined today"
@@ -6971,21 +7153,25 @@ function BigCard({
   isClickable = false,
   inventoryValue,
   expensesValue,
+  pendingStatusBalance,
+  suspendedBalance,
 }) {
   const c = colorMap[color] || colorMap.blue;
   const [revealed, setRevealed] = useState(false);
-  const hasBreakdown =
+  const hasExpenseBreakdown =
     inventoryValue !== undefined && expensesValue !== undefined;
+  const hasBalanceBreakdown =
+    pendingStatusBalance !== undefined && suspendedBalance !== undefined;
 
   return (
     <div
       onClick={isClickable ? onClick : undefined}
-      className={`rounded-xl p-5 ${c.bg} flex flex-col justify-between ${highlight ? "ring-2 ring-offset-1 ring-red-300" : ""} ${isClickable ? "cursor-pointer hover:shadow-md transition-shadow active:scale-95" : ""}`}
+      className={`rounded-xl px-4 py-3 ${c.bg} flex flex-col justify-between ${highlight ? "ring-2 ring-offset-1 ring-red-300" : ""} ${isClickable ? "cursor-pointer hover:shadow-md transition-shadow active:scale-95" : ""}`}
     >
       <div>
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center justify-between mb-2">
           <div
-            className={`w-10 h-10 rounded-lg flex items-center justify-center ${c.iconBox} ${c.icon}`}
+            className={`w-8 h-8 rounded-lg flex items-center justify-center ${c.iconBox} ${c.icon}`}
           >
             {icon}
           </div>
@@ -6998,18 +7184,18 @@ function BigCard({
               className="text-gray-400 hover:text-gray-600 transition-colors"
               title={revealed ? "Hide Amount" : "Show Amount"}
             >
-              {revealed ? <EyeOff size={18} /> : <Eye size={18} />}
+              {revealed ? <EyeOff size={15} /> : <Eye size={15} />}
             </button>
           )}
         </div>
-        <div className="text-sm font-semibold text-gray-500 uppercase tracking-wide">
+        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
           {label}
         </div>
       </div>
 
-      <div className="mt-2">
+      <div className="mt-1">
         <div
-          className={`font-bold text-gray-900 leading-tight ${String(value).length > 12 ? "text-lg" : "text-xl"}`}
+          className={`font-bold text-gray-900 leading-tight ${String(value).length > 12 ? "text-base" : "text-lg"}`}
         >
           {isSensitive && !revealed ? (
             <span className="tracking-widest text-gray-400">••••••</span>
@@ -7017,8 +7203,8 @@ function BigCard({
             value
           )}
         </div>
-        {hasBreakdown ? (
-          <div className="mt-1.5 space-y-0.5">
+        {hasExpenseBreakdown ? (
+          <div className="mt-1 space-y-0.5">
             <div className="flex items-center justify-between text-xs">
               <span className="text-gray-500 font-medium">
                 Recorded expenses
@@ -7037,739 +7223,37 @@ function BigCard({
               </span>
             </div>
           </div>
-        ) : (
-          <div className="text-xs text-gray-500 mt-1 font-medium">{sub}</div>
-        )}
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="src/pages/Customers/CustomerTable.jsx">
-import { useState } from "react";
-import {
-  Pencil,
-  Trash2,
-  CreditCard,
-  History,
-  CornerDownRight,
-  AlertCircle,
-  CheckCircle2,
-  ArrowDownCircle,
-  Clock,
-  XCircle,
-  FileText,
-  Printer,
-} from "lucide-react";
-import Badge from "../../components/ui/Badge";
-import WhatsAppButton from "../../components/shared/WhatsAppButton";
-import Modal from "../../components/ui/Modal";
-import InvoiceModal from "../../components/ui/InvoiceModal";
-import { formatDate, daysUntil } from "../../utils/dateUtils";
-import { MESSAGE_TEMPLATES } from "../../config/messageTemplates";
-import usePaymentStore from "../../store/usePaymentStore";
-import usePackageStore from "../../store/usePackageStore";
-
-export default function CustomerTable({
-  customers,
-  onEdit,
-  onPay,
-  onDelete,
-  searchQuery,
-}) {
-  const getActiveCycle = usePaymentStore((s) => s.getActiveCycle);
-  const getCyclesForCustomer = usePaymentStore((s) => s.getCyclesForCustomer);
-  const packages = usePackageStore((s) => s.packages);
-
-  const [historyTarget, setHistoryTarget] = useState(null);
-  // invoiceTarget: { customer, cycle, packageName }
-  const [invoiceTarget, setInvoiceTarget] = useState(null);
-
-  const filtered = customers.filter((c) => {
-    if (!searchQuery) return true;
-    const q = searchQuery.toLowerCase();
-    return (
-      c.fullName?.toLowerCase().includes(q) ||
-      c.userName?.toLowerCase().includes(q) ||
-      c.mobileNo?.includes(q) ||
-      c.mainArea?.toLowerCase().includes(q)
-    );
-  });
-
-  return (
-    <>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm border-collapse">
-          <thead>
-            <tr className="bg-gray-100 text-gray-600 text-left">
-              <th className="px-3 py-2 font-medium">Customer</th>
-              <th className="px-3 py-2 font-medium">Area</th>
-              <th className="px-3 py-2 font-medium">Package</th>
-              <th className="px-3 py-2 font-medium">Expires</th>
-              <th className="px-3 py-2 font-medium">Pending</th>
-              <th className="px-3 py-2 font-medium">Status</th>
-              <th className="px-3 py-2 font-medium">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((customer) => {
-              const cycle = getActiveCycle(customer.id);
-              const pkg = packages.find((p) => p.id === customer.packageId);
-              const days = cycle ? daysUntil(cycle.cycleEndDate) : null;
-
-              // Historical price: locked at last renewal > derived from cycle > current pkg price
-              let displayPrice = null;
-              if (customer.lockedPackagePrice != null) {
-                displayPrice = Number(customer.lockedPackagePrice);
-              } else if (cycle) {
-                const carried = Number(cycle.previousBalance) || 0;
-                displayPrice = Number(cycle.totalAmount) - carried;
-              } else if (pkg) {
-                displayPrice = Number(pkg.price);
-              }
-
-              const currentPkgPrice = pkg ? Number(pkg.price) : null;
-              const priceChangedSinceLock =
-                displayPrice != null &&
-                currentPkgPrice != null &&
-                displayPrice !== currentPkgPrice;
-
-              let rowBg = "";
-              let cycleStatus = cycle ? cycle.status : "pending";
-              if (cycle) {
-                if (days !== null && days < 0 && cycleStatus !== "clear") {
-                  cycleStatus = "overdue";
-                  rowBg = "bg-red-50";
-                } else if (
-                  days !== null &&
-                  days <= 3 &&
-                  cycleStatus !== "clear"
-                ) {
-                  rowBg = "bg-yellow-50";
-                } else if (cycleStatus === "clear") {
-                  rowBg = "";
-                }
-              }
-
-              const waMessage =
-                cycle && cycle.amountPending > 0
-                  ? MESSAGE_TEMPLATES.paymentDue(customer, cycle)
-                  : cycle
-                    ? MESSAGE_TEMPLATES.expiryReminder(customer, cycle)
-                    : "";
-
-              return (
-                <tr
-                  key={customer.id}
-                  className={`border-b border-gray-100 ${rowBg} hover:bg-gray-50`}
-                >
-                  <td className="px-3 py-2">
-                    <div className="font-medium text-gray-800">
-                      {customer.fullName}
-                    </div>
-                    <div className="text-xs text-gray-400">
-                      {customer.userName}
-                    </div>
-                    {customer.mobileNo && (
-                      <div className="text-xs text-gray-400">
-                        {customer.mobileNo}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-gray-600">
-                    {customer.mainArea || "-"}
-                  </td>
-
-                  {/* Package column with locked historical price */}
-                  <td className="px-3 py-2">
-                    <div className="font-medium text-gray-700">
-                      {pkg ? pkg.name : "-"}
-                    </div>
-                    {displayPrice != null && (
-                      <div
-                        className="text-xs text-gray-400 mt-0.5"
-                        title={
-                          priceChangedSinceLock
-                            ? `Current package price is PKR ${currentPkgPrice?.toLocaleString()} — customer is on the old locked rate`
-                            : undefined
-                        }
-                      >
-                        PKR {displayPrice.toLocaleString()}
-                        {priceChangedSinceLock && (
-                          <span className="ml-1 text-amber-500 font-semibold">
-                            *
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </td>
-
-                  <td className="px-3 py-2">
-                    {cycle ? (
-                      <div>
-                        <div className="text-xs">
-                          {formatDate(cycle.cycleEndDate)}
-                        </div>
-                        <div
-                          className={`text-xs ${
-                            days < 0
-                              ? "text-red-600"
-                              : days <= 3
-                                ? "text-yellow-700"
-                                : "text-gray-400"
-                          }`}
-                        >
-                          {days < 0
-                            ? `${-days}d overdue`
-                            : days === 0
-                              ? "expires today"
-                              : `${days}d left`}
-                        </div>
-                      </div>
-                    ) : (
-                      "-"
-                    )}
-                  </td>
-                  <td className="px-3 py-2">
-                    {cycle && cycle.amountPending > 0 ? (
-                      <span className="text-red-600 font-medium">
-                        PKR {cycle.amountPending}
-                      </span>
-                    ) : (
-                      <span className="text-green-600 text-xs">Paid</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2">
-                    <Badge
-                      status={
-                        customer.status === "active"
-                          ? cycleStatus
-                          : customer.status
-                      }
-                    />
-                  </td>
-                  <td className="px-3 py-2">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <button
-                        onClick={() => onPay(customer)}
-                        className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-blue-50 text-blue-700 rounded hover:bg-blue-100 border border-blue-200 transition-colors"
-                        title="Record Payment"
-                      >
-                        <CreditCard size={13} /> Pay
-                      </button>
-                      <button
-                        onClick={() => onEdit(customer)}
-                        className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-white text-gray-700 rounded hover:bg-gray-50 border border-gray-300 transition-colors"
-                        title="Edit Customer"
-                      >
-                        <Pencil size={13} /> Edit
-                      </button>
-                      <button
-                        onClick={() => onDelete(customer)}
-                        className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-white text-red-600 rounded hover:bg-red-50 border border-gray-200 transition-colors"
-                        title="Delete Customer"
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                      {customer.mobileNo && (
-                        <WhatsAppButton
-                          mobileNo={customer.mobileNo}
-                          message={waMessage}
-                          label="Send"
-                        />
-                      )}
-                      <button
-                        onClick={() => setHistoryTarget(customer)}
-                        className="flex items-center justify-center w-7 h-7 rounded border bg-white border-gray-300 text-gray-500 hover:bg-gray-50 transition-colors"
-                        title="View Payment History"
-                      >
-                        <History size={15} />
-                      </button>
-                      {/* Invoice button — opens latest cycle's invoice */}
-                      {cycle && (
-                        <button
-                          onClick={() =>
-                            setInvoiceTarget({
-                              customer,
-                              cycle,
-                              packageName: pkg?.name || "—",
-                            })
-                          }
-                          className="flex items-center justify-center w-7 h-7 rounded border bg-white border-gray-300 text-gray-500 hover:bg-purple-50 hover:border-purple-300 hover:text-purple-600 transition-colors"
-                          title="View / Print Latest Invoice"
-                        >
-                          <FileText size={15} />
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-            {filtered.length === 0 && (
-              <tr>
-                <td
-                  colSpan={7}
-                  className="px-3 py-8 text-center text-gray-400 text-sm"
-                >
-                  No customers found.
-                </td>
-              </tr>
+        ) : hasBalanceBreakdown ? (
+          <div className="mt-1 space-y-0.5">
+            {pendingStatusBalance > 0 && (
+              <div className="flex items-center justify-between text-xs">
+                <span className="flex items-center gap-1 text-amber-600 font-medium">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                  Pending
+                </span>
+                <span className="font-semibold text-amber-700">
+                  PKR {pendingStatusBalance.toLocaleString()}
+                </span>
+              </div>
             )}
-          </tbody>
-        </table>
-      </div>
-
-      {/* History Modal — size "lg" for more breathing room */}
-      <Modal
-        isOpen={!!historyTarget}
-        onClose={() => setHistoryTarget(null)}
-        title={
-          historyTarget
-            ? `Payment History — ${historyTarget.fullName}`
-            : "History"
-        }
-        size="lg"
-      >
-        {historyTarget && (
-          <PaymentHistory
-            customer={historyTarget}
-            getCyclesForCustomer={getCyclesForCustomer}
-            packages={packages}
-            onInvoice={(cycle, pkgName) =>
-              setInvoiceTarget({
-                customer: historyTarget,
-                cycle,
-                packageName: pkgName,
-              })
-            }
-          />
-        )}
-      </Modal>
-
-      {/* Invoice Modal */}
-      <InvoiceModal
-        isOpen={!!invoiceTarget}
-        onClose={() => setInvoiceTarget(null)}
-        customer={invoiceTarget?.customer}
-        cycle={invoiceTarget?.cycle}
-        packageName={invoiceTarget?.packageName}
-      />
-    </>
-  );
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * A cycle that has shiftedAmount > 0 was forcibly "cleared" by the system at
- * renewal time — the customer never actually paid. We override the display
- * status to "carried_forward" so staff are not misled by "Clear".
- */
-function getCycleDisplayStatus(cycle) {
-  if (Number(cycle.shiftedAmount) > 0) return "carried_forward";
-  return cycle.status;
-}
-
-const STATUS_CFG = {
-  clear: {
-    label: "Fully Paid",
-    icon: <CheckCircle2 size={13} />,
-    badge: "bg-green-100 text-green-800 border-green-200",
-    headerBg: "bg-green-50 border-green-200",
-    cardBorder: "border-green-200",
-    bar: "bg-green-500",
-    pendingBg: "bg-gray-50",
-    pendingText: "text-gray-400",
-  },
-  pending: {
-    label: "Pending",
-    icon: <Clock size={13} />,
-    badge: "bg-yellow-100 text-yellow-800 border-yellow-200",
-    headerBg: "bg-yellow-50 border-yellow-200",
-    cardBorder: "border-yellow-200",
-    bar: "bg-blue-500",
-    pendingBg: "bg-red-50",
-    pendingText: "text-red-700",
-  },
-  overdue: {
-    label: "Overdue",
-    icon: <XCircle size={13} />,
-    badge: "bg-red-100 text-red-800 border-red-200",
-    headerBg: "bg-red-50 border-red-200",
-    cardBorder: "border-red-300",
-    bar: "bg-red-400",
-    pendingBg: "bg-red-50",
-    pendingText: "text-red-700",
-  },
-  carried_forward: {
-    label: "Carried Forward",
-    icon: <CornerDownRight size={13} />,
-    badge: "bg-orange-100 text-orange-800 border-orange-200",
-    headerBg: "bg-orange-50 border-orange-200",
-    cardBorder: "border-orange-300",
-    bar: "bg-orange-400",
-    pendingBg: "bg-orange-50",
-    pendingText: "text-orange-700",
-  },
-};
-
-function StatusPill({ statusKey }) {
-  const cfg = STATUS_CFG[statusKey] || STATUS_CFG.pending;
-  return (
-    <span
-      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${cfg.badge}`}
-    >
-      {cfg.icon}
-      {cfg.label}
-    </span>
-  );
-}
-
-// ─── PaymentHistory ───────────────────────────────────────────────────────────
-
-function PaymentHistory({
-  customer,
-  getCyclesForCustomer,
-  packages,
-  onInvoice,
-}) {
-  const cycles = getCyclesForCustomer(customer.id);
-
-  if (!cycles || cycles.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-14 text-gray-400">
-        <History size={36} className="mb-3 opacity-25" />
-        <p className="text-sm">No payment history available.</p>
-      </div>
-    );
-  }
-
-  // Overall summary across all cycles.
-  //
-  // WHY we subtract previousBalance from totalAmount:
-  //   When a customer is renewed with unpaid dues, the new cycle's totalAmount
-  //   already includes the carried-over debt (e.g. PKR 1600 package + PKR 1600
-  //   debt = PKR 3200). The old cycle's totalAmount is ALSO PKR 1600. If we
-  //   naively sum all totalAmounts we count that PKR 1600 debt twice (PKR 4800).
-  //   Subtracting previousBalance from each cycle gives us only the actual new
-  //   package charge per cycle, avoiding double-counting.
-  //
-  // grandPending: only the latest cycle's amountPending is the real current
-  //   outstanding — older cycles were either paid or their debt was rolled
-  //   forward into the latest cycle (and is already counted there).
-  const grandBilled = cycles.reduce(
-    (s, c) => s + Number(c.totalAmount || 0) - Number(c.previousBalance || 0),
-    0,
-  );
-  const grandPaid = cycles.reduce((s, c) => s + Number(c.amountPaid || 0), 0);
-  const grandPending = Number(cycles[0]?.amountPending || 0);
-
-  return (
-    <div className="space-y-5">
-      {/* ── Grand summary ── */}
-      <div className="grid grid-cols-3 gap-3">
-        <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-center">
-          <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-1">
-            Total Billed
-          </p>
-          <p className="text-base font-bold text-gray-800">
-            PKR {grandBilled.toLocaleString()}
-          </p>
-          <p className="text-[10px] text-gray-400 mt-0.5">
-            {cycles.length} cycle{cycles.length !== 1 ? "s" : ""}
-          </p>
-        </div>
-        <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-center">
-          <p className="text-[10px] font-bold uppercase text-green-600 tracking-wide mb-1">
-            Total Paid
-          </p>
-          <p className="text-base font-bold text-green-700">
-            PKR {grandPaid.toLocaleString()}
-          </p>
-          <p className="text-[10px] text-green-600/70 mt-0.5">
-            {grandBilled > 0
-              ? Math.min(100, Math.round((grandPaid / grandBilled) * 100))
-              : 0}
-            % of total billed
-          </p>
-        </div>
-        <div
-          className={`rounded-xl px-4 py-3 text-center border ${
-            grandPending > 0
-              ? "bg-red-50 border-red-200"
-              : "bg-gray-50 border-gray-200"
-          }`}
-        >
-          <p
-            className={`text-[10px] font-bold uppercase tracking-wide mb-1 ${
-              grandPending > 0 ? "text-red-500" : "text-gray-400"
-            }`}
-          >
-            Outstanding
-          </p>
-          <p
-            className={`text-base font-bold ${
-              grandPending > 0 ? "text-red-700" : "text-gray-400"
-            }`}
-          >
-            PKR {grandPending.toLocaleString()}
-          </p>
-          <p
-            className={`text-[10px] mt-0.5 ${grandPending > 0 ? "text-red-400" : "text-gray-400"}`}
-          >
-            {grandPending > 0 ? "still owed" : "fully settled"}
-          </p>
-        </div>
-      </div>
-
-      {/* ── Per-cycle cards ── */}
-      <div className="space-y-4">
-        {cycles.map((cycle, index) => {
-          const displayStatus = getCycleDisplayStatus(cycle);
-          const cfg = STATUS_CFG[displayStatus] || STATUS_CFG.pending;
-          const isCarriedForward = displayStatus === "carried_forward";
-          const isClear = displayStatus === "clear";
-          const hasIncomingDebt = Number(cycle.previousBalance) > 0;
-          const packageOnlyPrice =
-            Number(cycle.totalAmount) - Number(cycle.previousBalance || 0);
-          const isLatest = index === 0;
-
-          const percentPaid =
-            Number(cycle.totalAmount) > 0
-              ? Math.min(
-                  100,
-                  Math.round(
-                    (Number(cycle.amountPaid) / Number(cycle.totalAmount)) *
-                      100,
-                  ),
-                )
-              : isClear
-                ? 100
-                : 0;
-
-          // For carried-forward cycles the "pending" shown should be what was shifted
-          const pendingDisplay = isCarriedForward
-            ? Number(cycle.shiftedAmount)
-            : Number(cycle.amountPending);
-
-          return (
-            <div
-              key={cycle.id}
-              className={`rounded-xl border-2 overflow-hidden ${cfg.cardBorder}`}
-            >
-              {/* Card header */}
-              <div
-                className={`px-4 py-3 flex items-center justify-between border-b ${cfg.headerBg}`}
-              >
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-bold text-gray-800">
-                      {formatDate(cycle.cycleStartDate)}
-                    </span>
-                    <span className="text-gray-400 text-xs">→</span>
-                    <span className="text-sm font-bold text-gray-800">
-                      {formatDate(cycle.cycleEndDate)}
-                    </span>
-                    {isLatest && (
-                      <span className="text-[10px] font-bold bg-blue-600 text-white px-1.5 py-0.5 rounded uppercase tracking-wide">
-                        Latest
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-gray-500 mt-0.5">
-                    {cycle.isRenewal ? "Renewal" : "Initial"} cycle
-                    {" · "}
-                    {cycle.installments?.length || 0} payment
-                    {(cycle.installments?.length || 0) !== 1 ? "s" : ""}{" "}
-                    recorded
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <StatusPill statusKey={displayStatus} />
-                  <button
-                    onClick={() => {
-                      // Resolve package name for this cycle
-                      const pkgName =
-                        packages?.find(
-                          (p) => String(p.id) === String(customer.packageId),
-                        )?.name || "—";
-                      onInvoice(cycle, pkgName);
-                    }}
-                    className="flex items-center justify-center w-7 h-7 rounded border bg-white border-gray-300 text-gray-400 hover:bg-purple-50 hover:border-purple-300 hover:text-purple-600 transition-colors"
-                    title="View / Print Invoice"
-                  >
-                    <Printer size={13} />
-                  </button>
-                </div>
+            {suspendedBalance > 0 && (
+              <div className="flex items-center justify-between text-xs">
+                <span className="flex items-center gap-1 text-orange-600 font-medium">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-orange-400"></span>
+                  Suspended
+                </span>
+                <span className="font-semibold text-orange-700">
+                  PKR {suspendedBalance.toLocaleString()}
+                </span>
               </div>
-
-              <div className="px-4 py-4 bg-white space-y-4">
-                {/* ── CARRIED FORWARD alert — shown on the OLD cycle ── */}
-                {isCarriedForward && (
-                  <div className="flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-lg px-3 py-3">
-                    <CornerDownRight
-                      size={16}
-                      className="text-orange-500 mt-0.5 shrink-0"
-                    />
-                    <div>
-                      <p className="text-sm font-semibold text-orange-800">
-                        Unpaid dues moved to next cycle — PKR{" "}
-                        {Number(cycle.shiftedAmount).toLocaleString()}
-                      </p>
-                      <p className="text-xs text-orange-700 mt-1 leading-relaxed">
-                        The customer did not pay this cycle. When the next cycle
-                        was started, the full outstanding amount of{" "}
-                        <strong>
-                          PKR {Number(cycle.shiftedAmount).toLocaleString()}
-                        </strong>{" "}
-                        was automatically added to the new cycle&apos;s total
-                        bill. This cycle was then marked as &quot;settled&quot;
-                        by the system, but no actual payment was received.
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                {/* ── INCOMING DEBT notice — shown on the NEW cycle ── */}
-                {hasIncomingDebt && (
-                  <div className="flex items-start gap-3 bg-blue-50 border border-blue-200 rounded-lg px-3 py-3">
-                    <ArrowDownCircle
-                      size={16}
-                      className="text-blue-500 mt-0.5 shrink-0"
-                    />
-                    <div>
-                      <p className="text-sm font-semibold text-blue-800">
-                        Includes unpaid debt from previous cycle — PKR{" "}
-                        {Number(cycle.previousBalance).toLocaleString()}
-                      </p>
-                      <p className="text-xs text-blue-700 mt-1 leading-relaxed">
-                        This cycle&apos;s total of{" "}
-                        <strong>
-                          PKR {Number(cycle.totalAmount).toLocaleString()}
-                        </strong>{" "}
-                        is made up of the package price{" "}
-                        <strong>
-                          (PKR {packageOnlyPrice.toLocaleString()})
-                        </strong>{" "}
-                        plus the carried-over balance from the previous cycle{" "}
-                        <strong>
-                          (PKR {Number(cycle.previousBalance).toLocaleString()})
-                        </strong>
-                        .
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                {/* ── Financials grid ── */}
-                <div className="grid grid-cols-3 gap-3 text-center">
-                  <div className="bg-gray-50 rounded-lg px-3 py-2.5">
-                    <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-1">
-                      Total Bill
-                    </p>
-                    <p className="text-sm font-bold text-gray-800">
-                      PKR {Number(cycle.totalAmount).toLocaleString()}
-                    </p>
-                    {hasIncomingDebt && (
-                      <p className="text-[10px] text-gray-400 mt-0.5">
-                        incl. PKR{" "}
-                        {Number(cycle.previousBalance).toLocaleString()} debt
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="bg-green-50 rounded-lg px-3 py-2.5">
-                    <p className="text-[10px] font-bold uppercase text-green-600 tracking-wide mb-1">
-                      Paid
-                    </p>
-                    <p className="text-sm font-bold text-green-700">
-                      PKR {Number(cycle.amountPaid).toLocaleString()}
-                    </p>
-                  </div>
-
-                  <div className={`rounded-lg px-3 py-2.5 ${cfg.pendingBg}`}>
-                    <p
-                      className={`text-[10px] font-bold uppercase tracking-wide mb-1 ${
-                        isCarriedForward
-                          ? "text-orange-500"
-                          : pendingDisplay > 0
-                            ? "text-red-500"
-                            : "text-gray-400"
-                      }`}
-                    >
-                      {isCarriedForward ? "Moved Forward" : "Pending"}
-                    </p>
-                    <p className={`text-sm font-bold ${cfg.pendingText}`}>
-                      PKR {pendingDisplay.toLocaleString()}
-                    </p>
-                  </div>
-                </div>
-
-                {/* ── Progress bar ── */}
-                <div>
-                  <div className="flex justify-between text-[11px] text-gray-400 mb-1">
-                    <span>Payment progress</span>
-                    <span>{percentPaid}%</span>
-                  </div>
-                  <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
-                    <div
-                      className={`h-2 rounded-full transition-all duration-500 ${cfg.bar}`}
-                      style={{ width: `${percentPaid}%` }}
-                    />
-                  </div>
-                </div>
-
-                {/* ── Installments list ── */}
-                {cycle.installments && cycle.installments.length > 0 ? (
-                  <div className="bg-gray-50 border border-gray-100 rounded-lg p-3">
-                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2.5">
-                      Payments Received
-                    </p>
-                    <div className="space-y-2">
-                      {cycle.installments.map((inst) => (
-                        <div
-                          key={inst.id}
-                          className="flex justify-between items-center bg-white rounded-lg px-3 py-2 border border-gray-100 shadow-sm"
-                        >
-                          <div className="flex items-center gap-2.5">
-                            <div className="w-6 h-6 rounded-full bg-green-100 flex items-center justify-center shrink-0">
-                              <CheckCircle2
-                                size={12}
-                                className="text-green-600"
-                              />
-                            </div>
-                            <div>
-                              <p className="text-xs font-semibold text-gray-800">
-                                {formatDate(inst.datePaid)}
-                              </p>
-                              {inst.note && (
-                                <p className="text-[10px] text-gray-400 mt-0.5">
-                                  via {inst.note}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                          <span className="text-sm font-bold text-gray-800">
-                            PKR {Number(inst.amountPaid).toLocaleString()}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  !isCarriedForward && (
-                    <div className="flex items-center gap-2 text-xs text-gray-400 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5">
-                      <AlertCircle size={13} className="shrink-0" />
-                      No payments recorded for this cycle.
-                    </div>
-                  )
-                )}
-              </div>
+            )}
+            <div className="text-xs text-gray-400 mt-0.5">
+              Click to view all
             </div>
-          );
-        })}
+          </div>
+        ) : (
+          <div className="text-xs text-gray-500 mt-0.5 font-medium">{sub}</div>
+        )}
       </div>
     </div>
   );
@@ -8322,6 +7806,748 @@ export default function PaymentForm({ customer, onClose }) {
         cycle={invoiceData?.cycle}
         packageName={invoiceData?.packageName}
       />
+    </div>
+  );
+}
+</file>
+
+<file path="src/pages/Customers/CustomerTable.jsx">
+import { useState } from "react";
+import {
+  Pencil,
+  Trash2,
+  CreditCard,
+  History,
+  CornerDownRight,
+  AlertCircle,
+  CheckCircle2,
+  ArrowDownCircle,
+  Clock,
+  XCircle,
+  FileText,
+  Printer,
+} from "lucide-react";
+import Badge from "../../components/ui/Badge";
+import WhatsAppButton from "../../components/shared/WhatsAppButton";
+import Modal from "../../components/ui/Modal";
+import InvoiceModal from "../../components/ui/InvoiceModal";
+import { formatDate, daysUntil } from "../../utils/dateUtils";
+import { MESSAGE_TEMPLATES } from "../../config/messageTemplates";
+import usePaymentStore from "../../store/usePaymentStore";
+import usePackageStore from "../../store/usePackageStore";
+
+export default function CustomerTable({
+  customers,
+  onEdit,
+  onPay,
+  onDelete,
+  searchQuery,
+}) {
+  const getActiveCycle = usePaymentStore((s) => s.getActiveCycle);
+  const getCyclesForCustomer = usePaymentStore((s) => s.getCyclesForCustomer);
+  const packages = usePackageStore((s) => s.packages);
+
+  const [historyTarget, setHistoryTarget] = useState(null);
+  // invoiceTarget: { customer, cycle, packageName }
+  const [invoiceTarget, setInvoiceTarget] = useState(null);
+
+  const filtered = customers.filter((c) => {
+    if (!searchQuery) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      c.fullName?.toLowerCase().includes(q) ||
+      c.userName?.toLowerCase().includes(q) ||
+      c.mobileNo?.includes(q) ||
+      c.mainArea?.toLowerCase().includes(q)
+    );
+  });
+
+  return (
+    <>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="bg-gray-100 text-gray-600 text-left">
+              <th className="px-3 py-2 font-medium w-10 text-center">#</th>
+              <th className="px-3 py-2 font-medium min-w-48">Customer</th>
+              <th className="px-3 py-2 font-medium">Area</th>
+              <th className="px-3 py-2 font-medium">Package</th>
+              <th className="px-3 py-2 font-medium">Expires</th>
+              <th className="px-3 py-2 font-medium">Pending</th>
+              <th className="px-3 py-2 font-medium">Status</th>
+              <th className="px-3 py-2 font-medium">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((customer, idx) => {
+              const cycle = getActiveCycle(customer.id);
+              const pkg = packages.find((p) => p.id === customer.packageId);
+              const days = cycle ? daysUntil(cycle.cycleEndDate) : null;
+
+              // Historical price: locked at last renewal > derived from cycle > current pkg price
+              let displayPrice = null;
+              if (customer.lockedPackagePrice != null) {
+                displayPrice = Number(customer.lockedPackagePrice);
+              } else if (cycle) {
+                const carried = Number(cycle.previousBalance) || 0;
+                displayPrice = Number(cycle.totalAmount) - carried;
+              } else if (pkg) {
+                displayPrice = Number(pkg.price);
+              }
+
+              const currentPkgPrice = pkg ? Number(pkg.price) : null;
+              const priceChangedSinceLock =
+                displayPrice != null &&
+                currentPkgPrice != null &&
+                displayPrice !== currentPkgPrice;
+
+              let rowBg = "";
+              let cycleStatus = cycle ? cycle.status : "pending";
+              if (cycle) {
+                if (days !== null && days < 0 && cycleStatus !== "clear") {
+                  cycleStatus = "overdue";
+                  rowBg = "bg-red-50";
+                } else if (
+                  days !== null &&
+                  days <= 3 &&
+                  cycleStatus !== "clear"
+                ) {
+                  rowBg = "bg-yellow-50";
+                } else if (cycleStatus === "clear") {
+                  rowBg = "";
+                }
+              }
+
+              const waMessage =
+                cycle && cycle.amountPending > 0
+                  ? MESSAGE_TEMPLATES.paymentDue(customer, cycle)
+                  : cycle
+                    ? MESSAGE_TEMPLATES.expiryReminder(customer, cycle)
+                    : "";
+
+              return (
+                <tr
+                  key={customer.id}
+                  className={`border-b border-gray-100 ${rowBg} hover:bg-gray-50`}
+                >
+                  <td className="px-3 py-2 text-center text-xs text-gray-400 font-medium w-10">
+                    {idx + 1}
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="font-medium text-gray-800">
+                      {customer.fullName}
+                    </div>
+                    <div className="text-xs text-gray-400">
+                      {customer.userName}
+                    </div>
+                    {customer.mobileNo && (
+                      <div className="text-xs text-gray-400">
+                        {customer.mobileNo}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-gray-600">
+                    {customer.mainArea || "-"}
+                  </td>
+
+                  {/* Package column with locked historical price */}
+                  <td className="px-3 py-2">
+                    <div className="font-medium text-gray-700">
+                      {pkg ? pkg.name : "-"}
+                    </div>
+                    {displayPrice != null && (
+                      <div
+                        className="text-xs text-gray-400 mt-0.5"
+                        title={
+                          priceChangedSinceLock
+                            ? `Current package price is PKR ${currentPkgPrice?.toLocaleString()} — customer is on the old locked rate`
+                            : undefined
+                        }
+                      >
+                        PKR {displayPrice.toLocaleString()}
+                        {priceChangedSinceLock && (
+                          <span className="ml-1 text-amber-500 font-semibold">
+                            *
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </td>
+
+                  <td className="px-3 py-2">
+                    {cycle ? (
+                      <div>
+                        <div className="text-xs">
+                          {formatDate(cycle.cycleEndDate)}
+                        </div>
+                        <div
+                          className={`text-xs ${
+                            days < 0
+                              ? "text-red-600"
+                              : days <= 3
+                                ? "text-yellow-700"
+                                : "text-gray-400"
+                          }`}
+                        >
+                          {days < 0
+                            ? `${-days}d overdue`
+                            : days === 0
+                              ? "expires today"
+                              : `${days}d left`}
+                        </div>
+                      </div>
+                    ) : (
+                      "-"
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
+                    {cycle && cycle.amountPending > 0 ? (
+                      <span className="text-red-600 font-medium">
+                        PKR {cycle.amountPending}
+                      </span>
+                    ) : (
+                      <span className="text-green-600 text-xs">Paid</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
+                    <Badge
+                      status={
+                        customer.status === "suspended" &&
+                        (!cycle || cycle.amountPending === 0)
+                          ? "clear"
+                          : customer.status === "active"
+                            ? cycleStatus
+                            : customer.status
+                      }
+                    />
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-1.5">
+                      {/* Labeled action buttons */}
+                      <button
+                        onClick={() => onPay(customer)}
+                        className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium bg-blue-50 text-blue-700 rounded hover:bg-blue-100 border border-blue-200 transition-colors whitespace-nowrap"
+                        title="Record Payment"
+                      >
+                        <CreditCard size={12} /> Pay
+                      </button>
+                      <button
+                        onClick={() => onEdit(customer)}
+                        className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium bg-white text-gray-700 rounded hover:bg-gray-50 border border-gray-300 transition-colors"
+                        title="Edit Customer"
+                      >
+                        <Pencil size={12} /> Edit
+                      </button>
+                      <button
+                        onClick={() => onDelete(customer)}
+                        className="flex items-center justify-center w-7 h-7 text-xs font-medium bg-white text-red-500 rounded hover:bg-red-50 border border-gray-200 transition-colors"
+                        title="Delete Customer"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                      {customer.mobileNo && (
+                        <WhatsAppButton
+                          mobileNo={customer.mobileNo}
+                          message={waMessage}
+                          label="Send"
+                        />
+                      )}
+                      {/* Divider */}
+                      <div className="w-px h-5 bg-gray-200 mx-0.5" />
+                      {/* Icon-only utility buttons */}
+                      <button
+                        onClick={() => setHistoryTarget(customer)}
+                        className="flex items-center justify-center w-7 h-7 rounded border bg-white border-gray-200 text-gray-400 hover:bg-gray-50 hover:text-gray-700 transition-colors"
+                        title="View Payment History"
+                      >
+                        <History size={14} />
+                      </button>
+                      {cycle ? (
+                        <button
+                          onClick={() =>
+                            setInvoiceTarget({
+                              customer,
+                              cycle,
+                              packageName: pkg?.name || "—",
+                            })
+                          }
+                          className="flex items-center justify-center w-7 h-7 rounded border bg-white border-gray-200 text-gray-400 hover:bg-purple-50 hover:border-purple-200 hover:text-purple-600 transition-colors"
+                          title="View / Print Latest Invoice"
+                        >
+                          <FileText size={14} />
+                        </button>
+                      ) : (
+                        <div className="w-7 h-7" />
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {filtered.length === 0 && (
+              <tr>
+                <td
+                  colSpan={8}
+                  className="px-3 py-8 text-center text-gray-400 text-sm"
+                >
+                  No customers found.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* History Modal — size "lg" for more breathing room */}
+      <Modal
+        isOpen={!!historyTarget}
+        onClose={() => setHistoryTarget(null)}
+        title={
+          historyTarget
+            ? `Payment History — ${historyTarget.fullName}`
+            : "History"
+        }
+        size="lg"
+      >
+        {historyTarget && (
+          <PaymentHistory
+            customer={historyTarget}
+            getCyclesForCustomer={getCyclesForCustomer}
+            packages={packages}
+            onInvoice={(cycle, pkgName) =>
+              setInvoiceTarget({
+                customer: historyTarget,
+                cycle,
+                packageName: pkgName,
+              })
+            }
+          />
+        )}
+      </Modal>
+
+      {/* Invoice Modal */}
+      <InvoiceModal
+        isOpen={!!invoiceTarget}
+        onClose={() => setInvoiceTarget(null)}
+        customer={invoiceTarget?.customer}
+        cycle={invoiceTarget?.cycle}
+        packageName={invoiceTarget?.packageName}
+      />
+    </>
+  );
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * A cycle that has shiftedAmount > 0 was forcibly "cleared" by the system at
+ * renewal time — the customer never actually paid. We override the display
+ * status to "carried_forward" so staff are not misled by "Clear".
+ */
+function getCycleDisplayStatus(cycle) {
+  if (Number(cycle.shiftedAmount) > 0) return "carried_forward";
+  return cycle.status;
+}
+
+const STATUS_CFG = {
+  clear: {
+    label: "Fully Paid",
+    icon: <CheckCircle2 size={13} />,
+    badge: "bg-green-100 text-green-800 border-green-200",
+    headerBg: "bg-green-50 border-green-200",
+    cardBorder: "border-green-200",
+    bar: "bg-green-500",
+    pendingBg: "bg-gray-50",
+    pendingText: "text-gray-400",
+  },
+  pending: {
+    label: "Pending",
+    icon: <Clock size={13} />,
+    badge: "bg-yellow-100 text-yellow-800 border-yellow-200",
+    headerBg: "bg-yellow-50 border-yellow-200",
+    cardBorder: "border-yellow-200",
+    bar: "bg-blue-500",
+    pendingBg: "bg-red-50",
+    pendingText: "text-red-700",
+  },
+  overdue: {
+    label: "Overdue",
+    icon: <XCircle size={13} />,
+    badge: "bg-red-100 text-red-800 border-red-200",
+    headerBg: "bg-red-50 border-red-200",
+    cardBorder: "border-red-300",
+    bar: "bg-red-400",
+    pendingBg: "bg-red-50",
+    pendingText: "text-red-700",
+  },
+  carried_forward: {
+    label: "Carried Forward",
+    icon: <CornerDownRight size={13} />,
+    badge: "bg-orange-100 text-orange-800 border-orange-200",
+    headerBg: "bg-orange-50 border-orange-200",
+    cardBorder: "border-orange-300",
+    bar: "bg-orange-400",
+    pendingBg: "bg-orange-50",
+    pendingText: "text-orange-700",
+  },
+};
+
+function StatusPill({ statusKey }) {
+  const cfg = STATUS_CFG[statusKey] || STATUS_CFG.pending;
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${cfg.badge}`}
+    >
+      {cfg.icon}
+      {cfg.label}
+    </span>
+  );
+}
+
+// ─── PaymentHistory ───────────────────────────────────────────────────────────
+
+function PaymentHistory({
+  customer,
+  getCyclesForCustomer,
+  packages,
+  onInvoice,
+}) {
+  const cycles = getCyclesForCustomer(customer.id);
+
+  if (!cycles || cycles.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-14 text-gray-400">
+        <History size={36} className="mb-3 opacity-25" />
+        <p className="text-sm">No payment history available.</p>
+      </div>
+    );
+  }
+
+  // Overall summary across all cycles.
+  //
+  // WHY we subtract previousBalance from totalAmount:
+  //   When a customer is renewed with unpaid dues, the new cycle's totalAmount
+  //   already includes the carried-over debt (e.g. PKR 1600 package + PKR 1600
+  //   debt = PKR 3200). The old cycle's totalAmount is ALSO PKR 1600. If we
+  //   naively sum all totalAmounts we count that PKR 1600 debt twice (PKR 4800).
+  //   Subtracting previousBalance from each cycle gives us only the actual new
+  //   package charge per cycle, avoiding double-counting.
+  //
+  // grandPending: only the latest cycle's amountPending is the real current
+  //   outstanding — older cycles were either paid or their debt was rolled
+  //   forward into the latest cycle (and is already counted there).
+  const grandBilled = cycles.reduce(
+    (s, c) => s + Number(c.totalAmount || 0) - Number(c.previousBalance || 0),
+    0,
+  );
+  const grandPaid = cycles.reduce((s, c) => s + Number(c.amountPaid || 0), 0);
+  const grandPending = Number(cycles[0]?.amountPending || 0);
+
+  return (
+    <div className="space-y-5">
+      {/* ── Grand summary ── */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-center">
+          <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-1">
+            Total Billed
+          </p>
+          <p className="text-base font-bold text-gray-800">
+            PKR {grandBilled.toLocaleString()}
+          </p>
+          <p className="text-[10px] text-gray-400 mt-0.5">
+            {cycles.length} cycle{cycles.length !== 1 ? "s" : ""}
+          </p>
+        </div>
+        <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-center">
+          <p className="text-[10px] font-bold uppercase text-green-600 tracking-wide mb-1">
+            Total Paid
+          </p>
+          <p className="text-base font-bold text-green-700">
+            PKR {grandPaid.toLocaleString()}
+          </p>
+          <p className="text-[10px] text-green-600/70 mt-0.5">
+            {grandBilled > 0
+              ? Math.min(100, Math.round((grandPaid / grandBilled) * 100))
+              : 0}
+            % of total billed
+          </p>
+        </div>
+        <div
+          className={`rounded-xl px-4 py-3 text-center border ${
+            grandPending > 0
+              ? "bg-red-50 border-red-200"
+              : "bg-gray-50 border-gray-200"
+          }`}
+        >
+          <p
+            className={`text-[10px] font-bold uppercase tracking-wide mb-1 ${
+              grandPending > 0 ? "text-red-500" : "text-gray-400"
+            }`}
+          >
+            Outstanding
+          </p>
+          <p
+            className={`text-base font-bold ${
+              grandPending > 0 ? "text-red-700" : "text-gray-400"
+            }`}
+          >
+            PKR {grandPending.toLocaleString()}
+          </p>
+          <p
+            className={`text-[10px] mt-0.5 ${grandPending > 0 ? "text-red-400" : "text-gray-400"}`}
+          >
+            {grandPending > 0 ? "still owed" : "fully settled"}
+          </p>
+        </div>
+      </div>
+
+      {/* ── Per-cycle cards ── */}
+      <div className="space-y-4">
+        {cycles.map((cycle, index) => {
+          const displayStatus = getCycleDisplayStatus(cycle);
+          const cfg = STATUS_CFG[displayStatus] || STATUS_CFG.pending;
+          const isCarriedForward = displayStatus === "carried_forward";
+          const isClear = displayStatus === "clear";
+          const hasIncomingDebt = Number(cycle.previousBalance) > 0;
+          const packageOnlyPrice =
+            Number(cycle.totalAmount) - Number(cycle.previousBalance || 0);
+          const isLatest = index === 0;
+
+          const percentPaid =
+            Number(cycle.totalAmount) > 0
+              ? Math.min(
+                  100,
+                  Math.round(
+                    (Number(cycle.amountPaid) / Number(cycle.totalAmount)) *
+                      100,
+                  ),
+                )
+              : isClear
+                ? 100
+                : 0;
+
+          // For carried-forward cycles the "pending" shown should be what was shifted
+          const pendingDisplay = isCarriedForward
+            ? Number(cycle.shiftedAmount)
+            : Number(cycle.amountPending);
+
+          return (
+            <div
+              key={cycle.id}
+              className={`rounded-xl border-2 overflow-hidden ${cfg.cardBorder}`}
+            >
+              {/* Card header */}
+              <div
+                className={`px-4 py-3 flex items-center justify-between border-b ${cfg.headerBg}`}
+              >
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-bold text-gray-800">
+                      {formatDate(cycle.cycleStartDate)}
+                    </span>
+                    <span className="text-gray-400 text-xs">→</span>
+                    <span className="text-sm font-bold text-gray-800">
+                      {formatDate(cycle.cycleEndDate)}
+                    </span>
+                    {isLatest && (
+                      <span className="text-[10px] font-bold bg-blue-600 text-white px-1.5 py-0.5 rounded uppercase tracking-wide">
+                        Latest
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {cycle.isRenewal ? "Renewal" : "Initial"} cycle
+                    {" · "}
+                    {cycle.installments?.length || 0} payment
+                    {(cycle.installments?.length || 0) !== 1 ? "s" : ""}{" "}
+                    recorded
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <StatusPill statusKey={displayStatus} />
+                  <button
+                    onClick={() => {
+                      // Resolve package name for this cycle
+                      const pkgName =
+                        packages?.find(
+                          (p) => String(p.id) === String(customer.packageId),
+                        )?.name || "—";
+                      onInvoice(cycle, pkgName);
+                    }}
+                    className="flex items-center justify-center w-7 h-7 rounded border bg-white border-gray-300 text-gray-400 hover:bg-purple-50 hover:border-purple-300 hover:text-purple-600 transition-colors"
+                    title="View / Print Invoice"
+                  >
+                    <Printer size={13} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="px-4 py-4 bg-white space-y-4">
+                {/* ── CARRIED FORWARD alert — shown on the OLD cycle ── */}
+                {isCarriedForward && (
+                  <div className="flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-lg px-3 py-3">
+                    <CornerDownRight
+                      size={16}
+                      className="text-orange-500 mt-0.5 shrink-0"
+                    />
+                    <div>
+                      <p className="text-sm font-semibold text-orange-800">
+                        Unpaid dues moved to next cycle — PKR{" "}
+                        {Number(cycle.shiftedAmount).toLocaleString()}
+                      </p>
+                      <p className="text-xs text-orange-700 mt-1 leading-relaxed">
+                        The customer did not pay this cycle. When the next cycle
+                        was started, the full outstanding amount of{" "}
+                        <strong>
+                          PKR {Number(cycle.shiftedAmount).toLocaleString()}
+                        </strong>{" "}
+                        was automatically added to the new cycle&apos;s total
+                        bill. This cycle was then marked as &quot;settled&quot;
+                        by the system, but no actual payment was received.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── INCOMING DEBT notice — shown on the NEW cycle ── */}
+                {hasIncomingDebt && (
+                  <div className="flex items-start gap-3 bg-blue-50 border border-blue-200 rounded-lg px-3 py-3">
+                    <ArrowDownCircle
+                      size={16}
+                      className="text-blue-500 mt-0.5 shrink-0"
+                    />
+                    <div>
+                      <p className="text-sm font-semibold text-blue-800">
+                        Includes unpaid debt from previous cycle — PKR{" "}
+                        {Number(cycle.previousBalance).toLocaleString()}
+                      </p>
+                      <p className="text-xs text-blue-700 mt-1 leading-relaxed">
+                        This cycle&apos;s total of{" "}
+                        <strong>
+                          PKR {Number(cycle.totalAmount).toLocaleString()}
+                        </strong>{" "}
+                        is made up of the package price{" "}
+                        <strong>
+                          (PKR {packageOnlyPrice.toLocaleString()})
+                        </strong>{" "}
+                        plus the carried-over balance from the previous cycle{" "}
+                        <strong>
+                          (PKR {Number(cycle.previousBalance).toLocaleString()})
+                        </strong>
+                        .
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Financials grid ── */}
+                <div className="grid grid-cols-3 gap-3 text-center">
+                  <div className="bg-gray-50 rounded-lg px-3 py-2.5">
+                    <p className="text-[10px] font-bold uppercase text-gray-400 tracking-wide mb-1">
+                      Total Bill
+                    </p>
+                    <p className="text-sm font-bold text-gray-800">
+                      PKR {Number(cycle.totalAmount).toLocaleString()}
+                    </p>
+                    {hasIncomingDebt && (
+                      <p className="text-[10px] text-gray-400 mt-0.5">
+                        incl. PKR{" "}
+                        {Number(cycle.previousBalance).toLocaleString()} debt
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="bg-green-50 rounded-lg px-3 py-2.5">
+                    <p className="text-[10px] font-bold uppercase text-green-600 tracking-wide mb-1">
+                      Paid
+                    </p>
+                    <p className="text-sm font-bold text-green-700">
+                      PKR {Number(cycle.amountPaid).toLocaleString()}
+                    </p>
+                  </div>
+
+                  <div className={`rounded-lg px-3 py-2.5 ${cfg.pendingBg}`}>
+                    <p
+                      className={`text-[10px] font-bold uppercase tracking-wide mb-1 ${
+                        isCarriedForward
+                          ? "text-orange-500"
+                          : pendingDisplay > 0
+                            ? "text-red-500"
+                            : "text-gray-400"
+                      }`}
+                    >
+                      {isCarriedForward ? "Moved Forward" : "Pending"}
+                    </p>
+                    <p className={`text-sm font-bold ${cfg.pendingText}`}>
+                      PKR {pendingDisplay.toLocaleString()}
+                    </p>
+                  </div>
+                </div>
+
+                {/* ── Progress bar ── */}
+                <div>
+                  <div className="flex justify-between text-[11px] text-gray-400 mb-1">
+                    <span>Payment progress</span>
+                    <span>{percentPaid}%</span>
+                  </div>
+                  <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
+                    <div
+                      className={`h-2 rounded-full transition-all duration-500 ${cfg.bar}`}
+                      style={{ width: `${percentPaid}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* ── Installments list ── */}
+                {cycle.installments && cycle.installments.length > 0 ? (
+                  <div className="bg-gray-50 border border-gray-100 rounded-lg p-3">
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2.5">
+                      Payments Received
+                    </p>
+                    <div className="space-y-2">
+                      {cycle.installments.map((inst) => (
+                        <div
+                          key={inst.id}
+                          className="flex justify-between items-center bg-white rounded-lg px-3 py-2 border border-gray-100 shadow-sm"
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-6 h-6 rounded-full bg-green-100 flex items-center justify-center shrink-0">
+                              <CheckCircle2
+                                size={12}
+                                className="text-green-600"
+                              />
+                            </div>
+                            <div>
+                              <p className="text-xs font-semibold text-gray-800">
+                                {formatDate(inst.datePaid)}
+                              </p>
+                              {inst.note && (
+                                <p className="text-[10px] text-gray-400 mt-0.5">
+                                  via {inst.note}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          <span className="text-sm font-bold text-gray-800">
+                            PKR {Number(inst.amountPaid).toLocaleString()}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  !isCarriedForward && (
+                    <div className="flex items-center gap-2 text-xs text-gray-400 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5">
+                      <AlertCircle size={13} className="shrink-0" />
+                      No payments recorded for this cycle.
+                    </div>
+                  )
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
