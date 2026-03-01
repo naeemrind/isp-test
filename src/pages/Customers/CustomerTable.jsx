@@ -34,6 +34,8 @@ export default function CustomerTable({
   onPay,
   onDelete,
   searchQuery,
+  page = 1,
+  pageSize = 20,
 }) {
   const getActiveCycle = usePaymentStore((s) => s.getActiveCycle);
   const getCyclesForCustomer = usePaymentStore((s) => s.getCyclesForCustomer);
@@ -130,7 +132,7 @@ export default function CustomerTable({
                   className={`border-b border-gray-100 ${rowBg} hover:bg-gray-50`}
                 >
                   <td className="px-3 py-2 text-center text-xs text-gray-400 font-medium w-10">
-                    {idx + 1}
+                    {(page - 1) * pageSize + idx + 1}
                   </td>
                   <td className="px-3 py-2">
                     <div className="font-medium text-gray-800">

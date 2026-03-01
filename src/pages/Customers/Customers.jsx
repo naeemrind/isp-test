@@ -208,16 +208,61 @@ export default function Customers({ initialFilter }) {
     archivePage * PAGE_SIZE,
   );
 
+  // ── Filter counts (computed from all active customers, ignoring search) ────
+  const filterCounts = {
+    all: activeCustomers.length,
+    active: activeCustomers.filter((c) => c.status !== "suspended").length,
+    pending: activeCustomers.filter((c) => {
+      const cy = getActiveCycle(c.id);
+      const { expired, unpaid } = getCycleFacts(cy);
+      return c.status !== "suspended" && !expired && unpaid;
+    }).length,
+    expired: activeCustomers.filter((c) => {
+      const cy = getActiveCycle(c.id);
+      const { expired, unpaid } = getCycleFacts(cy);
+      return expired && unpaid;
+    }).length,
+    "balance-due": activeCustomers.filter((c) => {
+      const cy = getActiveCycle(c.id);
+      const { unpaid } = getCycleFacts(cy);
+      return unpaid;
+    }).length,
+    suspended: activeCustomers.filter((c) => c.status === "suspended").length,
+  };
+
   // ── Filter tab definitions ─────────────────────────────────────────────────
-  // "Overdue" label is removed — replaced with "Expired" to match status badge.
-  // "Balance Due" = pending + expired (all who owe money).
   const filterOptions = [
-    { id: "all", label: "All" },
-    { id: "active", label: "Active" },
-    { id: "pending", label: "Pending" }, // within cycle, unpaid
-    { id: "expired", label: "Expired" }, // cycle ended, unpaid (was "Overdue")
-    { id: "balance-due", label: "Balance Due" }, // pending + expired combined
-    { id: "suspended", label: "Suspended" },
+    { id: "all", label: "All", dot: null, activeDot: null },
+    {
+      id: "active",
+      label: "Good Standing",
+      dot: "bg-green-400",
+      activeDot: "bg-green-300",
+    },
+    {
+      id: "pending",
+      label: "Pending",
+      dot: "bg-yellow-400",
+      activeDot: "bg-yellow-300",
+    },
+    {
+      id: "expired",
+      label: "Expired",
+      dot: "bg-red-400",
+      activeDot: "bg-red-300",
+    },
+    {
+      id: "balance-due",
+      label: "Balance Due",
+      dot: "bg-orange-400",
+      activeDot: "bg-orange-300",
+    },
+    {
+      id: "suspended",
+      label: "Suspended",
+      dot: "bg-gray-400",
+      activeDot: "bg-gray-300",
+    },
   ];
 
   return (
@@ -286,19 +331,54 @@ export default function Customers({ initialFilter }) {
           </div>
           {view === "active" && (
             <div className="flex gap-1 flex-wrap">
-              {filterOptions.map((f) => (
-                <button
-                  key={f.id}
-                  onClick={() => setFilter(f.id)}
-                  className={`px-3 py-1.5 text-xs rounded capitalize transition-colors ${
-                    filter === f.id
-                      ? "bg-gray-800 text-white"
-                      : "border border-gray-300 text-gray-600 hover:bg-gray-50"
-                  }`}
-                >
-                  {f.label}
-                </button>
-              ))}
+              {filterOptions.map((f) => {
+                const isActive = filter === f.id;
+                const count = filterCounts[f.id];
+                return (
+                  <button
+                    key={f.id}
+                    onClick={() => setFilter(f.id)}
+                    title={
+                      f.id === "all"
+                        ? "Show all active subscribers"
+                        : f.id === "active"
+                          ? "Subscribers with no issues — paid or within their cycle and not suspended"
+                          : f.id === "pending"
+                            ? "Within their cycle but haven't paid yet"
+                            : f.id === "expired"
+                              ? "Cycle has ended and still unpaid"
+                              : f.id === "balance-due"
+                                ? "Anyone who owes money (pending + expired combined)"
+                                : f.id === "suspended"
+                                  ? "Manually suspended subscribers"
+                                  : ""
+                    }
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                      isActive
+                        ? "bg-gray-800 text-white"
+                        : "border border-gray-300 text-gray-600 hover:bg-gray-50"
+                    }`}
+                  >
+                    {f.dot && (
+                      <span
+                        className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${isActive ? f.activeDot : f.dot}`}
+                      />
+                    )}
+                    {f.label}
+                    {count > 0 && (
+                      <span
+                        className={`inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full text-[10px] font-bold ${
+                          isActive
+                            ? "bg-white/20 text-white"
+                            : "bg-gray-100 text-gray-500"
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -336,6 +416,8 @@ export default function Customers({ initialFilter }) {
               onEdit={(c) => setEditSubscriber(c)}
               onPay={(c) => setPaySubscriber(c)}
               onDelete={(c) => setArchiveTarget(c)}
+              page={activePage}
+              pageSize={PAGE_SIZE}
             />
           </div>
           {totalActivePages > 1 && (
