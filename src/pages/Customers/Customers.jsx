@@ -12,12 +12,13 @@ import {
 import Modal from "../../components/ui/Modal";
 import ConfirmDialog from "../../components/ui/ConfirmDialog";
 import CustomerTable from "./CustomerTable";
+import { getCycleFacts } from "../../utils/Statusutils";
 import CustomerForm from "./CustomerForm";
 import PaymentForm from "../Payments/PaymentForm";
 import NewConnectionForm from "./NewConnectionForm";
 import useCustomerStore from "../../store/useCustomerStore";
 import usePaymentStore from "../../store/usePaymentStore";
-import { formatDate, daysUntil } from "../../utils/dateUtils";
+import { formatDate } from "../../utils/dateUtils";
 
 function Pagination({ page, total, count, pageSize, onChange }) {
   const start = (page - 1) * pageSize + 1;
@@ -56,7 +57,7 @@ function Pagination({ page, total, count, pageSize, onChange }) {
                 onClick={() => onChange(p)}
                 className={`min-w-7 h-7 rounded-lg text-xs font-semibold border ${
                   p === page
-                    ? "bg-gray-900 text-white border-gray-900"
+                    ? "bg-gray-800 text-white border-gray-900"
                     : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
                 }`}
               >
@@ -135,19 +136,26 @@ export default function Customers({ initialFilter }) {
     c.mobileNo?.includes(q) ||
     c.mainArea?.toLowerCase().includes(q);
 
+  // ── Filter logic ────────────────────────────────────────────────────────────────────
+  // IMPORTANT: "expired" and "balance-due" filters use raw cycle facts
+  // (getCycleFacts) NOT computeDisplayStatus. This ensures a manually
+  // suspended customer whose cycle is also expired still appears correctly.
+  // The badge shows "Suspended" but the filter finds them by billing reality.
   const filteredActive = activeCustomers.filter((c) => {
     if (!matchSearch(c)) return false;
     if (filter === "all") return true;
-    if (filter === "active") return c.status === "active";
-    if (filter === "suspended") return c.status === "suspended";
+
     const cycle = getActiveCycle(c.id);
-    const days = cycle ? daysUntil(cycle.cycleEndDate) : 0;
-    const pending = cycle ? cycle.amountPending : 0;
-    if (filter === "balance-due") return pending > 0;
-    if (filter === "overdue")
-      return c.status === "active" && pending > 0 && days < 0;
-    if (filter === "pending")
-      return c.status === "active" && pending > 0 && days >= 0;
+    const { expired, unpaid } = getCycleFacts(cycle);
+    const isSuspended = c.status === "suspended";
+
+    if (filter === "suspended") return isSuspended;
+    if (filter === "active") return !isSuspended;
+    // expired and balance-due intentionally include suspended customers
+    if (filter === "expired") return expired && unpaid;
+    if (filter === "balance-due") return unpaid;
+    // pending = within cycle, unpaid, not suspended
+    if (filter === "pending") return !isSuspended && !expired && unpaid;
     return true;
   });
 
@@ -200,12 +208,15 @@ export default function Customers({ initialFilter }) {
     archivePage * PAGE_SIZE,
   );
 
+  // ── Filter tab definitions ─────────────────────────────────────────────────
+  // "Overdue" label is removed — replaced with "Expired" to match status badge.
+  // "Balance Due" = pending + expired (all who owe money).
   const filterOptions = [
     { id: "all", label: "All" },
     { id: "active", label: "Active" },
-    { id: "pending", label: "Pending" },
-    { id: "overdue", label: "Overdue" },
-    { id: "balance-due", label: "Balance Due" },
+    { id: "pending", label: "Pending" }, // within cycle, unpaid
+    { id: "expired", label: "Expired" }, // cycle ended, unpaid (was "Overdue")
+    { id: "balance-due", label: "Balance Due" }, // pending + expired combined
     { id: "suspended", label: "Suspended" },
   ];
 
@@ -274,7 +285,7 @@ export default function Customers({ initialFilter }) {
             />
           </div>
           {view === "active" && (
-            <div className="flex gap-1">
+            <div className="flex gap-1 flex-wrap">
               {filterOptions.map((f) => (
                 <button
                   key={f.id}
@@ -500,7 +511,7 @@ export default function Customers({ initialFilter }) {
 
       {/* ── MODALS ── */}
 
-      {/* New Connection — unified form */}
+      {/* New Connection */}
       <Modal
         isOpen={showNewConnection}
         onClose={() => setShowNewConnection(false)}

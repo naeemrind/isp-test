@@ -410,20 +410,22 @@ export default function Dashboard({ onNavigate }) {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <BigCard
               icon={<Users size={16} />}
-              label="Overdue Subscribers"
+              label="Expired Accounts"
               value={displayStats.overdueCount}
-              sub="Count of subscribers overdue"
+              sub="Cycle ended + unpaid balance"
               color="red"
               highlight={displayStats.overdueCount > 0}
+              onClick={() => onNavigate("customers", "expired")}
+              isClickable
             />
             <BigCard
               icon={<AlertTriangle size={16} />}
-              label="Total Overdue"
+              label="Total Expired Balance"
               value={`PKR ${displayStats.overdueMoney.toLocaleString()}`}
-              sub="Expired + Unpaid"
+              sub="Expired cycles with unpaid balance"
               color="red"
               highlight={displayStats.overdueMoney > 0}
-              onClick={() => onNavigate("customers", "overdue")}
+              onClick={() => onNavigate("customers", "expired")}
               isClickable
             />
             <BigCard
@@ -691,7 +693,7 @@ export default function Dashboard({ onNavigate }) {
                         )}
                       </td>
                       <td className="px-4 py-3">
-                        {isExpiredUnpaid && <Badge status="overdue" />}
+                        {isExpiredUnpaid && <Badge status="expired" />}
                         {isExpiredPaid && (
                           <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
                             Renewal Due

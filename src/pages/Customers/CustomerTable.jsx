@@ -17,10 +17,12 @@ import Badge from "../../components/ui/Badge";
 import WhatsAppButton from "../../components/shared/WhatsAppButton";
 import Modal from "../../components/ui/Modal";
 import InvoiceModal from "../../components/ui/InvoiceModal";
-import { formatDate, daysUntil } from "../../utils/dateUtils";
+import { formatDate } from "../../utils/dateUtils";
 import { MESSAGE_TEMPLATES } from "../../config/messageTemplates";
 import usePaymentStore from "../../store/usePaymentStore";
 import usePackageStore from "../../store/usePackageStore";
+import { computeDisplayStatus } from "../../utils/Statusutils";
+import { daysUntil } from "../../utils/dateUtils";
 
 export default function CustomerTable({
   customers,
@@ -34,7 +36,6 @@ export default function CustomerTable({
   const packages = usePackageStore((s) => s.packages);
 
   const [historyTarget, setHistoryTarget] = useState(null);
-  // invoiceTarget: { customer, cycle, packageName }
   const [invoiceTarget, setInvoiceTarget] = useState(null);
 
   const filtered = customers.filter((c) => {
@@ -70,7 +71,10 @@ export default function CustomerTable({
               const pkg = packages.find((p) => p.id === customer.packageId);
               const days = cycle ? daysUntil(cycle.cycleEndDate) : null;
 
-              // Historical price: locked at last renewal > derived from cycle > current pkg price
+              // ── Compute the single display status ──────────────────────────
+              const displayStatus = computeDisplayStatus(customer, cycle);
+
+              // ── Historical price locked at last renewal ────────────────────
               let displayPrice = null;
               if (customer.lockedPackagePrice != null) {
                 displayPrice = Number(customer.lockedPackagePrice);
@@ -87,23 +91,17 @@ export default function CustomerTable({
                 currentPkgPrice != null &&
                 displayPrice !== currentPkgPrice;
 
-              let rowBg = "";
-              let cycleStatus = cycle ? cycle.status : "pending";
-              if (cycle) {
-                if (days !== null && days < 0 && cycleStatus !== "clear") {
-                  cycleStatus = "overdue";
-                  rowBg = "bg-red-50";
-                } else if (
-                  days !== null &&
-                  days <= 3 &&
-                  cycleStatus !== "clear"
-                ) {
-                  rowBg = "bg-yellow-50";
-                } else if (cycleStatus === "clear") {
-                  rowBg = "";
-                }
-              }
+              // ── Row background ─────────────────────────────────────────────
+              const rowBg =
+                displayStatus === "expired" || displayStatus === "suspended"
+                  ? "bg-red-50"
+                  : displayStatus === "renewal"
+                    ? "bg-orange-50"
+                    : displayStatus === "pending" && days !== null && days <= 3
+                      ? "bg-yellow-50"
+                      : "";
 
+              // ── WhatsApp message ───────────────────────────────────────────
               const waMessage =
                 cycle && cycle.amountPending > 0
                   ? MESSAGE_TEMPLATES.paymentDue(customer, cycle)
@@ -136,7 +134,7 @@ export default function CustomerTable({
                     {customer.mainArea || "-"}
                   </td>
 
-                  {/* Package column with locked historical price */}
+                  {/* Package column */}
                   <td className="px-3 py-2">
                     <div className="font-medium text-gray-700">
                       {pkg ? pkg.name : "-"}
@@ -160,6 +158,7 @@ export default function CustomerTable({
                     )}
                   </td>
 
+                  {/* Expires column — "Xd overdue" stays here as timing info */}
                   <td className="px-3 py-2">
                     {cycle ? (
                       <div>
@@ -169,7 +168,7 @@ export default function CustomerTable({
                         <div
                           className={`text-xs ${
                             days < 0
-                              ? "text-red-600"
+                              ? "text-red-600 font-medium"
                               : days <= 3
                                 ? "text-yellow-700"
                                 : "text-gray-400"
@@ -186,30 +185,25 @@ export default function CustomerTable({
                       "-"
                     )}
                   </td>
+
+                  {/* Pending amount */}
                   <td className="px-3 py-2">
                     {cycle && cycle.amountPending > 0 ? (
                       <span className="text-red-600 font-medium">
-                        PKR {cycle.amountPending}
+                        PKR {cycle.amountPending.toLocaleString()}
                       </span>
                     ) : (
                       <span className="text-green-600 text-xs">Paid</span>
                     )}
                   </td>
+
+                  {/* Status badge — clean computed status, no overdue here */}
                   <td className="px-3 py-2">
-                    <Badge
-                      status={
-                        customer.status === "suspended" &&
-                        (!cycle || cycle.amountPending === 0)
-                          ? "clear"
-                          : customer.status === "active"
-                            ? cycleStatus
-                            : customer.status
-                      }
-                    />
+                    <Badge status={displayStatus} />
                   </td>
+
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-1.5">
-                      {/* Labeled action buttons */}
                       <button
                         onClick={() => onPay(customer)}
                         className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium bg-blue-50 text-blue-700 rounded hover:bg-blue-100 border border-blue-200 transition-colors whitespace-nowrap"
@@ -284,7 +278,7 @@ export default function CustomerTable({
         </table>
       </div>
 
-      {/* History Modal — size "lg" for more breathing room */}
+      {/* History Modal */}
       <Modal
         isOpen={!!historyTarget}
         onClose={() => setHistoryTarget(null)}
@@ -409,19 +403,6 @@ function PaymentHistory({
     );
   }
 
-  // Overall summary across all cycles.
-  //
-  // WHY we subtract previousBalance from totalAmount:
-  //   When a customer is renewed with unpaid dues, the new cycle's totalAmount
-  //   already includes the carried-over debt (e.g. PKR 1600 package + PKR 1600
-  //   debt = PKR 3200). The old cycle's totalAmount is ALSO PKR 1600. If we
-  //   naively sum all totalAmounts we count that PKR 1600 debt twice (PKR 4800).
-  //   Subtracting previousBalance from each cycle gives us only the actual new
-  //   package charge per cycle, avoiding double-counting.
-  //
-  // grandPending: only the latest cycle's amountPending is the real current
-  //   outstanding — older cycles were either paid or their debt was rolled
-  //   forward into the latest cycle (and is already counted there).
   const grandBilled = cycles.reduce(
     (s, c) => s + Number(c.totalAmount || 0) - Number(c.previousBalance || 0),
     0,
@@ -512,7 +493,6 @@ function PaymentHistory({
                 ? 100
                 : 0;
 
-          // For carried-forward cycles the "pending" shown should be what was shifted
           const pendingDisplay = isCarriedForward
             ? Number(cycle.shiftedAmount)
             : Number(cycle.amountPending);
@@ -553,7 +533,6 @@ function PaymentHistory({
                   <StatusPill statusKey={displayStatus} />
                   <button
                     onClick={() => {
-                      // Resolve package name for this cycle
                       const pkgName =
                         packages?.find(
                           (p) => String(p.id) === String(customer.packageId),
@@ -569,7 +548,7 @@ function PaymentHistory({
               </div>
 
               <div className="px-4 py-4 bg-white space-y-4">
-                {/* ── CARRIED FORWARD alert — shown on the OLD cycle ── */}
+                {/* ── CARRIED FORWARD alert ── */}
                 {isCarriedForward && (
                   <div className="flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-lg px-3 py-3">
                     <CornerDownRight
@@ -588,14 +567,13 @@ function PaymentHistory({
                           PKR {Number(cycle.shiftedAmount).toLocaleString()}
                         </strong>{" "}
                         was automatically added to the new cycle&apos;s total
-                        bill. This cycle was then marked as &quot;settled&quot;
-                        by the system, but no actual payment was received.
+                        bill.
                       </p>
                     </div>
                   </div>
                 )}
 
-                {/* ── INCOMING DEBT notice — shown on the NEW cycle ── */}
+                {/* ── INCOMING DEBT notice ── */}
                 {hasIncomingDebt && (
                   <div className="flex items-start gap-3 bg-blue-50 border border-blue-200 rounded-lg px-3 py-3">
                     <ArrowDownCircle

@@ -10,7 +10,7 @@ const INITIAL = {
   fullName: "",
   userName: "",
   mobileNo: "",
-  cnic: "", // New CNIC field
+  cnic: "",
   mainArea: "",
   recoveryAgent: "",
   packageId: "",
@@ -28,7 +28,6 @@ const PAYMENT_INITIAL = {
 
 // Helper to format CNIC as 00000-0000000-0
 const formatCNIC = (val) => {
-  // Remove non-digits and limit to 13 digits
   const digits = val.replace(/\D/g, "").slice(0, 13);
   let res = "";
   if (digits.length > 0) res += digits.slice(0, 5);
@@ -46,7 +45,6 @@ export default function CustomerForm({ customer, onClose }) {
   const packages = allPackages.filter((p) => p.isActive !== false);
   const isEdit = !!customer;
 
-  // Initialize form. Ensure 'cnic' exists even for old records.
   const [form, setFormState] = useState(
     isEdit ? { cnic: "", ...customer, startDate: today() } : INITIAL,
   );
@@ -113,21 +111,18 @@ export default function CustomerForm({ customer, onClose }) {
     if (!form.packageId) e.packageId = "Select a package";
     if (!form.mainArea) e.mainArea = "Select an area";
 
-    // Mobile Validation (Strict Pakistani Format)
     if (form.mobileNo) {
       if (!/^0\d{10}$/.test(form.mobileNo)) {
         e.mobileNo = "Must be 11 digits starting with 0 (e.g., 03001234567)";
       }
     }
 
-    // CNIC Validation (Format: 00000-0000000-0)
     if (form.cnic) {
       if (form.cnic.length < 15) {
         e.cnic = "Invalid CNIC format (13 digits required)";
       }
     }
 
-    // Validate payment section only if enabled
     if (!isEdit && payment.recordPayment) {
       const amt = Number(payment.amountPaid);
       if (!payment.amountPaid || amt <= 0)
@@ -154,25 +149,19 @@ export default function CustomerForm({ customer, onClose }) {
       const pkg = packages.find((p) => Number(p.id) === pkgId);
       const lockedPrice = pkg ? Number(pkg.price) : 0;
 
-      const isTerminating = isEdit && form.status === "terminated";
-
       const customerData = {
         fullName: form.fullName.trim(),
         userName: form.userName.trim(),
         mobileNo: form.mobileNo,
-        cnic: form.cnic, // Save CNIC
+        cnic: form.cnic,
         mainArea: form.mainArea,
         recoveryAgent: form.recoveryAgent,
         packageId: pkgId,
         lockedPackagePrice: lockedPrice,
+        // Only "active" or "suspended" are valid stored statuses.
+        // Termination is handled via the Archive/Delete flow, not here.
         status: isEdit ? form.status : "active",
         notes: form.notes,
-        // Auto-archive when terminated
-        ...(isTerminating && {
-          isArchived: true,
-          archivedAt: new Date().toISOString(),
-          archiveReason: "Terminated",
-        }),
       };
 
       if (isEdit) {
@@ -180,14 +169,12 @@ export default function CustomerForm({ customer, onClose }) {
       } else {
         const newCustomer = await addCustomer(customerData);
 
-        // Always create the billing cycle first
         const newCycle = await createInitialCycle(
           newCustomer.id,
           form.startDate,
           lockedPrice,
         );
 
-        // If staff also entered a payment, record it immediately
         if (payment.recordPayment && Number(payment.amountPaid) > 0) {
           await addInstallment(
             newCycle.id,
@@ -204,7 +191,6 @@ export default function CustomerForm({ customer, onClose }) {
     setSaving(false);
   };
 
-  // Derived: selected package price for display
   const selectedPkg = packages.find(
     (p) => Number(p.id) === Number(form.packageId),
   );
@@ -221,7 +207,7 @@ export default function CustomerForm({ customer, onClose }) {
         </div>
       )}
 
-      {/* ── CUSTOMER INFO ── */}
+      {/* ── SUBSCRIBER INFO ── */}
       <div>
         <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-3">
           Subscriber Information
@@ -232,7 +218,8 @@ export default function CustomerForm({ customer, onClose }) {
               className={inp(errors.fullName)}
               value={form.fullName}
               onChange={(e) => setField("fullName", e.target.value)}
-              placeholder="e.g. Muhammad Qasim"
+              onBlur={(e) => checkDup("fullName", e.target.value)}
+              placeholder="e.g. Ali Hassan"
             />
           </Field>
 
@@ -240,11 +227,11 @@ export default function CustomerForm({ customer, onClose }) {
             <input
               className={inp(errors.userName)}
               value={form.userName}
-              onChange={(e) => {
-                setField("userName", e.target.value);
-                checkDup("userName", e.target.value);
-              }}
-              placeholder="e.g. Qasim6655"
+              onChange={(e) =>
+                setField("userName", e.target.value.toLowerCase().trim())
+              }
+              onBlur={(e) => checkDup("userName", e.target.value)}
+              placeholder="e.g. alihassan"
             />
           </Field>
 
@@ -252,14 +239,14 @@ export default function CustomerForm({ customer, onClose }) {
             <input
               className={inp(errors.mobileNo)}
               value={form.mobileNo}
-              onChange={(e) => {
-                // Digits only, max 11 chars
-                const val = e.target.value.replace(/\D/g, "").slice(0, 11);
-                setField("mobileNo", val);
-                checkDup("mobileNo", val);
-              }}
+              onChange={(e) =>
+                setField(
+                  "mobileNo",
+                  e.target.value.replace(/\D/g, "").slice(0, 11),
+                )
+              }
+              onBlur={(e) => checkDup("mobileNo", e.target.value)}
               placeholder="03001234567"
-              type="tel"
             />
           </Field>
 
@@ -267,13 +254,8 @@ export default function CustomerForm({ customer, onClose }) {
             <input
               className={inp(errors.cnic)}
               value={form.cnic}
-              onChange={(e) => {
-                // Apply CNIC masking
-                const val = formatCNIC(e.target.value);
-                setField("cnic", val);
-              }}
-              placeholder="35202-1234567-1"
-              maxLength={15} // 13 digits + 2 dashes
+              onChange={(e) => setField("cnic", formatCNIC(e.target.value))}
+              placeholder="00000-0000000-0"
             />
           </Field>
 
@@ -283,7 +265,6 @@ export default function CustomerForm({ customer, onClose }) {
               value={form.packageId}
               onChange={(e) => {
                 setField("packageId", e.target.value);
-                // Reset payment amount so it auto-fills with new price
                 setPaymentState((p) => ({ ...p, amountPaid: "" }));
               }}
             >
@@ -347,7 +328,7 @@ export default function CustomerForm({ customer, onClose }) {
               >
                 <option value="active">Active</option>
                 <option value="suspended">Suspended</option>
-                <option value="terminated">Terminated</option>
+                {/* Termination is done via the Archive button, not here */}
               </select>
             </Field>
           )}
@@ -369,7 +350,6 @@ export default function CustomerForm({ customer, onClose }) {
       {/* ── PAYMENT SECTION (Add mode only) ── */}
       {!isEdit && (
         <div className="border-t border-gray-200 pt-4">
-          {/* Toggle */}
           <label className="flex items-center gap-3 cursor-pointer select-none mb-4">
             <div
               onClick={() =>
@@ -397,7 +377,6 @@ export default function CustomerForm({ customer, onClose }) {
 
           {payment.recordPayment && (
             <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-4">
-              {/* Package price hint */}
               {selectedPkg && (
                 <div className="flex items-center justify-between bg-white border border-blue-100 rounded-lg px-4 py-2 text-sm">
                   <span className="text-gray-500">Package Total</span>
@@ -440,7 +419,6 @@ export default function CustomerForm({ customer, onClose }) {
                 />
               </Field>
 
-              {/* Live remaining balance */}
               {selectedPkg && amountPaidNum > 0 && (
                 <div
                   className={`flex items-center justify-between rounded-lg px-4 py-2 text-sm font-semibold ${
