@@ -18,6 +18,8 @@ import {
   ChevronUp,
   ChevronDown,
   ChevronsUpDown,
+  Zap,
+  ClipboardList,
 } from "lucide-react";
 import Modal from "../../components/ui/Modal";
 import ConfirmDialog from "../../components/ui/ConfirmDialog";
@@ -26,6 +28,8 @@ import IssueStockModal from "../../components/ui/IssueStockModal";
 import IssueHistoryModal from "../../components/ui/Issuehistorymodal";
 import RestockModal from "../../components/ui/RestockModal";
 import RestockHistoryModal from "../../components/ui/RestockHistoryModal";
+import ConnectionJobModal from "../../components/ui/ConnectionJobModal";
+import ConnectionJobsLog from "../../components/ui/ConnectionJobsLog";
 import useInventoryStore from "../../store/useInventoryStore";
 import { formatDate } from "../../utils/dateUtils";
 
@@ -41,8 +45,10 @@ export default function Inventory() {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [search, setSearch] = useState("");
   const [showHelp, setShowHelp] = useState(false);
-  const [sortField, setSortField] = useState("createdAt"); // default: newest first
+  const [sortField, setSortField] = useState("createdAt");
   const [sortDir, setSortDir] = useState("desc");
+  const [showConnectionJob, setShowConnectionJob] = useState(false);
+  const [showJobsLog, setShowJobsLog] = useState(false);
 
   const toggleSort = (field) => {
     if (sortField === field) {
@@ -140,7 +146,7 @@ export default function Inventory() {
   return (
     <div className="p-4 space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-lg font-bold text-gray-900">Inventory</h1>
@@ -156,12 +162,33 @@ export default function Inventory() {
             {items.length} items tracked
           </p>
         </div>
-        <button
-          onClick={() => setShowAdd(true)}
-          className="flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-sm transition-colors"
-        >
-          <Plus size={15} /> Add Item
-        </button>
+
+        {/* Action buttons */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* View Jobs Log */}
+          <button
+            onClick={() => setShowJobsLog(true)}
+            className="flex items-center gap-2 px-3 py-2 text-sm font-semibold border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 shadow-sm transition-colors"
+          >
+            <ClipboardList size={15} /> Jobs Log
+          </button>
+
+          {/* New Connection Job — highlighted */}
+          <button
+            onClick={() => setShowConnectionJob(true)}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-green-600 text-white rounded-lg hover:bg-green-700 shadow-sm transition-colors"
+          >
+            <Zap size={15} /> New Connection Job
+          </button>
+
+          {/* Add Item */}
+          <button
+            onClick={() => setShowAdd(true)}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-sm transition-colors"
+          >
+            <Plus size={15} /> Add Item
+          </button>
+        </div>
       </div>
 
       {/* Help Panel */}
@@ -192,17 +219,17 @@ export default function Inventory() {
                 <RefreshCw size={14} className="text-green-500" /> Restocking
               </p>
               <p className="text-xs text-gray-500 leading-relaxed">
-                When you buy more of the same item months later, click{" "}
+                When you buy more of the same item later, click{" "}
                 <strong>Restock</strong>.
               </p>
             </div>
             <div className="bg-white border border-blue-100 rounded-xl p-3 space-y-1">
               <p className="font-semibold text-gray-800 flex items-center gap-1.5">
-                <ArrowUpCircle size={14} className="text-red-500" /> Issuing
+                <Zap size={14} className="text-green-600" /> Connection Job
               </p>
               <p className="text-xs text-gray-500 leading-relaxed">
-                Click <strong>Issue</strong> to give stock to a technician. In
-                Hand updates live.
+                Issue <strong>multiple items at once</strong> for a new
+                subscriber connection. Tracks who got what.
               </p>
             </div>
             <div className="bg-white border border-amber-100 rounded-xl p-3 space-y-1">
@@ -210,8 +237,8 @@ export default function Inventory() {
                 <History size={14} className="text-purple-600" /> History
               </p>
               <p className="text-xs text-gray-500 leading-relaxed">
-                Each item shows two history buttons — one for{" "}
-                <strong>issues</strong>, one for <strong>restocks</strong>.
+                Each item shows history buttons for <strong>issues</strong> and{" "}
+                <strong>restocks</strong>.
               </p>
             </div>
           </div>
@@ -271,7 +298,6 @@ export default function Inventory() {
 
       {/* Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {/* Card 1 — Current Stock Value */}
         <div className="col-span-2 lg:col-span-1 bg-white border border-gray-200 rounded-xl px-4 py-3">
           <div className="flex items-center gap-2 mb-1.5">
             <div className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center shrink-0">
@@ -290,7 +316,6 @@ export default function Inventory() {
           </p>
         </div>
 
-        {/* Card 2 — Items */}
         <div className="bg-white border border-gray-200 rounded-xl px-4 py-3">
           <div className="flex items-center gap-2 mb-1.5">
             <div className="w-7 h-7 rounded-lg bg-gray-100 flex items-center justify-center shrink-0">
@@ -308,7 +333,6 @@ export default function Inventory() {
           </p>
         </div>
 
-        {/* Card 3 — Total Purchased */}
         <div className="bg-white border border-gray-200 rounded-xl px-4 py-3">
           <div className="flex items-center gap-2 mb-1.5">
             <div className="w-7 h-7 rounded-lg bg-green-100 flex items-center justify-center shrink-0">
@@ -326,7 +350,6 @@ export default function Inventory() {
           </p>
         </div>
 
-        {/* Card 4 — Total Issued */}
         <div className="bg-white border border-gray-200 rounded-xl px-4 py-3">
           <div className="flex items-center gap-2 mb-1.5">
             <div className="w-7 h-7 rounded-lg bg-red-100 flex items-center justify-center shrink-0">
@@ -371,106 +394,87 @@ export default function Inventory() {
       {/* Table */}
       <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm border-collapse">
+          <table className="w-full text-sm">
             <thead>
-              <tr className="bg-gray-50 border-b border-gray-200 text-gray-500 text-left text-xs uppercase tracking-wide">
-                {/* Purchase Date — sortable */}
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  <button
-                    onClick={() => toggleSort("date")}
-                    className="flex items-center gap-1 hover:text-gray-800 transition-colors group/th"
-                    title="Purchase Date — the date you entered when adding this item"
-                  >
-                    Purchase Date
+              <tr className="bg-gray-900 text-white text-left">
+                <th
+                  className="px-3 py-3 font-semibold text-xs whitespace-nowrap cursor-pointer select-none"
+                  onClick={() => toggleSort("date")}
+                >
+                  <div className="flex items-center gap-1">
+                    Purchase Date{" "}
                     <SortIcon
                       field="date"
                       sortField={sortField}
                       sortDir={sortDir}
                     />
-                  </button>
+                  </div>
                 </th>
-
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  Invoice / PO
+                <th className="px-3 py-3 font-semibold text-xs whitespace-nowrap">
+                  INVOICE / PO
                 </th>
-
-                {/* Description — sortable */}
-                <th className="px-3 py-3 font-semibold">
-                  <button
-                    onClick={() => toggleSort("description")}
-                    className="flex items-center gap-1 hover:text-gray-800 transition-colors"
-                  >
-                    Description
+                <th
+                  className="px-3 py-3 font-semibold text-xs whitespace-nowrap cursor-pointer select-none"
+                  onClick={() => toggleSort("description")}
+                >
+                  <div className="flex items-center gap-1">
+                    Description{" "}
                     <SortIcon
                       field="description"
                       sortField={sortField}
                       sortDir={sortDir}
                     />
-                  </button>
+                  </div>
                 </th>
-
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  Unit
+                <th className="px-3 py-3 font-semibold text-xs whitespace-nowrap">
+                  UNIT
                 </th>
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  <span
-                    className="flex items-center gap-1"
-                    title="Total stock received into warehouse"
-                  >
-                    <ArrowDownCircle size={11} className="text-green-500" /> In
-                  </span>
+                <th className="px-3 py-3 font-semibold text-xs whitespace-nowrap text-green-400">
+                  <div className="flex items-center gap-1">
+                    <ArrowDownCircle size={12} />
+                    IN
+                  </div>
                 </th>
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  <span
-                    className="flex items-center gap-1"
-                    title="Total stock issued to technicians"
-                  >
-                    <ArrowUpCircle size={11} className="text-red-400" /> Out
-                  </span>
+                <th className="px-3 py-3 font-semibold text-xs whitespace-nowrap text-red-400">
+                  <div className="flex items-center gap-1">
+                    <ArrowUpCircle size={12} />
+                    OUT
+                  </div>
                 </th>
-
-                {/* In Hand — sortable */}
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  <button
-                    onClick={() => toggleSort("inHand")}
-                    className="flex items-center gap-1 hover:text-gray-800 transition-colors"
-                  >
-                    <Warehouse size={11} className="text-purple-500" /> In Hand
+                <th
+                  className="px-3 py-3 font-semibold text-xs whitespace-nowrap cursor-pointer select-none text-purple-300"
+                  onClick={() => toggleSort("inHand")}
+                >
+                  <div className="flex items-center gap-1">
+                    In Hand{" "}
                     <SortIcon
                       field="inHand"
                       sortField={sortField}
                       sortDir={sortDir}
                     />
-                  </button>
+                  </div>
                 </th>
-
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  Rate
+                <th className="px-3 py-3 font-semibold text-xs whitespace-nowrap">
+                  RATE
                 </th>
-
-                {/* Current Value — sortable */}
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  <button
-                    onClick={() => toggleSort("currentValue")}
-                    className="flex items-center gap-1 hover:text-gray-800 transition-colors"
-                  >
-                    Current Value
+                <th
+                  className="px-3 py-3 font-semibold text-xs whitespace-nowrap cursor-pointer select-none"
+                  onClick={() => toggleSort("currentValue")}
+                >
+                  <div className="flex items-center gap-1">
+                    Current Value{" "}
                     <SortIcon
                       field="currentValue"
                       sortField={sortField}
                       sortDir={sortDir}
                     />
-                  </button>
+                  </div>
                 </th>
-
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  Remarks
+                <th className="px-3 py-3 font-semibold text-xs whitespace-nowrap">
+                  REMARKS
                 </th>
-                <th
-                  className="px-3 py-3 font-semibold whitespace-nowrap"
-                  style={{ minWidth: "210px" }}
-                >
-                  Actions
+                <th className="px-3 py-3 font-semibold text-xs whitespace-nowrap">
+                  ACTIONS
                 </th>
               </tr>
             </thead>
@@ -488,54 +492,43 @@ export default function Inventory() {
                 return (
                   <tr
                     key={item.id}
-                    className="hover:bg-blue-50/40 transition-colors group"
+                    className="group hover:bg-gray-50 transition-colors"
                   >
-                    {/* Purchase Date — with tooltip explaining what it means */}
-                    <td className="px-3 py-3 whitespace-nowrap text-xs text-gray-500">
-                      <div className="font-medium text-gray-700">
+                    <td className="px-3 py-3 whitespace-nowrap">
+                      <p className="font-semibold text-gray-800 text-xs">
                         {formatDate(item.date)}
-                      </div>
-                      <div
-                        className="text-gray-400 text-xs mt-0.5"
-                        title="Date this item was added to the system"
-                      >
-                        Added{" "}
-                        {formatDate(
-                          (item.createdAt || item.date || "").slice(0, 10),
-                        )}
-                      </div>
+                      </p>
+                      <p className="text-gray-400 text-[10px]">
+                        Added {formatDate(item.createdAt || item.date)}
+                      </p>
                     </td>
-
-                    <td className="px-3 py-3 text-xs text-gray-500 whitespace-nowrap">
-                      <div>
-                        {item.invoiceNo || (
-                          <span className="text-gray-300">—</span>
-                        )}
-                      </div>
-                      {item.poNo && (
-                        <div className="text-gray-400">{item.poNo}</div>
+                    <td className="px-3 py-3 text-gray-500 text-xs">
+                      {item.invoiceNo || item.poNo ? (
+                        <div>
+                          {item.invoiceNo && <p>INV: {item.invoiceNo}</p>}
+                          {item.poNo && <p>PO: {item.poNo}</p>}
+                        </div>
+                      ) : (
+                        "—"
                       )}
                     </td>
-
-                    <td className="px-3 py-3 font-semibold text-gray-900">
-                      {item.description}
-                    </td>
-
                     <td className="px-3 py-3">
-                      <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full whitespace-nowrap">
+                      <p className="font-bold text-gray-900">
+                        {item.description}
+                      </p>
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className="inline-block px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded-full">
                         {item.unit}
                       </span>
                     </td>
-
-                    <td className="px-3 py-3 text-green-600 font-medium text-xs whitespace-nowrap">
+                    <td className="px-3 py-3 font-bold text-green-600">
                       {item.stockIn || 0}
                     </td>
-
-                    <td className="px-3 py-3 text-red-500 font-medium text-xs whitespace-nowrap">
+                    <td className="px-3 py-3 font-bold text-red-500">
                       {item.stockOut || 0}
                     </td>
-
-                    <td className="px-3 py-3 whitespace-nowrap">
+                    <td className="px-3 py-3">
                       <div className="flex items-center gap-1.5">
                         <span
                           className={getStockColor(item.inHand, item.quantity)}
@@ -545,89 +538,58 @@ export default function Inventory() {
                         {getStockBadge(item.inHand, item.quantity)}
                       </div>
                     </td>
-
-                    <td className="px-3 py-3 text-gray-600 text-xs whitespace-nowrap">
-                      PKR {item.unitRate?.toLocaleString()}
+                    <td className="px-3 py-3 text-gray-700 font-medium text-xs">
+                      PKR {(item.unitRate || 0).toLocaleString()}
                     </td>
-
-                    <td className="px-3 py-3 font-semibold text-gray-900 whitespace-nowrap">
+                    <td className="px-3 py-3 font-bold text-gray-800 text-xs">
                       PKR {currentValue.toLocaleString()}
                     </td>
-
-                    <td className="px-3 py-3" style={{ maxWidth: "120px" }}>
-                      {item.remarks ? (
-                        <span
-                          title={item.remarks}
-                          className="block text-xs text-gray-400 truncate cursor-help underline decoration-dotted decoration-gray-300 underline-offset-2 hover:text-gray-700 transition-colors"
-                        >
-                          {item.remarks}
-                        </span>
-                      ) : (
-                        <span className="text-gray-300 text-xs">—</span>
-                      )}
+                    <td className="px-3 py-3 text-xs text-gray-500 max-w-32 truncate">
+                      {item.remarks || "—"}
                     </td>
-
-                    {/* Actions — 2 neat rows */}
                     <td className="px-3 py-3">
-                      <div className="flex flex-col gap-1">
-                        {/* Row 1: Restock + Restock History */}
+                      <div className="flex flex-col gap-1.5">
                         <div className="flex items-center gap-1">
                           <button
                             onClick={() => setRestockItem(item)}
-                            title="Add more stock (new bulk purchase)"
-                            className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold bg-green-50 text-green-700 border border-green-200 hover:bg-green-100 transition-colors whitespace-nowrap"
+                            className="flex items-center gap-1 px-2 py-1 text-xs font-semibold bg-green-50 text-green-700 border border-green-200 rounded-md hover:bg-green-100 transition-colors whitespace-nowrap"
                           >
-                            <RefreshCw size={11} /> Restock
+                            <RefreshCw size={10} /> Restock
                           </button>
                           <button
                             onClick={() => setRestockHistoryItem(item)}
-                            title={
-                              restockLogCount > 0
-                                ? `${restockLogCount} restock purchase${restockLogCount !== 1 ? "s" : ""} — click to view`
-                                : "No restock history yet"
-                            }
-                            className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold border transition-colors whitespace-nowrap ${
-                              restockLogCount > 0
-                                ? "bg-green-50 text-green-700 border-green-200 hover:bg-green-100"
-                                : "bg-gray-50 text-gray-400 border-gray-200 cursor-default"
-                            }`}
+                            title={`${restockLogCount} restock event(s)`}
+                            className="flex items-center gap-0.5 px-1.5 py-1 text-xs font-semibold text-gray-400 border border-gray-200 rounded-md hover:bg-gray-50 transition-colors"
                           >
                             <History size={11} />
-                            <span>
-                              {restockLogCount > 0 ? restockLogCount : "0"}
-                            </span>
+                            <span>{restockLogCount || "0"}</span>
                           </button>
                         </div>
-
-                        {/* Row 2: Issue + Issue History + Edit + Delete */}
                         <div className="flex items-center gap-1">
                           <button
-                            onClick={() => setIssueItem(item)}
+                            onClick={() => {
+                              if (!isOutOfStock) setIssueItem(item);
+                            }}
                             disabled={isOutOfStock}
-                            title={
+                            className={`flex items-center gap-1 px-2 py-1 text-xs font-semibold border rounded-md transition-colors whitespace-nowrap ${
                               isOutOfStock
-                                ? "Out of stock — restock first"
-                                : `Issue ${item.description} to a technician`
-                            }
-                            className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold border transition-colors whitespace-nowrap ${
-                              !isOutOfStock
-                                ? "bg-red-50 text-red-600 border-red-200 hover:bg-red-100"
-                                : "bg-gray-50 text-gray-300 border-gray-200 cursor-not-allowed"
+                                ? "bg-gray-50 text-gray-300 border-gray-200 cursor-not-allowed"
+                                : "bg-red-50 text-red-700 border-red-200 hover:bg-red-100"
                             }`}
                           >
-                            <ArrowUpCircle size={11} /> Issue
+                            <ArrowUpCircle size={10} /> Issue
                           </button>
                           <button
                             onClick={() => setHistoryItem(item)}
                             title={
                               issueLogCount > 0
-                                ? `${issueLogCount} issue event${issueLogCount !== 1 ? "s" : ""} — click to view`
-                                : "No issues recorded yet"
+                                ? `${issueLogCount} issue event(s) — click to view`
+                                : "No issue history"
                             }
-                            className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold border transition-colors whitespace-nowrap ${
+                            className={`flex items-center gap-0.5 px-1.5 py-1 text-xs font-semibold border rounded-md transition-colors ${
                               issueLogCount > 0
-                                ? "bg-purple-50 text-purple-600 border-purple-200 hover:bg-purple-100"
-                                : "bg-gray-50 text-gray-400 border-gray-200 cursor-default"
+                                ? "text-purple-600 border-purple-200 bg-purple-50 hover:bg-purple-100"
+                                : "text-gray-400 border-gray-200 hover:bg-gray-50"
                             }`}
                           >
                             <History size={11} />
@@ -635,17 +597,19 @@ export default function Inventory() {
                               {issueLogCount > 0 ? issueLogCount : "0"}
                             </span>
                           </button>
+                        </div>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                           <button
                             onClick={() => setEditItem(item)}
                             title="Edit item"
-                            className="p-1 rounded-md text-gray-300 hover:text-blue-600 hover:bg-blue-50 transition-colors opacity-0 group-hover:opacity-100"
+                            className="p-1 rounded-md text-gray-300 hover:text-blue-600 hover:bg-blue-50 transition-colors"
                           >
                             <Pencil size={13} />
                           </button>
                           <button
                             onClick={() => setDeleteTarget(item)}
                             title="Delete item"
-                            className="p-1 rounded-md text-gray-300 hover:text-red-600 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
+                            className="p-1 rounded-md text-gray-300 hover:text-red-600 hover:bg-red-50 transition-colors"
                           >
                             <Trash2 size={13} />
                           </button>
@@ -681,7 +645,7 @@ export default function Inventory() {
         </div>
       </div>
 
-      {/* Modals */}
+      {/* ── Modals ── */}
       <Modal
         isOpen={showAdd}
         onClose={() => setShowAdd(false)}
@@ -761,6 +725,26 @@ export default function Inventory() {
             onClose={() => setHistoryItem(null)}
           />
         )}
+      </Modal>
+
+      {/* New Connection Job Modal */}
+      <Modal
+        isOpen={showConnectionJob}
+        onClose={() => setShowConnectionJob(false)}
+        title="New Connection Job"
+        size="lg"
+      >
+        <ConnectionJobModal onClose={() => setShowConnectionJob(false)} />
+      </Modal>
+
+      {/* Connection Jobs Log Modal */}
+      <Modal
+        isOpen={showJobsLog}
+        onClose={() => setShowJobsLog(false)}
+        title="Connection Jobs Log"
+        size="lg"
+      >
+        <ConnectionJobsLog onClose={() => setShowJobsLog(false)} />
       </Modal>
 
       <ConfirmDialog

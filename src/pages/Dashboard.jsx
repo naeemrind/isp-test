@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Users,
   TrendingUp,
@@ -14,6 +14,7 @@ import {
   EyeOff,
   Package,
   RefreshCw,
+  Info,
 } from "lucide-react";
 import useCustomerStore from "../store/useCustomerStore";
 import usePaymentStore from "../store/usePaymentStore";
@@ -60,15 +61,11 @@ export default function Dashboard({ onNavigate }) {
   const [payCustomer, setPayCustomer] = useState(null);
   const [mode, setMode] = useState("alltime"); // alltime | monthly | daily
 
-  // Date state for Monthly view
   const now = new Date();
   const [selYear, setSelYear] = useState(now.getFullYear());
   const [selMonth, setSelMonth] = useState(now.getMonth());
-
-  // Date state for Daily view
   const [selDate, setSelDate] = useState(today());
 
-  // Monthly Navigation
   const prevMonth = () => {
     if (selMonth === 0) {
       setSelMonth(11);
@@ -85,14 +82,14 @@ export default function Dashboard({ onNavigate }) {
   const isCurrentMonth =
     selYear === now.getFullYear() && selMonth === now.getMonth();
 
-  // ── Stats Calculation ─────────────────────────────────────────────
+  // ── Stats ────────────────────────────────────────────────────────────────────
   const activeCustomers = customers.filter((c) => !c.isArchived);
 
-  // 1. ALL TIME STATS
+  // 1. ALL TIME
   let at_collected = 0,
     at_pending = 0,
-    at_overdueMoney = 0;
-  let at_overdueCount = 0;
+    at_overdueMoney = 0,
+    at_overdueCount = 0;
   let at_activeCount = 0,
     at_suspendedCount = 0,
     at_totalEver = 0;
@@ -104,19 +101,14 @@ export default function Dashboard({ onNavigate }) {
     if (c.status === "suspended") at_suspendedCount++;
     const cycle = getLatestCycle(cycles, c.id);
     if (!cycle) return;
-
     at_collected += cycle.amountPaid || 0;
     at_pending += cycle.amountPending || 0;
-
     const bal = cycle.amountPending || 0;
     if (bal > 0) {
       if (c.status === "suspended") at_suspendedBalance += bal;
       else at_pendingStatusBalance += bal;
     }
-
     const days = daysUntil(cycle.cycleEndDate);
-
-    // Overdue Logic (Pending AND Expired)
     if (cycle.amountPending > 0 && days < 0) {
       at_overdueCount++;
       at_overdueMoney += cycle.amountPending;
@@ -129,12 +121,14 @@ export default function Dashboard({ onNavigate }) {
     });
   });
 
-  // All-time inventory value — FIXED: inHand × unitRate (real current value)
+  // Warehouse stock value = money you already spent buying materials still sitting in your store.
+  // This IS your cost. You paid PKR 19,000 for cable — that PKR 19,000 is gone from your pocket.
+  // As you issue cable and collect the cable money from subscribers (included in their payment),
+  // the warehouse stock decreases and Net Income naturally improves.
   const at_inventoryValue = inventoryItems.reduce(
     (s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0),
     0,
   );
-
   const at_totalExpenses = expenses.reduce(
     (s, e) => s + (Number(e.amount) || 0),
     0,
@@ -153,10 +147,14 @@ export default function Dashboard({ onNavigate }) {
     suspendedBalance: at_suspendedBalance,
     totalExpenses: at_totalExpenses,
     inventoryValue: at_inventoryValue,
+    // Net Income = Total ever received − Recorded expenses − Current warehouse stock value
+    // The warehouse stock IS a cost you have already paid. As subscribers pay you for
+    // materials (included in their connection fee), your "Ever Collected" goes up and
+    // the warehouse stock goes down — so Net Income grows naturally. Correct!
     netIncome: at_totalEver - at_totalExpenses - at_inventoryValue,
   };
 
-  // 2. MONTHLY STATS
+  // 2. MONTHLY
   const monthStart = new Date(selYear, selMonth, 1);
   const monthEnd = new Date(selYear, selMonth + 1, 0, 23, 59, 59);
   let mo_collected = 0,
@@ -174,14 +172,11 @@ export default function Dashboard({ onNavigate }) {
     }
     const cycle = getLatestCycle(cycles, c.id);
     if (!cycle) return;
-
     const cycleStart = new Date(cycle.cycleStartDate);
     const cycleEnd = new Date(cycle.cycleEndDate);
     if (cycleStart > monthEnd || cycleEnd < monthStart) return;
-
     mo_collected += cycle.amountPaid || 0;
     mo_pending += cycle.amountPending || 0;
-
     const days = daysUntil(cycle.cycleEndDate);
     if (cycle.amountPending === 0) mo_clearedCount++;
     else if (days < 0) {
@@ -197,7 +192,6 @@ export default function Dashboard({ onNavigate }) {
     })
     .reduce((s, e) => s + (Number(e.amount) || 0), 0);
 
-  // Monthly inventory value — FIXED: inHand × unitRate
   const mo_inventoryValue = inventoryItems
     .filter((i) => {
       const d = new Date(i.date);
@@ -205,8 +199,18 @@ export default function Dashboard({ onNavigate }) {
     })
     .reduce((s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0), 0);
 
+  let mo_totalCollected = 0;
+  cycles.forEach((cy) => {
+    (cy.installments || []).forEach((inst) => {
+      const d = new Date(inst.datePaid);
+      if (d >= monthStart && d <= monthEnd)
+        mo_totalCollected += inst.amountPaid || 0;
+    });
+  });
+
   const monthly = {
     collected: mo_collected,
+    totalCollected: mo_totalCollected,
     pending: mo_pending,
     overdueMoney: mo_overdueMoney,
     newCustomers: mo_newCustomers,
@@ -215,32 +219,25 @@ export default function Dashboard({ onNavigate }) {
     overdueCount: mo_overdueCount,
     totalExpenses: mo_expenses,
     inventoryValue: mo_inventoryValue,
-    netIncome: mo_collected - mo_expenses - mo_inventoryValue,
+    netIncome: mo_totalCollected - mo_expenses - mo_inventoryValue,
+    pendingStatusBalance: 0,
+    suspendedBalance: 0,
   };
 
-  // 3. DAILY STATS
-  let day_collected = 0;
-  let day_newCustomers = 0;
-
+  // 3. DAILY
+  let day_collected = 0,
+    day_newCustomers = 0;
   cycles.forEach((cy) => {
     (cy.installments || []).forEach((inst) => {
-      if (inst.datePaid === selDate) {
-        day_collected += inst.amountPaid || 0;
-      }
+      if (inst.datePaid === selDate) day_collected += inst.amountPaid || 0;
     });
   });
-
   activeCustomers.forEach((c) => {
-    if (c.createdAt && c.createdAt.startsWith(selDate)) {
-      day_newCustomers++;
-    }
+    if (c.createdAt && c.createdAt.startsWith(selDate)) day_newCustomers++;
   });
-
   const day_expenses = expenses
     .filter((e) => e.date === selDate)
     .reduce((s, e) => s + (Number(e.amount) || 0), 0);
-
-  // Daily inventory value — FIXED: inHand × unitRate
   const day_inventoryValue = inventoryItems
     .filter((i) => i.date === selDate)
     .reduce((s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0), 0);
@@ -253,7 +250,7 @@ export default function Dashboard({ onNavigate }) {
     netIncome: day_collected - day_expenses - day_inventoryValue,
   };
 
-  // ── Inventory Stock Alerts ─────────────────────────────────────────
+  // ── Alerts ───────────────────────────────────────────────────────────────────
   const outOfStockInventory = inventoryItems.filter(
     (i) => (i.inHand ?? 0) <= 0 && (i.quantity || 0) > 0,
   );
@@ -263,7 +260,6 @@ export default function Dashboard({ onNavigate }) {
     return ratio <= 0.2 && (i.inHand ?? 0) > 0;
   });
 
-  // ── Urgent Customers Logic ─────────────────────────────────────────
   const urgentCustomers = activeCustomers
     .map((c) => ({ customer: c, cycle: getLatestCycle(cycles, c.id) }))
     .filter(({ cycle }) => {
@@ -278,7 +274,6 @@ export default function Dashboard({ onNavigate }) {
     });
 
   const displayStats = mode === "monthly" ? monthly : allTime;
-
   const totalAttentionCount =
     urgentCustomers.length +
     outOfStockInventory.length +
@@ -293,24 +288,19 @@ export default function Dashboard({ onNavigate }) {
           <p className="text-sm text-gray-500 mt-0.5">{today()}</p>
         </div>
         <div className="flex items-center gap-1 bg-gray-200 rounded-lg p-1">
-          <button
-            onClick={() => setMode("alltime")}
-            className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === "alltime" ? "bg-white text-gray-900 shadow" : "text-gray-500 hover:text-gray-800"}`}
-          >
-            All Time
-          </button>
-          <button
-            onClick={() => setMode("monthly")}
-            className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === "monthly" ? "bg-white text-gray-900 shadow" : "text-gray-500 hover:text-gray-800"}`}
-          >
-            Monthly
-          </button>
-          <button
-            onClick={() => setMode("daily")}
-            className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === "daily" ? "bg-white text-gray-900 shadow" : "text-gray-500 hover:text-gray-800"}`}
-          >
-            Daily
-          </button>
+          {["alltime", "monthly", "daily"].map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === m ? "bg-white text-gray-900 shadow" : "text-gray-500 hover:text-gray-800"}`}
+            >
+              {m === "alltime"
+                ? "All Time"
+                : m === "monthly"
+                  ? "Monthly"
+                  : "Daily"}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -352,15 +342,13 @@ export default function Dashboard({ onNavigate }) {
         </div>
       )}
 
-      {/* ─── CARDS GRID ─── */}
-
+      {/* CARDS */}
       {mode !== "daily" ? (
         <>
-          {/* Top Row: 4 Columns */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <BigCard
               icon={<Users size={16} />}
-              label="Total Customers"
+              label="Total Subscribers"
               value={
                 mode === "monthly"
                   ? monthly.newCustomers
@@ -378,14 +366,24 @@ export default function Dashboard({ onNavigate }) {
               label={
                 mode === "monthly" ? "Collected This Month" : "Ever Collected"
               }
-              value={`PKR ${mode === "monthly" ? monthly.collected.toLocaleString() : allTime.totalEverCollected.toLocaleString()}`}
+              value={`PKR ${(mode === "monthly" ? monthly.totalCollected : allTime.totalEverCollected).toLocaleString()}`}
               sub={
                 mode === "monthly"
                   ? "Payments received this month"
-                  : "Sum of all payments ever"
+                  : "Sum of all payments ever received"
               }
               color="green"
               isSensitive={true}
+              infoContent={
+                mode === "alltime"
+                  ? {
+                      type: "everCollected",
+                      totalCycles: cycles.length,
+                      totalSubscribers: activeCustomers.length,
+                      pendingBalance: allTime.pending,
+                    }
+                  : null
+              }
             />
             <BigCard
               icon={<XCircle size={16} />}
@@ -409,13 +407,12 @@ export default function Dashboard({ onNavigate }) {
             />
           </div>
 
-          {/* Bottom Row: 3 Columns */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <BigCard
               icon={<Users size={16} />}
-              label="Overdue Customers"
+              label="Overdue Subscribers"
               value={displayStats.overdueCount}
-              sub="Count of customers overdue"
+              sub="Count of subscribers overdue"
               color="red"
               highlight={displayStats.overdueCount > 0}
             />
@@ -432,15 +429,34 @@ export default function Dashboard({ onNavigate }) {
             <BigCard
               icon={<TrendingUp size={16} />}
               label="Net Income"
-              value={`PKR ${displayStats.netIncome.toLocaleString()}`}
-              sub="Total collected − expenses"
-              color={displayStats.netIncome >= 0 ? "green" : "red"}
+              value={`PKR ${(mode === "monthly" ? monthly.netIncome : allTime.netIncome).toLocaleString()}`}
+              sub="Collected − expenses − warehouse stock"
+              color={
+                (mode === "monthly" ? monthly.netIncome : allTime.netIncome) >=
+                0
+                  ? "green"
+                  : "red"
+              }
               isSensitive={true}
+              infoContent={{
+                type: "netIncome",
+                collected:
+                  mode === "monthly"
+                    ? monthly.totalCollected
+                    : allTime.totalEverCollected,
+                expenses:
+                  mode === "monthly"
+                    ? monthly.totalExpenses
+                    : allTime.totalExpenses,
+                warehouseStock:
+                  mode === "monthly"
+                    ? monthly.inventoryValue
+                    : allTime.inventoryValue,
+              }}
             />
           </div>
         </>
       ) : (
-        /* Daily View */
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <BigCard
             icon={<CreditCard size={16} />}
@@ -454,20 +470,22 @@ export default function Dashboard({ onNavigate }) {
             icon={<XCircle size={16} />}
             label="Expenses Today"
             value={`PKR ${(daily.totalExpenses + (daily.inventoryValue || 0)).toLocaleString()}`}
-            sub={`Expenses recorded on ${formatDate(selDate)}`}
+            sub={`Expenses + new stock on ${formatDate(selDate)}`}
             color="red"
+            inventoryValue={daily.inventoryValue || 0}
+            expensesValue={daily.totalExpenses || 0}
           />
           <BigCard
             icon={<TrendingUp size={16} />}
             label="Daily Net Income"
             value={`PKR ${daily.netIncome.toLocaleString()}`}
-            sub="Collected − expenses"
+            sub="Collected − expenses − new stock"
             color={daily.netIncome >= 0 ? "green" : "red"}
             isSensitive={true}
           />
           <BigCard
             icon={<Users size={16} />}
-            label="New Customers"
+            label="New Subscribers"
             value={daily.newCustomers}
             sub="Joined today"
             color="blue"
@@ -475,7 +493,7 @@ export default function Dashboard({ onNavigate }) {
         </div>
       )}
 
-      {/* NEEDS ATTENTION SECTION */}
+      {/* NEEDS ATTENTION */}
       <div>
         <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2 mb-3">
           <AlertTriangle size={18} className="text-red-500" />
@@ -487,7 +505,6 @@ export default function Dashboard({ onNavigate }) {
           )}
         </h2>
 
-        {/* Out of Stock Alerts */}
         {outOfStockInventory.map((item) => (
           <div
             key={`oos-${item.id}`}
@@ -513,7 +530,6 @@ export default function Dashboard({ onNavigate }) {
           </div>
         ))}
 
-        {/* Low Stock Alerts */}
         {lowStockInventory.map((item) => (
           <div
             key={`low-${item.id}`}
@@ -541,7 +557,6 @@ export default function Dashboard({ onNavigate }) {
           </div>
         ))}
 
-        {/* All clear state */}
         {totalAttentionCount === 0 ? (
           <div className="bg-green-50 border-2 border-green-200 rounded-xl px-5 py-4 flex items-center gap-3">
             <CheckCircle size={22} className="text-green-600" />
@@ -554,7 +569,9 @@ export default function Dashboard({ onNavigate }) {
             <table className="w-full">
               <thead>
                 <tr className="bg-gray-900 text-white text-left">
-                  <th className="px-4 py-3 text-sm font-semibold">Customer</th>
+                  <th className="px-4 py-3 text-sm font-semibold">
+                    Subscriber
+                  </th>
                   <th className="px-4 py-3 text-sm font-semibold">Area</th>
                   <th className="px-4 py-3 text-sm font-semibold">Mobile</th>
                   <th className="px-4 py-3 text-sm font-semibold">
@@ -602,23 +619,21 @@ export default function Dashboard({ onNavigate }) {
                   const isExpiringSoon = days >= 0 && days <= 5;
 
                   let waMessage = "";
-                  if (isExpiredUnpaid) {
+                  if (isExpiredUnpaid)
                     waMessage = MESSAGE_TEMPLATES.paymentOverdue(
                       customer,
                       cycle,
                     );
-                  } else if (cycle.amountPending > 0) {
+                  else if (cycle.amountPending > 0)
                     waMessage = MESSAGE_TEMPLATES.paymentDue(customer, cycle);
-                  } else {
+                  else
                     waMessage = MESSAGE_TEMPLATES.expiryReminder(
                       customer,
                       cycle,
                     );
-                  }
 
                   const showPayButton =
                     cycle.amountPending > 0 || isExpiredPaid;
-
                   const rowBg = isExpiredUnpaid
                     ? "bg-red-50"
                     : isExpiredPaid
@@ -727,7 +742,7 @@ export default function Dashboard({ onNavigate }) {
   );
 }
 
-// Updated Colors: Softer backgrounds with borders and icons
+// ── Color map ─────────────────────────────────────────────────────────────────
 const colorMap = {
   blue: {
     bg: "bg-blue-50 border border-blue-200",
@@ -751,6 +766,7 @@ const colorMap = {
   },
 };
 
+// ── BigCard ───────────────────────────────────────────────────────────────────
 function BigCard({
   icon,
   label,
@@ -765,9 +781,25 @@ function BigCard({
   expensesValue,
   pendingStatusBalance,
   suspendedBalance,
+  infoContent,
 }) {
   const c = colorMap[color] || colorMap.blue;
   const [revealed, setRevealed] = useState(false);
+  const [showInfo, setShowInfo] = useState(false);
+  const infoRef = useRef(null);
+
+  // Close tooltip when clicking anywhere outside
+  useEffect(() => {
+    if (!showInfo) return;
+    const handler = (e) => {
+      if (infoRef.current && !infoRef.current.contains(e.target)) {
+        setShowInfo(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showInfo]);
+
   const hasExpenseBreakdown =
     inventoryValue !== undefined && expensesValue !== undefined;
   const hasBalanceBreakdown =
@@ -785,18 +817,132 @@ function BigCard({
           >
             {icon}
           </div>
-          {isSensitive && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setRevealed(!revealed);
-              }}
-              className="text-gray-400 hover:text-gray-600 transition-colors"
-              title={revealed ? "Hide Amount" : "Show Amount"}
-            >
-              {revealed ? <EyeOff size={15} /> : <Eye size={15} />}
-            </button>
-          )}
+          <div className="flex items-center gap-1.5">
+            {/* Info tooltip */}
+            {infoContent && (
+              <div className="relative" ref={infoRef}>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowInfo((s) => !s);
+                  }}
+                  className="text-gray-400 hover:text-blue-500 transition-colors"
+                  title="More info"
+                >
+                  <Info size={14} />
+                </button>
+                {showInfo && (
+                  <div className="absolute right-0 top-6 z-50 bg-white border border-gray-200 rounded-xl shadow-xl p-3 w-68 text-xs">
+                    {infoContent.type === "everCollected" && (
+                      <>
+                        <p className="font-bold text-gray-800 mb-2 text-sm">
+                          📥 What is Ever Collected?
+                        </p>
+                        <p className="text-gray-600 leading-relaxed mb-2">
+                          The total of all actual cash payments ever received
+                          from subscribers — across every billing cycle since
+                          day one.
+                        </p>
+                        <div className="space-y-1 border-t border-gray-100 pt-2">
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">
+                              Billing cycles total
+                            </span>
+                            <span className="font-semibold text-gray-700">
+                              {infoContent.totalCycles}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">
+                              Active subscribers
+                            </span>
+                            <span className="font-semibold text-gray-700">
+                              {infoContent.totalSubscribers}
+                            </span>
+                          </div>
+                          {infoContent.pendingBalance > 0 && (
+                            <div className="flex justify-between text-amber-600">
+                              <span>Still pending (not included)</span>
+                              <span className="font-semibold">
+                                PKR{" "}
+                                {infoContent.pendingBalance.toLocaleString()}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                        <p className="text-gray-400 mt-2 italic">
+                          Inventory and expenses are NOT included here — they
+                          show in the Expenses card.
+                        </p>
+                      </>
+                    )}
+                    {infoContent.type === "netIncome" && (
+                      <>
+                        <p className="font-bold text-gray-800 mb-2 text-sm">
+                          📊 Net Income Breakdown
+                        </p>
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between text-green-700">
+                            <span className="font-semibold">+ Collected</span>
+                            <span className="font-bold">
+                              PKR {infoContent.collected.toLocaleString()}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-red-600">
+                            <span>− Recorded Expenses</span>
+                            <span className="font-semibold">
+                              PKR {infoContent.expenses.toLocaleString()}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-red-600">
+                            <span>− Warehouse Stock</span>
+                            <span className="font-semibold">
+                              PKR {infoContent.warehouseStock.toLocaleString()}
+                            </span>
+                          </div>
+                          <div className="border-t border-gray-200 pt-1.5 flex justify-between font-bold text-gray-800">
+                            <span>= Net Income</span>
+                            <span>
+                              PKR{" "}
+                              {(
+                                infoContent.collected -
+                                infoContent.expenses -
+                                infoContent.warehouseStock
+                              ).toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="mt-2 bg-blue-50 border border-blue-100 rounded-lg px-2.5 py-2 text-blue-700 leading-relaxed">
+                          <p className="font-semibold text-xs mb-0.5">
+                            Why does issuing stock increase Net Income?
+                          </p>
+                          <p className="text-xs">
+                            When you issue cable and the technician collects the
+                            cable money from the subscriber (included in their
+                            payment), your "Ever Collected" goes up AND your
+                            warehouse stock goes down — so Net Income grows.
+                            This is correct!
+                          </p>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            {isSensitive && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setRevealed(!revealed);
+                }}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+                title={revealed ? "Hide Amount" : "Show Amount"}
+              >
+                {revealed ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            )}
+          </div>
         </div>
         <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
           {label}

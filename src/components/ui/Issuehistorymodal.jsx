@@ -5,12 +5,14 @@ import {
   Calendar,
   Package,
   Inbox,
+  DollarSign,
 } from "lucide-react";
 import { formatDate } from "../../utils/dateUtils";
 
 /**
  * IssueHistoryModal
  * Displays a timeline of all stock issue events for a single inventory item.
+ * Now shows per-unit price and total value per issue.
  *
  * Props:
  *  item    – the inventory item object
@@ -19,6 +21,11 @@ import { formatDate } from "../../utils/dateUtils";
 export default function IssueHistoryModal({ item, onClose }) {
   const log = Array.isArray(item.issueLog) ? [...item.issueLog].reverse() : [];
   const totalIssued = log.reduce((sum, e) => sum + (e.qty || 0), 0);
+  const totalIssuedValue = log.reduce(
+    (sum, e) =>
+      sum + (e.totalValue || (e.qty || 0) * (e.unitRate || item.unitRate || 0)),
+    0,
+  );
 
   return (
     <div className="space-y-4">
@@ -39,6 +46,12 @@ export default function IssueHistoryModal({ item, onClose }) {
             <p className="text-xs text-gray-400 font-medium">Total Issued</p>
             <p className="text-lg font-black text-red-500">
               {item.stockOut || 0}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-400 font-medium">Total Value</p>
+            <p className="text-base font-black text-orange-600">
+              PKR {totalIssuedValue.toLocaleString()}
             </p>
           </div>
           <div>
@@ -74,76 +87,115 @@ export default function IssueHistoryModal({ item, onClose }) {
           <div className="absolute left-4.75 top-0 bottom-0 w-px bg-gray-200" />
 
           <div className="space-y-3">
-            {log.map((entry, idx) => (
-              <div key={idx} className="flex gap-3 relative">
-                {/* dot */}
-                <div className="shrink-0 w-10 flex justify-center pt-1">
-                  <div className="w-5 h-5 rounded-full bg-red-100 border-2 border-red-400 flex items-center justify-center z-10">
-                    <ArrowUpCircle size={10} className="text-red-500" />
-                  </div>
-                </div>
-
-                {/* card */}
-                <div className="flex-1 bg-white border border-gray-200 rounded-xl px-4 py-3 shadow-sm mb-1">
-                  <div className="flex items-start justify-between gap-2 flex-wrap">
-                    {/* qty badge */}
-                    <div className="flex items-center gap-2">
-                      <span className="bg-red-50 border border-red-200 text-red-700 text-sm font-black px-2.5 py-0.5 rounded-lg">
-                        − {entry.qty} {item.unit}
-                      </span>
-                      {idx === 0 && (
-                        <span className="text-xs bg-blue-50 border border-blue-200 text-blue-600 font-semibold px-2 py-0.5 rounded-full">
-                          Latest
-                        </span>
-                      )}
+            {log.map((entry, idx) => {
+              const entryRate = entry.unitRate || item.unitRate || 0;
+              const entryValue =
+                entry.totalValue || (entry.qty || 0) * entryRate;
+              return (
+                <div key={idx} className="flex gap-3 relative">
+                  {/* dot */}
+                  <div className="shrink-0 w-10 flex justify-center pt-1">
+                    <div className="w-5 h-5 rounded-full bg-red-100 border-2 border-red-400 flex items-center justify-center z-10">
+                      <ArrowUpCircle size={10} className="text-red-500" />
                     </div>
-                    {/* date */}
-                    <span className="flex items-center gap-1 text-xs text-gray-400 font-medium whitespace-nowrap">
-                      <Calendar size={11} />
-                      {formatDate(entry.date)}
-                    </span>
                   </div>
 
-                  {/* issued to */}
-                  {entry.issuedTo && (
-                    <p className="flex items-center gap-1.5 text-sm text-gray-700 font-medium mt-2">
-                      <User size={12} className="text-gray-400 shrink-0" />
-                      {entry.issuedTo}
-                    </p>
-                  )}
+                  {/* card */}
+                  <div className="flex-1 bg-white border border-gray-200 rounded-xl px-4 py-3 shadow-sm mb-1">
+                    <div className="flex items-start justify-between gap-2 flex-wrap">
+                      {/* qty badge + value */}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="bg-red-50 border border-red-200 text-red-700 text-sm font-black px-2.5 py-0.5 rounded-lg">
+                          − {entry.qty} {item.unit}
+                        </span>
+                        <span className="bg-orange-50 border border-orange-200 text-orange-700 text-xs font-semibold px-2 py-0.5 rounded-lg">
+                          PKR {entryValue.toLocaleString()}
+                        </span>
+                        {idx === 0 && (
+                          <span className="text-xs bg-blue-50 border border-blue-200 text-blue-600 font-semibold px-2 py-0.5 rounded-full">
+                            Latest
+                          </span>
+                        )}
+                      </div>
+                      {/* date */}
+                      <span className="flex items-center gap-1 text-xs text-gray-400 font-medium whitespace-nowrap">
+                        <Calendar size={11} />
+                        {formatDate(entry.date)}
+                      </span>
+                    </div>
 
-                  {/* note */}
-                  {entry.note && (
-                    <p className="flex items-start gap-1.5 text-xs text-gray-500 mt-1.5 leading-relaxed">
-                      <FileText
-                        size={11}
-                        className="text-gray-400 shrink-0 mt-0.5"
-                      />
-                      {entry.note}
-                    </p>
-                  )}
+                    {/* Rate row */}
+                    <div className="flex items-center gap-1.5 text-xs text-gray-500 mt-2">
+                      <DollarSign size={11} className="text-gray-400" />
+                      <span>
+                        PKR {entryRate.toLocaleString()} per {item.unit}
+                        {entryRate !== item.unitRate && (
+                          <span className="ml-1 text-amber-600 font-semibold">
+                            (custom rate)
+                          </span>
+                        )}
+                      </span>
+                    </div>
 
-                  {/* running balance */}
-                  <p className="text-xs text-gray-400 mt-2 border-t border-gray-100 pt-1.5">
-                    Balance after this issue:{" "}
-                    <span className="font-semibold text-gray-600">
-                      {entry.balanceAfter} {item.unit}
-                    </span>
-                  </p>
+                    {/* Technician */}
+                    {entry.issuedTo && (
+                      <p className="flex items-center gap-1.5 text-sm text-gray-700 font-medium mt-1.5">
+                        <User size={12} className="text-gray-400 shrink-0" />
+                        Technician: {entry.issuedTo}
+                      </p>
+                    )}
+
+                    {/* Subscriber */}
+                    {entry.subscriberName && (
+                      <p className="flex items-center gap-1.5 text-sm text-gray-700 font-medium mt-1">
+                        <User size={12} className="text-blue-400 shrink-0" />
+                        Subscriber: {entry.subscriberName}
+                      </p>
+                    )}
+
+                    {/* note */}
+                    {entry.note && (
+                      <p className="flex items-start gap-1.5 text-xs text-gray-500 mt-1.5 leading-relaxed">
+                        <FileText
+                          size={11}
+                          className="text-gray-400 shrink-0 mt-0.5"
+                        />
+                        {entry.note}
+                      </p>
+                    )}
+
+                    {/* running balance */}
+                    <p className="text-xs text-gray-400 mt-2 border-t border-gray-100 pt-1.5">
+                      Balance after this issue:{" "}
+                      <span className="font-semibold text-gray-600">
+                        {entry.balanceAfter} {item.unit}
+                      </span>
+                    </p>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* ── Total summary at bottom ── */}
           {log.length > 1 && (
-            <div className="ml-10 mt-2 bg-gray-50 border border-gray-200 rounded-xl px-4 py-2.5 flex items-center justify-between text-sm">
-              <span className="text-gray-500 font-medium">
-                Total issued across all events
-              </span>
-              <span className="font-bold text-red-600">
-                {totalIssued} {item.unit}
-              </span>
+            <div className="ml-10 mt-2 bg-gray-50 border border-gray-200 rounded-xl px-4 py-2.5 space-y-1">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-500 font-medium">
+                  Total issued across all {log.length} events
+                </span>
+                <span className="font-bold text-red-600">
+                  {totalIssued} {item.unit}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-500 font-medium">
+                  Total issued value
+                </span>
+                <span className="font-bold text-orange-600">
+                  PKR {totalIssuedValue.toLocaleString()}
+                </span>
+              </div>
             </div>
           )}
         </div>

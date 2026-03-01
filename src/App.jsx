@@ -11,6 +11,7 @@ import usePaymentStore from "./store/usePaymentStore";
 import usePackageStore from "./store/usePackageStore";
 import useInventoryStore from "./store/useInventoryStore";
 import useExpenseStore from "./store/useExpenseStore";
+import useConnectionJobStore from "./store/useConnectionJobStore";
 
 export default function App() {
   const [tab, setTab] = useState("dashboard");
@@ -24,6 +25,7 @@ export default function App() {
       usePackageStore.getState().loadPackages(),
       useInventoryStore.getState().loadInventory(),
       useExpenseStore.getState().loadExpenses(),
+      useConnectionJobStore.getState().loadJobs(),
     ]).then(() => setLoading(false));
   }, []);
 

@@ -7,6 +7,8 @@ import {
   AlertTriangle,
   CheckCircle,
   History,
+  DollarSign,
+  TrendingDown,
 } from "lucide-react";
 import useInventoryStore from "../../store/useInventoryStore";
 import { today } from "../../utils/dateUtils";
@@ -14,11 +16,12 @@ import { today } from "../../utils/dateUtils";
 /**
  * IssueStockModal
  * A focused modal for issuing stock out of a specific inventory item.
+ * Supports custom per-unit price override (defaults to item's recorded rate).
  * Writes structured entries to item.issueLog (array) for full history tracking.
  *
  * Props:
- *  item        – the inventory item object (required)
- *  onClose     – callback to close the modal
+ *  item          – the inventory item object (required)
+ *  onClose       – callback to close the modal
  *  onViewHistory – optional callback to open the history modal
  */
 export default function IssueStockModal({ item, onClose, onViewHistory }) {
@@ -26,15 +29,19 @@ export default function IssueStockModal({ item, onClose, onViewHistory }) {
 
   const [qty, setQty] = useState("");
   const [issuedTo, setIssuedTo] = useState("");
+  const [subscriberName, setSubscriberName] = useState("");
   const [note, setNote] = useState("");
   const [date, setDate] = useState(today());
+  const [customRate, setCustomRate] = useState(String(item.unitRate || ""));
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState(false);
 
   const currentInHand = item.inHand ?? 0;
   const issueQty = Number(qty) || 0;
+  const effectiveRate = Number(customRate) || item.unitRate || 0;
   const remaining = currentInHand - issueQty;
+  const totalIssueValue = issueQty * effectiveRate;
 
   const stockAfterPercent =
     item.quantity > 0 ? Math.max(0, (remaining / item.quantity) * 100) : 0;
@@ -79,17 +86,24 @@ export default function IssueStockModal({ item, onClose, onViewHistory }) {
       );
       return;
     }
+    if (!effectiveRate || effectiveRate <= 0) {
+      setError("Per-unit price must be greater than 0.");
+      return;
+    }
 
     setSaving(true);
     try {
       const newStockOut = (item.stockOut || 0) + issueQty;
       const newInHand = (item.stockIn || 0) - newStockOut;
 
-      // Build structured log entry
+      // Build structured log entry — now includes rate & total value
       const logEntry = {
         date,
         qty: issueQty,
+        unitRate: effectiveRate,
+        totalValue: issueQty * effectiveRate,
         issuedTo: issuedTo.trim() || null,
+        subscriberName: subscriberName.trim() || null,
         note: note.trim() || null,
         balanceAfter: newInHand,
         createdAt: new Date().toISOString(),
@@ -102,7 +116,6 @@ export default function IssueStockModal({ item, onClose, onViewHistory }) {
         balanced: newInHand,
         issued: newStockOut,
         issueLog: [...existingLog, logEntry],
-        // Keep remarks untouched — history is now in issueLog
       });
       setDone(true);
     } catch (err) {
@@ -126,6 +139,13 @@ export default function IssueStockModal({ item, onClose, onViewHistory }) {
             </span>{" "}
             of <span className="font-semibold">{item.description}</span> issued
             successfully.
+            <br />
+            <span className="text-gray-400">
+              Total value:{" "}
+              <span className="font-semibold text-gray-700">
+                PKR {totalIssueValue.toLocaleString()}
+              </span>
+            </span>
             <br />
             <span className="text-gray-400">
               Remaining in hand:{" "}
@@ -173,6 +193,10 @@ export default function IssueStockModal({ item, onClose, onViewHistory }) {
           <p className="text-xs text-gray-500 mt-0.5">
             Unit:{" "}
             <span className="font-semibold text-gray-700">{item.unit}</span>
+            {" · "}
+            <span className="text-gray-400">
+              Recorded rate: PKR {(item.unitRate || 0).toLocaleString()}
+            </span>
           </p>
         </div>
         <div className="flex items-end gap-4">
@@ -213,7 +237,7 @@ export default function IssueStockModal({ item, onClose, onViewHistory }) {
         </div>
       )}
 
-      {/* ── Qty + Date row ── */}
+      {/* ── Qty + Date + Per Unit Price row ── */}
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="block text-xs font-bold text-gray-600 mb-1.5">
@@ -225,7 +249,9 @@ export default function IssueStockModal({ item, onClose, onViewHistory }) {
             max={currentInHand}
             disabled={currentInHand === 0}
             className={`w-full border rounded-lg px-3 h-10 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all disabled:bg-gray-100 disabled:cursor-not-allowed ${
-              error ? "border-red-400 bg-red-50" : "border-gray-300"
+              error && (!issueQty || issueQty > currentInHand)
+                ? "border-red-400 bg-red-50"
+                : "border-gray-300"
             }`}
             placeholder={`Max: ${currentInHand}`}
             value={qty}
@@ -248,10 +274,46 @@ export default function IssueStockModal({ item, onClose, onViewHistory }) {
             onChange={(e) => setDate(e.target.value)}
           />
         </div>
+
+        {/* Per Unit Price — full width */}
+        <div className="col-span-2">
+          <label className="block text-xs font-bold text-gray-600 mb-1.5">
+            <span className="flex items-center gap-1.5">
+              <DollarSign size={12} /> Per Unit Price (PKR){" "}
+              <span className="text-red-500">*</span>
+              <span className="font-normal text-gray-400">
+                — default is recorded purchase rate
+              </span>
+            </span>
+          </label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 font-semibold pointer-events-none">
+              PKR
+            </span>
+            <input
+              type="number"
+              min="0"
+              className="w-full border border-gray-300 rounded-lg pl-12 pr-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+              value={customRate}
+              placeholder={`Default: ${item.unitRate || 0}`}
+              onChange={(e) => {
+                setCustomRate(e.target.value);
+                setError("");
+              }}
+            />
+          </div>
+          {Number(customRate) !== item.unitRate && item.unitRate > 0 && (
+            <p className="text-xs text-amber-600 font-medium mt-1 flex items-center gap-1">
+              <AlertTriangle size={11} />
+              Rate changed from recorded PKR {item.unitRate?.toLocaleString()} —
+              this only affects this issue entry, not the item record.
+            </p>
+          )}
+        </div>
       </div>
 
-      {/* ── Live Stock Preview ── */}
-      {issueQty > 0 && (
+      {/* ── Live Stock + Value Preview ── */}
+      {issueQty > 0 && effectiveRate > 0 && (
         <div className="bg-white border border-gray-200 rounded-xl px-4 py-3 space-y-2">
           <div className="flex items-center justify-between text-xs font-semibold text-gray-500 uppercase tracking-wide">
             <span>Stock After Issuing</span>
@@ -279,23 +341,49 @@ export default function IssueStockModal({ item, onClose, onViewHistory }) {
               }}
             />
           </div>
+          {/* Total value of this issue */}
+          <div className="flex items-center justify-between pt-1 border-t border-gray-100">
+            <span className="flex items-center gap-1.5 text-xs text-gray-500 font-medium">
+              <TrendingDown size={12} className="text-red-500" />
+              Total value of this issue
+            </span>
+            <span className="text-sm font-bold text-red-600">
+              PKR {totalIssueValue.toLocaleString()}
+            </span>
+          </div>
         </div>
       )}
 
-      {/* ── Issued To ── */}
-      <div>
-        <label className="block text-xs font-bold text-gray-600 mb-1.5">
-          <span className="flex items-center gap-1.5">
-            <User size={12} /> Issued To
-            <span className="font-normal text-gray-400">(optional)</span>
-          </span>
-        </label>
-        <input
-          className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-          placeholder="e.g. Technician name, customer, department..."
-          value={issuedTo}
-          onChange={(e) => setIssuedTo(e.target.value)}
-        />
+      {/* ── Issued To (Technician) ── */}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs font-bold text-gray-600 mb-1.5">
+            <span className="flex items-center gap-1.5">
+              <User size={12} /> Technician Name
+              <span className="font-normal text-gray-400">(optional)</span>
+            </span>
+          </label>
+          <input
+            className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            placeholder="e.g. Ali Technician"
+            value={issuedTo}
+            onChange={(e) => setIssuedTo(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-bold text-gray-600 mb-1.5">
+            <span className="flex items-center gap-1.5">
+              <User size={12} /> Subscriber Name
+              <span className="font-normal text-gray-400">(optional)</span>
+            </span>
+          </label>
+          <input
+            className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            placeholder="e.g. Ahmed Ali (customer)"
+            value={subscriberName}
+            onChange={(e) => setSubscriberName(e.target.value)}
+          />
+        </div>
       </div>
 
       {/* ── Note ── */}
@@ -340,7 +428,10 @@ export default function IssueStockModal({ item, onClose, onViewHistory }) {
           ) : (
             <>
               <ArrowUpCircle size={15} />
-              Issue {issueQty > 0 ? `${issueQty} ${item.unit}` : "Stock"}
+              Issue{" "}
+              {issueQty > 0
+                ? `${issueQty} ${item.unit} · PKR ${totalIssueValue.toLocaleString()}`
+                : "Stock"}
             </>
           )}
         </button>
