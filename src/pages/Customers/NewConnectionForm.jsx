@@ -1064,7 +1064,11 @@ export default function NewConnectionForm({ onClose }) {
               Create Connection
               {grandTotal > 0 && (
                 <span className="opacity-70 text-xs font-normal">
-                  · PKR {grandTotal.toLocaleString()}
+                  · PKR{" "}
+                  {(userEditedAmount.current && Number(amountPaid) >= 0
+                    ? Number(amountPaid)
+                    : grandTotal
+                  ).toLocaleString()}
                 </span>
               )}
             </>

@@ -12,15 +12,19 @@ import {
   XCircle,
   FileText,
   Printer,
+  Package,
 } from "lucide-react";
 import Badge from "../../components/ui/Badge";
 import WhatsAppButton from "../../components/shared/WhatsAppButton";
 import Modal from "../../components/ui/Modal";
 import InvoiceModal from "../../components/ui/InvoiceModal";
+import BulkIssueStockModal from "../../components/ui/BulkIssueStockModal";
 import { formatDate } from "../../utils/dateUtils";
 import { MESSAGE_TEMPLATES } from "../../config/messageTemplates";
 import usePaymentStore from "../../store/usePaymentStore";
 import usePackageStore from "../../store/usePackageStore";
+import useInventoryStore from "../../store/useInventoryStore";
+import useConnectionJobStore from "../../store/useConnectionJobStore";
 import { computeDisplayStatus } from "../../utils/Statusutils";
 import { daysUntil } from "../../utils/dateUtils";
 
@@ -34,9 +38,12 @@ export default function CustomerTable({
   const getActiveCycle = usePaymentStore((s) => s.getActiveCycle);
   const getCyclesForCustomer = usePaymentStore((s) => s.getCyclesForCustomer);
   const packages = usePackageStore((s) => s.packages);
+  const inventoryItems = useInventoryStore((s) => s.items);
+  const jobs = useConnectionJobStore((s) => s.jobs);
 
   const [historyTarget, setHistoryTarget] = useState(null);
   const [invoiceTarget, setInvoiceTarget] = useState(null);
+  const [issueTarget, setIssueTarget] = useState(null); // { customer }
 
   const filtered = customers.filter((c) => {
     if (!searchQuery) return true;
@@ -108,6 +115,14 @@ export default function CustomerTable({
                   : cycle
                     ? MESSAGE_TEMPLATES.expiryReminder(customer, cycle)
                     : "";
+
+              // ── Check if subscriber has any inventory issued ───────────
+              const hasInventoryIssued = jobs.some(
+                (j) => j.subscriberId === customer.id,
+              );
+              const availableItems = inventoryItems.filter(
+                (i) => (i.inHand ?? 0) > 0,
+              );
 
               return (
                 <tr
@@ -259,6 +274,15 @@ export default function CustomerTable({
                       ) : (
                         <div className="w-7 h-7" />
                       )}
+                      {!hasInventoryIssued && availableItems.length > 0 && (
+                        <button
+                          onClick={() => setIssueTarget({ customer })}
+                          className="flex items-center justify-center w-7 h-7 rounded border bg-white border-amber-200 text-amber-500 hover:bg-amber-50 hover:border-amber-400 hover:text-amber-700 transition-colors"
+                          title="Issue Inventory to Subscriber"
+                        >
+                          <Package size={14} />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -313,6 +337,21 @@ export default function CustomerTable({
         cycle={invoiceTarget?.cycle}
         packageName={invoiceTarget?.packageName}
       />
+
+      {/* Bulk Issue Stock Modal */}
+      {issueTarget && (
+        <Modal
+          isOpen={!!issueTarget}
+          onClose={() => setIssueTarget(null)}
+          title={`Issue Inventory — ${issueTarget.customer.fullName}`}
+          size="lg"
+        >
+          <BulkIssueStockModal
+            customer={issueTarget.customer}
+            onClose={() => setIssueTarget(null)}
+          />
+        </Modal>
+      )}
     </>
   );
 }

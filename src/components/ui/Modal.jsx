@@ -31,12 +31,7 @@ export default function Modal({
     }[size] || "max-w-lg";
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div
         className={`bg-white rounded-lg shadow-xl w-full mx-4 ${sizeClass} max-h-[90vh] flex flex-col`}
       >
