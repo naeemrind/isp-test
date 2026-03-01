@@ -48,6 +48,8 @@ src/components/shared/WhatsAppButton.jsx
 src/components/ui/BackupBanner.jsx
 src/components/ui/Badge.jsx
 src/components/ui/ConfirmDialog.jsx
+src/components/ui/ConnectionJobModal.jsx
+src/components/ui/ConnectionJobsLog.jsx
 src/components/ui/HistoryModal.jsx
 src/components/ui/InvoiceModal.jsx
 src/components/ui/Issuehistorymodal.jsx
@@ -69,6 +71,7 @@ src/pages/Inventory/InventoryForm.jsx
 src/pages/Login.jsx
 src/pages/Payments/PaymentForm.jsx
 src/pages/Settings.jsx
+src/store/useConnectionJobStore.js
 src/store/useCustomerStore.js
 src/store/useExpenseStore.js
 src/store/useInventoryStore.js
@@ -514,6 +517,878 @@ export default function ConfirmDialog({
         </div>
       </div>
     </Modal>
+  );
+}
+</file>
+
+<file path="src/components/ui/ConnectionJobModal.jsx">
+import { useState } from "react";
+import {
+  Plus,
+  Trash2,
+  CheckCircle,
+  AlertTriangle,
+  Package,
+  User,
+  Wrench,
+  FileText,
+  ChevronDown,
+  Zap,
+} from "lucide-react";
+import useInventoryStore from "../../store/useInventoryStore";
+import useConnectionJobStore from "../../store/useConnectionJobStore";
+import useCustomerStore from "../../store/useCustomerStore";
+import { today } from "../../utils/dateUtils";
+
+/**
+ * ConnectionJobModal
+ * Issues multiple inventory items at once for a new connection.
+ * Saves a "connection job" record for full traceability.
+ * Each item issued is also logged into the inventory item's own issueLog.
+ */
+export default function ConnectionJobModal({ onClose }) {
+  const inventoryItems = useInventoryStore((s) => s.items);
+  const updateItem = useInventoryStore((s) => s.updateItem);
+  const addJob = useConnectionJobStore((s) => s.addJob);
+  const customers = useCustomerStore((s) => s.customers);
+
+  const [date, setDate] = useState(today());
+  const [technicianName, setTechnicianName] = useState("");
+  const [subscriberQuery, setSubscriberQuery] = useState("");
+  const [selectedSubscriber, setSelectedSubscriber] = useState(null);
+  const [showSubscriberDropdown, setShowSubscriberDropdown] = useState(false);
+  const [note, setNote] = useState("");
+  const [lines, setLines] = useState([]); // array of { itemId, qty, customRate }
+  const [errors, setErrors] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [done, setDone] = useState(false);
+  const [savedJob, setSavedJob] = useState(null);
+
+  // Subscriber search — filters active customers
+  const activeCustomers = customers.filter((c) => !c.isArchived);
+  const filteredSubscribers = subscriberQuery.trim()
+    ? activeCustomers.filter(
+        (c) =>
+          c.fullName?.toLowerCase().includes(subscriberQuery.toLowerCase()) ||
+          c.userName?.toLowerCase().includes(subscriberQuery.toLowerCase()),
+      )
+    : activeCustomers.slice(0, 8);
+
+  const selectSubscriber = (c) => {
+    setSelectedSubscriber(c);
+    setSubscriberQuery(c.fullName + (c.userName ? ` (${c.userName})` : ""));
+    setShowSubscriberDropdown(false);
+  };
+
+  // Available items (in stock only)
+  const availableItems = inventoryItems.filter((i) => (i.inHand ?? 0) > 0);
+
+  const addLine = () => {
+    setLines((prev) => [
+      ...prev,
+      { id: crypto.randomUUID(), itemId: "", qty: "", customRate: "" },
+    ]);
+  };
+
+  const removeLine = (id) => {
+    setLines((prev) => prev.filter((l) => l.id !== id));
+    setErrors((prev) => {
+      const e = { ...prev };
+      delete e[`item_${id}`];
+      delete e[`qty_${id}`];
+      return e;
+    });
+  };
+
+  const updateLine = (id, field, value) => {
+    setLines((prev) =>
+      prev.map((l) => {
+        if (l.id !== id) return l;
+        const updated = { ...l, [field]: value };
+        // Auto-fill rate when item is selected
+        if (field === "itemId") {
+          const item = inventoryItems.find((i) => i.id === Number(value));
+          updated.customRate = item ? String(item.unitRate) : "";
+        }
+        return updated;
+      }),
+    );
+    setErrors((prev) => {
+      const e = { ...prev };
+      delete e[`${field}_${id}`];
+      return e;
+    });
+  };
+
+  // Derived totals
+  const lineDetails = lines.map((l) => {
+    const item = inventoryItems.find((i) => i.id === Number(l.itemId));
+    const qty = Number(l.qty) || 0;
+    const rate = Number(l.customRate) || (item ? item.unitRate : 0);
+    const total = qty * rate;
+    const inHand = item ? (item.inHand ?? 0) : 0;
+    const overIssue = qty > inHand;
+    return { ...l, item, qty, rate, total, inHand, overIssue };
+  });
+
+  const grandTotal = lineDetails.reduce((s, l) => s + l.total, 0);
+
+  const validate = () => {
+    const e = {};
+    if (lines.length === 0) e.general = "Add at least one item to issue.";
+    lineDetails.forEach((l) => {
+      if (!l.itemId) e[`item_${l.id}`] = "Select an item";
+      if (!l.qty || l.qty <= 0) e[`qty_${l.id}`] = "Enter qty > 0";
+      if (l.overIssue) e[`qty_${l.id}`] = `Max available: ${l.inHand}`;
+      if (!l.rate || l.rate <= 0) e[`rate_${l.id}`] = "Rate must be > 0";
+    });
+    // Check for duplicate items
+    const itemIds = lineDetails.filter((l) => l.itemId).map((l) => l.itemId);
+    const seen = new Set();
+    itemIds.forEach((id) => {
+      if (seen.has(id))
+        e.general = "Duplicate items detected. Use one line per item.";
+      seen.add(id);
+    });
+    setErrors(e);
+    return Object.keys(e).length === 0;
+  };
+
+  const handleSubmit = async () => {
+    if (!validate()) return;
+    setSaving(true);
+    try {
+      // 1. Issue each item from inventory
+      const issuedItems = [];
+      for (const l of lineDetails) {
+        const item = l.item;
+        const existingLog = Array.isArray(item.issueLog) ? item.issueLog : [];
+        const newStockOut = (item.stockOut || 0) + l.qty;
+        const newInHand = (item.stockIn || 0) - newStockOut;
+
+        const logEntry = {
+          date,
+          qty: l.qty,
+          issuedTo: technicianName.trim() || null,
+          subscriberName: selectedSubscriber
+            ? selectedSubscriber.fullName
+            : null,
+          subscriberUsername: selectedSubscriber
+            ? selectedSubscriber.userName
+            : null,
+          note: note.trim() || "Connection Job",
+          balanceAfter: newInHand,
+          unitRate: l.rate,
+          totalValue: l.total,
+          jobRef: true, // marks this was part of a connection job
+          createdAt: new Date().toISOString(),
+        };
+
+        await updateItem(item.id, {
+          ...item,
+          stockOut: newStockOut,
+          inHand: newInHand,
+          balanced: newInHand,
+          issued: newStockOut,
+          issueLog: [...existingLog, logEntry],
+        });
+
+        issuedItems.push({
+          inventoryItemId: item.id,
+          description: item.description,
+          unit: item.unit,
+          qty: l.qty,
+          unitRate: l.rate,
+          totalValue: l.total,
+        });
+      }
+
+      // 2. Save the connection job record
+      const job = await addJob({
+        date,
+        technicianName: technicianName.trim() || null,
+        subscriberName: selectedSubscriber ? selectedSubscriber.fullName : null,
+        subscriberUsername: selectedSubscriber
+          ? selectedSubscriber.userName
+          : null,
+        subscriberId: selectedSubscriber ? selectedSubscriber.id : null,
+        note: note.trim() || null,
+        items: issuedItems,
+        totalValue: grandTotal,
+      });
+
+      setSavedJob(job);
+      setDone(true);
+    } catch (err) {
+      setErrors({ general: "Failed to save: " + err.message });
+    }
+    setSaving(false);
+  };
+
+  // ── Success State ──────────────────────────────────────────────────────────
+  if (done && savedJob) {
+    return (
+      <div className="space-y-5">
+        <div className="flex flex-col items-center gap-3 py-4 text-center">
+          <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center">
+            <CheckCircle size={32} className="text-green-600" />
+          </div>
+          <div>
+            <p className="text-lg font-bold text-gray-900">
+              Connection Job Saved!
+            </p>
+            <p className="text-sm text-gray-500 mt-1">
+              {savedJob.items.length} item
+              {savedJob.items.length !== 1 ? "s" : ""} issued
+              {savedJob.subscriberName ? ` for ${savedJob.subscriberName}` : ""}
+            </p>
+          </div>
+        </div>
+
+        {/* Job Summary */}
+        <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-3">
+          <div className="flex justify-between text-sm">
+            <span className="text-gray-500">Date</span>
+            <span className="font-semibold">{savedJob.date}</span>
+          </div>
+          {savedJob.technicianName && (
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-500">Technician</span>
+              <span className="font-semibold">{savedJob.technicianName}</span>
+            </div>
+          )}
+          {savedJob.subscriberName && (
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-500">Subscriber</span>
+              <span className="font-semibold">
+                {savedJob.subscriberName}
+                {savedJob.subscriberUsername && (
+                  <span className="text-gray-400 font-normal ml-1">
+                    ({savedJob.subscriberUsername})
+                  </span>
+                )}
+              </span>
+            </div>
+          )}
+          <div className="border-t border-gray-200 pt-3 space-y-1.5">
+            {savedJob.items.map((item, idx) => (
+              <div key={idx} className="flex justify-between text-sm">
+                <span className="text-gray-700">
+                  {item.description}
+                  <span className="text-gray-400 ml-1">
+                    × {item.qty} {item.unit}
+                  </span>
+                </span>
+                <span className="font-semibold text-gray-800">
+                  PKR {item.totalValue.toLocaleString()}
+                </span>
+              </div>
+            ))}
+            <div className="border-t border-gray-300 pt-2 flex justify-between font-bold">
+              <span className="text-gray-800">Total Material Value</span>
+              <span className="text-green-700">
+                PKR {savedJob.totalValue.toLocaleString()}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-sm text-blue-800">
+          <p className="font-semibold mb-1">💡 Next Step</p>
+          <p>
+            When you record this subscriber's first payment, include the
+            material cost (PKR {savedJob.totalValue.toLocaleString()}) together
+            with the package fee as one combined amount.
+          </p>
+        </div>
+
+        <button
+          onClick={onClose}
+          className="w-full py-2.5 bg-gray-900 text-white font-semibold rounded-lg hover:bg-gray-700 transition-colors"
+        >
+          Done
+        </button>
+      </div>
+    );
+  }
+
+  // ── Form ──────────────────────────────────────────────────────────────────
+  return (
+    <div className="space-y-5">
+      {/* Top details */}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs font-bold text-gray-600 mb-1.5">
+            Date <span className="text-red-500">*</span>
+          </label>
+          <input
+            type="date"
+            max={today()}
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-bold text-gray-600 mb-1.5">
+            <Wrench size={11} className="inline mr-1 text-gray-400" />
+            Technician Name
+          </label>
+          <input
+            type="text"
+            placeholder="e.g. Ali"
+            value={technicianName}
+            onChange={(e) => setTechnicianName(e.target.value)}
+            className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+      </div>
+
+      {/* Subscriber picker */}
+      <div className="relative">
+        <label className="block text-xs font-bold text-gray-600 mb-1.5">
+          <User size={11} className="inline mr-1 text-gray-400" />
+          Subscriber (name or username)
+        </label>
+        <div className="relative">
+          <input
+            type="text"
+            placeholder="Search subscriber by name or username…"
+            value={subscriberQuery}
+            onChange={(e) => {
+              setSubscriberQuery(e.target.value);
+              setSelectedSubscriber(null);
+              setShowSubscriberDropdown(true);
+            }}
+            onFocus={() => setShowSubscriberDropdown(true)}
+            className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 pr-8"
+          />
+          <ChevronDown
+            size={14}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+          />
+        </div>
+        {showSubscriberDropdown && filteredSubscribers.length > 0 && (
+          <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl max-h-52 overflow-y-auto">
+            {filteredSubscribers.map((c) => (
+              <button
+                key={c.id}
+                onMouseDown={() => selectSubscriber(c)}
+                className="w-full text-left px-4 py-2.5 hover:bg-blue-50 text-sm flex items-center gap-3 border-b border-gray-100 last:border-0"
+              >
+                <div className="w-7 h-7 rounded-full bg-blue-100 flex items-center justify-center shrink-0">
+                  <User size={13} className="text-blue-600" />
+                </div>
+                <div>
+                  <p className="font-semibold text-gray-900">{c.fullName}</p>
+                  {c.userName && (
+                    <p className="text-xs text-gray-400">{c.userName}</p>
+                  )}
+                </div>
+                <span
+                  className={`ml-auto text-xs px-2 py-0.5 rounded-full font-semibold ${c.status === "active" ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}
+                >
+                  {c.status}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+        {showSubscriberDropdown &&
+          subscriberQuery &&
+          filteredSubscribers.length === 0 && (
+            <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl px-4 py-3 text-sm text-gray-400">
+              No subscribers match "{subscriberQuery}"
+            </div>
+          )}
+      </div>
+
+      {/* Note */}
+      <div>
+        <label className="block text-xs font-bold text-gray-600 mb-1.5">
+          <FileText size={11} className="inline mr-1 text-gray-400" />
+          Note (optional)
+        </label>
+        <input
+          type="text"
+          placeholder="e.g. New connection Gulshan Block 5"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+      </div>
+
+      {/* Items section */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <label className="text-xs font-bold text-gray-600 uppercase tracking-wide">
+            <Package size={11} className="inline mr-1 text-gray-400" />
+            Items to Issue
+          </label>
+          <button
+            onClick={addLine}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            <Plus size={12} /> Add Item
+          </button>
+        </div>
+
+        {lines.length === 0 && (
+          <div className="border-2 border-dashed border-gray-200 rounded-xl py-8 flex flex-col items-center gap-2 text-gray-400">
+            <Package size={24} className="opacity-40" />
+            <p className="text-sm font-medium">No items added yet</p>
+            <button
+              onClick={addLine}
+              className="text-xs text-blue-500 hover:text-blue-700 font-semibold"
+            >
+              + Add first item
+            </button>
+          </div>
+        )}
+
+        <div className="space-y-2">
+          {lineDetails.map((l) => {
+            const usedItemIds = lineDetails
+              .filter((x) => x.id !== l.id && x.itemId)
+              .map((x) => Number(x.itemId));
+            const itemOptions = availableItems.filter(
+              (i) => !usedItemIds.includes(i.id),
+            );
+
+            return (
+              <div
+                key={l.id}
+                className={`border rounded-xl p-3 space-y-2 ${l.overIssue ? "border-red-300 bg-red-50" : "border-gray-200 bg-gray-50"}`}
+              >
+                <div className="flex items-center gap-2">
+                  {/* Item select */}
+                  <div className="flex-1">
+                    <select
+                      value={l.itemId}
+                      onChange={(e) =>
+                        updateLine(l.id, "itemId", e.target.value)
+                      }
+                      className={`w-full border rounded-lg px-3 h-9 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white ${errors[`item_${l.id}`] ? "border-red-400" : "border-gray-300"}`}
+                    >
+                      <option value="">-- Select item --</option>
+                      {itemOptions.map((i) => (
+                        <option key={i.id} value={i.id}>
+                          {i.description} ({i.inHand} {i.unit} available)
+                        </option>
+                      ))}
+                    </select>
+                    {errors[`item_${l.id}`] && (
+                      <p className="text-xs text-red-500 mt-0.5">
+                        {errors[`item_${l.id}`]}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Qty */}
+                  <div className="w-24">
+                    <input
+                      type="number"
+                      min="1"
+                      placeholder="Qty"
+                      value={l.qty}
+                      onChange={(e) => updateLine(l.id, "qty", e.target.value)}
+                      className={`w-full border rounded-lg px-2 h-9 text-sm text-center font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors[`qty_${l.id}`] ? "border-red-400 bg-red-50" : "border-gray-300"}`}
+                    />
+                    {errors[`qty_${l.id}`] && (
+                      <p className="text-xs text-red-500 mt-0.5">
+                        {errors[`qty_${l.id}`]}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Remove */}
+                  <button
+                    onClick={() => removeLine(l.id)}
+                    className="p-1.5 text-gray-400 hover:text-red-500 transition-colors shrink-0"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+
+                {/* Rate + total (only if item selected) */}
+                {l.item && (
+                  <div className="flex items-center gap-3 pl-0.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-gray-500">PKR</span>
+                      <input
+                        type="number"
+                        min="1"
+                        value={l.customRate}
+                        onChange={(e) =>
+                          updateLine(l.id, "customRate", e.target.value)
+                        }
+                        className={`w-24 border rounded-lg px-2 h-8 text-sm text-right font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors[`rate_${l.id}`] ? "border-red-400 bg-red-50" : "border-gray-300"}`}
+                      />
+                      <span className="text-xs text-gray-400">
+                        per {l.item.unit}
+                      </span>
+                      {l.rate !== l.item.unitRate && l.rate > 0 && (
+                        <span className="text-xs text-amber-600 font-semibold">
+                          (custom)
+                        </span>
+                      )}
+                    </div>
+                    {l.qty > 0 && l.rate > 0 && (
+                      <span className="ml-auto text-sm font-bold text-gray-800">
+                        = PKR {l.total.toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {l.overIssue && (
+                  <div className="flex items-center gap-1.5 text-xs text-red-600 font-semibold">
+                    <AlertTriangle size={12} /> Only {l.inHand} {l.item?.unit}{" "}
+                    available in warehouse
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Grand total */}
+      {lines.length > 0 && grandTotal > 0 && (
+        <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 flex justify-between items-center">
+          <div>
+            <p className="text-xs text-green-700 font-semibold uppercase tracking-wide">
+              Total Material Value
+            </p>
+            <p className="text-xs text-green-600 mt-0.5">
+              To be collected from subscriber along with package fee
+            </p>
+          </div>
+          <p className="text-xl font-black text-green-700">
+            PKR {grandTotal.toLocaleString()}
+          </p>
+        </div>
+      )}
+
+      {/* Errors */}
+      {errors.general && (
+        <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-sm text-red-700">
+          <AlertTriangle size={14} /> {errors.general}
+        </div>
+      )}
+
+      {/* Footer */}
+      <div className="flex gap-3 pt-1">
+        <button
+          onClick={onClose}
+          className="flex-1 py-2.5 border border-gray-300 rounded-lg text-sm font-semibold text-gray-700 hover:bg-gray-50"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleSubmit}
+          disabled={saving || lines.length === 0}
+          className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-bold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          {saving ? (
+            "Saving…"
+          ) : (
+            <>
+              <Zap size={15} />
+              Issue All Items
+              {grandTotal > 0 && (
+                <span className="opacity-80">
+                  · PKR {grandTotal.toLocaleString()}
+                </span>
+              )}
+            </>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/components/ui/ConnectionJobsLog.jsx">
+import { useState } from "react";
+import {
+  Search,
+  X,
+  User,
+  Wrench,
+  Package,
+  Calendar,
+  Trash2,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+} from "lucide-react";
+import useConnectionJobStore from "../../store/useConnectionJobStore";
+import { formatDate } from "../../utils/dateUtils";
+
+/**
+ * ConnectionJobsLog
+ * Shows all past connection jobs with filtering by subscriber / technician.
+ * Expandable rows show line-by-line item details.
+ */
+export default function ConnectionJobsLog({ onClose }) {
+  const jobs = useConnectionJobStore((s) => s.jobs);
+  const deleteJob = useConnectionJobStore((s) => s.deleteJob);
+  const [search, setSearch] = useState("");
+  const [expanded, setExpanded] = useState(new Set());
+  const [confirmDelete, setConfirmDelete] = useState(null);
+
+  const filtered = [...jobs]
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .filter((j) => {
+      if (!search.trim()) return true;
+      const q = search.toLowerCase();
+      return (
+        j.subscriberName?.toLowerCase().includes(q) ||
+        j.subscriberUsername?.toLowerCase().includes(q) ||
+        j.technicianName?.toLowerCase().includes(q) ||
+        j.note?.toLowerCase().includes(q) ||
+        j.items?.some((i) => i.description?.toLowerCase().includes(q))
+      );
+    });
+
+  const toggleExpand = (id) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleDelete = async (job) => {
+    await deleteJob(job.id);
+    setConfirmDelete(null);
+  };
+
+  const totalValue = filtered.reduce((s, j) => s + (j.totalValue || 0), 0);
+
+  return (
+    <div className="space-y-4">
+      {/* Summary bar */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-blue-50 border border-blue-100 rounded-xl px-3 py-2.5 text-center">
+          <p className="text-xs text-blue-600 font-semibold uppercase tracking-wide">
+            Jobs
+          </p>
+          <p className="text-xl font-black text-blue-700">{filtered.length}</p>
+        </div>
+        <div className="bg-green-50 border border-green-100 rounded-xl px-3 py-2.5 text-center">
+          <p className="text-xs text-green-600 font-semibold uppercase tracking-wide">
+            Total Value
+          </p>
+          <p className="text-lg font-black text-green-700">
+            PKR {totalValue.toLocaleString()}
+          </p>
+        </div>
+        <div className="bg-purple-50 border border-purple-100 rounded-xl px-3 py-2.5 text-center">
+          <p className="text-xs text-purple-600 font-semibold uppercase tracking-wide">
+            Items Issued
+          </p>
+          <p className="text-xl font-black text-purple-700">
+            {filtered.reduce((s, j) => s + (j.items?.length || 0), 0)}
+          </p>
+        </div>
+      </div>
+
+      {/* Search */}
+      <div className="relative">
+        <Search
+          size={14}
+          className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+        />
+        <input
+          type="text"
+          placeholder="Search by subscriber, technician, item…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-full pl-9 pr-8 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        {search && (
+          <button
+            onClick={() => setSearch("")}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+          >
+            <X size={14} />
+          </button>
+        )}
+      </div>
+
+      {/* Jobs list */}
+      <div className="space-y-2 max-h-[58vh] overflow-y-auto pr-1">
+        {filtered.length === 0 && (
+          <div className="text-center py-12 text-gray-400">
+            <Package size={32} className="mx-auto mb-3 opacity-30" />
+            <p className="font-medium text-gray-500">
+              No connection jobs found
+            </p>
+            <p className="text-xs mt-1">
+              Use "New Connection Job" to issue items for a subscriber
+            </p>
+          </div>
+        )}
+
+        {filtered.map((job) => {
+          const isOpen = expanded.has(job.id);
+          return (
+            <div
+              key={job.id}
+              className="border border-gray-200 rounded-xl overflow-hidden bg-white"
+            >
+              {/* Header row */}
+              <div
+                className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50 transition-colors"
+                onClick={() => toggleExpand(job.id)}
+              >
+                <div className="text-gray-400">
+                  {isOpen ? (
+                    <ChevronDown size={16} />
+                  ) : (
+                    <ChevronRight size={16} />
+                  )}
+                </div>
+
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {job.subscriberName ? (
+                      <span className="font-bold text-gray-900 text-sm">
+                        {job.subscriberName}
+                      </span>
+                    ) : (
+                      <span className="text-gray-400 text-sm italic">
+                        No subscriber recorded
+                      </span>
+                    )}
+                    {job.subscriberUsername && (
+                      <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">
+                        @{job.subscriberUsername}
+                      </span>
+                    )}
+                    {job.technicianName && (
+                      <span className="flex items-center gap-1 text-xs text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full">
+                        <Wrench size={10} /> {job.technicianName}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 mt-0.5">
+                    <span className="flex items-center gap-1 text-xs text-gray-400">
+                      <Calendar size={11} /> {formatDate(job.date)}
+                    </span>
+                    <span className="text-xs text-gray-400">
+                      {job.items?.length || 0} item
+                      {job.items?.length !== 1 ? "s" : ""}
+                    </span>
+                    {job.note && (
+                      <span className="flex items-center gap-1 text-xs text-gray-400 truncate max-w-36">
+                        <FileText size={11} /> {job.note}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="text-right shrink-0">
+                  <p className="font-bold text-gray-900 text-sm">
+                    PKR {(job.totalValue || 0).toLocaleString()}
+                  </p>
+                </div>
+
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setConfirmDelete(job);
+                  }}
+                  className="p-1.5 text-gray-300 hover:text-red-500 transition-colors shrink-0"
+                  title="Delete job"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+
+              {/* Expanded detail */}
+              {isOpen && (
+                <div className="border-t border-gray-100 bg-gray-50 px-4 py-3 space-y-1.5">
+                  {(job.items || []).map((item, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-center justify-between text-sm"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Package size={13} className="text-gray-400 shrink-0" />
+                        <span className="font-medium text-gray-800">
+                          {item.description}
+                        </span>
+                        <span className="text-gray-400">
+                          × {item.qty} {item.unit}
+                        </span>
+                        <span className="text-xs text-gray-400">
+                          @ PKR {item.unitRate}/{item.unit}
+                        </span>
+                      </div>
+                      <span className="font-semibold text-gray-700">
+                        PKR {item.totalValue.toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+                  <div className="border-t border-gray-200 pt-2 flex justify-between font-bold text-sm">
+                    <span className="text-gray-700">Total Material Value</span>
+                    <span className="text-green-700">
+                      PKR {(job.totalValue || 0).toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Delete confirm */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-[999] bg-black/40 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm space-y-4">
+            <p className="font-bold text-gray-900">Delete this job?</p>
+            <p className="text-sm text-gray-500">
+              Job for{" "}
+              <strong>
+                {confirmDelete.subscriberName || "Unknown subscriber"}
+              </strong>{" "}
+              on {formatDate(confirmDelete.date)} will be removed from history.
+              <br />
+              <span className="text-amber-600 font-medium">
+                Note: Inventory changes are NOT reversed.
+              </span>
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirmDelete(null)}
+                className="flex-1 py-2 border border-gray-300 rounded-lg text-sm font-semibold text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleDelete(confirmDelete)}
+                className="flex-1 py-2 bg-red-600 text-white rounded-lg text-sm font-semibold hover:bg-red-700"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <button
+        onClick={onClose}
+        className="w-full py-2.5 border border-gray-300 rounded-lg text-sm font-semibold text-gray-700 hover:bg-gray-50"
+      >
+        Close
+      </button>
+    </div>
   );
 }
 </file>
@@ -1094,525 +1969,6 @@ export default function InvoiceModal({
             </div>
           </div>
         </div>
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="src/components/ui/Issuehistorymodal.jsx">
-import {
-  ArrowUpCircle,
-  User,
-  FileText,
-  Calendar,
-  Package,
-  Inbox,
-} from "lucide-react";
-import { formatDate } from "../../utils/dateUtils";
-
-/**
- * IssueHistoryModal
- * Displays a timeline of all stock issue events for a single inventory item.
- *
- * Props:
- *  item    – the inventory item object
- *  onClose – callback to close
- */
-export default function IssueHistoryModal({ item, onClose }) {
-  const log = Array.isArray(item.issueLog) ? [...item.issueLog].reverse() : [];
-  const totalIssued = log.reduce((sum, e) => sum + (e.qty || 0), 0);
-
-  return (
-    <div className="space-y-4">
-      {/* ── Item summary bar ── */}
-      <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-2.5">
-          <Package size={16} className="text-gray-500" />
-          <div>
-            <p className="font-bold text-gray-900">{item.description}</p>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Unit:{" "}
-              <span className="font-semibold text-gray-700">{item.unit}</span>
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-5 text-center">
-          <div>
-            <p className="text-xs text-gray-400 font-medium">Total Issued</p>
-            <p className="text-lg font-black text-red-500">
-              {item.stockOut || 0}
-            </p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-400 font-medium">In Hand</p>
-            <p
-              className={`text-lg font-black ${(item.inHand ?? 0) === 0 ? "text-red-500" : "text-green-600"}`}
-            >
-              {item.inHand ?? 0}
-            </p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-400 font-medium">Events</p>
-            <p className="text-lg font-black text-gray-700">{log.length}</p>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Timeline ── */}
-      {log.length === 0 ? (
-        <div className="flex flex-col items-center gap-3 py-10 text-center">
-          <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center">
-            <Inbox size={22} className="text-gray-400" />
-          </div>
-          <p className="font-semibold text-gray-500">No issue history yet</p>
-          <p className="text-xs text-gray-400">
-            Use the <strong>Issue</strong> button to record stock being given
-            out.
-          </p>
-        </div>
-      ) : (
-        <div className="relative">
-          {/* vertical line */}
-          <div className="absolute left-4.75 top-0 bottom-0 w-px bg-gray-200" />
-
-          <div className="space-y-3">
-            {log.map((entry, idx) => (
-              <div key={idx} className="flex gap-3 relative">
-                {/* dot */}
-                <div className="shrink-0 w-10 flex justify-center pt-1">
-                  <div className="w-5 h-5 rounded-full bg-red-100 border-2 border-red-400 flex items-center justify-center z-10">
-                    <ArrowUpCircle size={10} className="text-red-500" />
-                  </div>
-                </div>
-
-                {/* card */}
-                <div className="flex-1 bg-white border border-gray-200 rounded-xl px-4 py-3 shadow-sm mb-1">
-                  <div className="flex items-start justify-between gap-2 flex-wrap">
-                    {/* qty badge */}
-                    <div className="flex items-center gap-2">
-                      <span className="bg-red-50 border border-red-200 text-red-700 text-sm font-black px-2.5 py-0.5 rounded-lg">
-                        − {entry.qty} {item.unit}
-                      </span>
-                      {idx === 0 && (
-                        <span className="text-xs bg-blue-50 border border-blue-200 text-blue-600 font-semibold px-2 py-0.5 rounded-full">
-                          Latest
-                        </span>
-                      )}
-                    </div>
-                    {/* date */}
-                    <span className="flex items-center gap-1 text-xs text-gray-400 font-medium whitespace-nowrap">
-                      <Calendar size={11} />
-                      {formatDate(entry.date)}
-                    </span>
-                  </div>
-
-                  {/* issued to */}
-                  {entry.issuedTo && (
-                    <p className="flex items-center gap-1.5 text-sm text-gray-700 font-medium mt-2">
-                      <User size={12} className="text-gray-400 shrink-0" />
-                      {entry.issuedTo}
-                    </p>
-                  )}
-
-                  {/* note */}
-                  {entry.note && (
-                    <p className="flex items-start gap-1.5 text-xs text-gray-500 mt-1.5 leading-relaxed">
-                      <FileText
-                        size={11}
-                        className="text-gray-400 shrink-0 mt-0.5"
-                      />
-                      {entry.note}
-                    </p>
-                  )}
-
-                  {/* running balance */}
-                  <p className="text-xs text-gray-400 mt-2 border-t border-gray-100 pt-1.5">
-                    Balance after this issue:{" "}
-                    <span className="font-semibold text-gray-600">
-                      {entry.balanceAfter} {item.unit}
-                    </span>
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* ── Total summary at bottom ── */}
-          {log.length > 1 && (
-            <div className="ml-10 mt-2 bg-gray-50 border border-gray-200 rounded-xl px-4 py-2.5 flex items-center justify-between text-sm">
-              <span className="text-gray-500 font-medium">
-                Total issued across all events
-              </span>
-              <span className="font-bold text-red-600">
-                {totalIssued} {item.unit}
-              </span>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Close ── */}
-      <div className="flex justify-end pt-1 border-t border-gray-100">
-        <button
-          onClick={onClose}
-          className="px-5 py-2 text-sm font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
-        >
-          Close
-        </button>
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="src/components/ui/IssueStockModal.jsx">
-import { useState } from "react";
-import {
-  ArrowUpCircle,
-  Warehouse,
-  User,
-  FileText,
-  AlertTriangle,
-  CheckCircle,
-  History,
-} from "lucide-react";
-import useInventoryStore from "../../store/useInventoryStore";
-import { today } from "../../utils/dateUtils";
-
-/**
- * IssueStockModal
- * A focused modal for issuing stock out of a specific inventory item.
- * Writes structured entries to item.issueLog (array) for full history tracking.
- *
- * Props:
- *  item        – the inventory item object (required)
- *  onClose     – callback to close the modal
- *  onViewHistory – optional callback to open the history modal
- */
-export default function IssueStockModal({ item, onClose, onViewHistory }) {
-  const updateItem = useInventoryStore((s) => s.updateItem);
-
-  const [qty, setQty] = useState("");
-  const [issuedTo, setIssuedTo] = useState("");
-  const [note, setNote] = useState("");
-  const [date, setDate] = useState(today());
-  const [error, setError] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [done, setDone] = useState(false);
-
-  const currentInHand = item.inHand ?? 0;
-  const issueQty = Number(qty) || 0;
-  const remaining = currentInHand - issueQty;
-
-  const stockAfterPercent =
-    item.quantity > 0 ? Math.max(0, (remaining / item.quantity) * 100) : 0;
-
-  const barColor =
-    remaining <= 0
-      ? "bg-red-500"
-      : stockAfterPercent <= 20
-        ? "bg-amber-400"
-        : "bg-green-500";
-
-  const statusLabel =
-    remaining < 0
-      ? "Over-issuing!"
-      : remaining === 0
-        ? "Stock will be empty"
-        : stockAfterPercent <= 20
-          ? "Low stock after issue"
-          : "Stock OK";
-
-  const statusColor =
-    remaining < 0
-      ? "text-red-600"
-      : remaining === 0
-        ? "text-amber-600"
-        : stockAfterPercent <= 20
-          ? "text-amber-500"
-          : "text-green-600";
-
-  const existingLog = Array.isArray(item.issueLog) ? item.issueLog : [];
-  const historyCount = existingLog.length;
-
-  const handleSubmit = async () => {
-    setError("");
-    if (!issueQty || issueQty <= 0) {
-      setError("Enter a quantity greater than 0.");
-      return;
-    }
-    if (issueQty > currentInHand) {
-      setError(
-        `Only ${currentInHand} ${item.unit}(s) available in hand. Cannot issue more.`,
-      );
-      return;
-    }
-
-    setSaving(true);
-    try {
-      const newStockOut = (item.stockOut || 0) + issueQty;
-      const newInHand = (item.stockIn || 0) - newStockOut;
-
-      // Build structured log entry
-      const logEntry = {
-        date,
-        qty: issueQty,
-        issuedTo: issuedTo.trim() || null,
-        note: note.trim() || null,
-        balanceAfter: newInHand,
-        createdAt: new Date().toISOString(),
-      };
-
-      await updateItem(item.id, {
-        ...item,
-        stockOut: newStockOut,
-        inHand: newInHand,
-        balanced: newInHand,
-        issued: newStockOut,
-        issueLog: [...existingLog, logEntry],
-        // Keep remarks untouched — history is now in issueLog
-      });
-      setDone(true);
-    } catch (err) {
-      setError("Failed to issue stock: " + err.message);
-    }
-    setSaving(false);
-  };
-
-  // ── Success State ──
-  if (done) {
-    return (
-      <div className="flex flex-col items-center gap-4 py-6 text-center">
-        <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center">
-          <CheckCircle size={28} className="text-green-600" />
-        </div>
-        <div>
-          <p className="text-base font-bold text-gray-900">Stock Issued!</p>
-          <p className="text-sm text-gray-500 mt-1">
-            <span className="font-semibold text-red-500">
-              {issueQty} {item.unit}
-            </span>{" "}
-            of <span className="font-semibold">{item.description}</span> issued
-            successfully.
-            <br />
-            <span className="text-gray-400">
-              Remaining in hand:{" "}
-              <span className="font-semibold text-gray-600">
-                {remaining} {item.unit}
-              </span>
-            </span>
-          </p>
-        </div>
-        <div className="flex gap-3 mt-1">
-          {onViewHistory && (
-            <button
-              onClick={() => {
-                onClose();
-                onViewHistory();
-              }}
-              className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
-            >
-              <History size={14} /> View History
-            </button>
-          )}
-          <button
-            onClick={onClose}
-            className="px-6 py-2 bg-gray-900 text-white text-sm font-semibold rounded-lg hover:bg-gray-700 transition-colors"
-          >
-            Close
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Form State ──
-  return (
-    <div className="space-y-5">
-      {/* ── Item Info Banner ── */}
-      <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 flex items-center justify-between gap-4">
-        <div>
-          <p className="text-xs text-gray-400 font-medium uppercase tracking-wide mb-0.5">
-            Item
-          </p>
-          <p className="font-bold text-gray-900 text-base">
-            {item.description}
-          </p>
-          <p className="text-xs text-gray-500 mt-0.5">
-            Unit:{" "}
-            <span className="font-semibold text-gray-700">{item.unit}</span>
-          </p>
-        </div>
-        <div className="flex items-end gap-4">
-          {/* History badge */}
-          {historyCount > 0 && onViewHistory && (
-            <button
-              onClick={() => {
-                onClose();
-                onViewHistory();
-              }}
-              className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-800 transition-colors"
-            >
-              <History size={13} />
-              {historyCount} issue{historyCount !== 1 ? "s" : ""} logged
-            </button>
-          )}
-          <div className="text-right shrink-0">
-            <p className="text-xs text-gray-400 font-medium uppercase tracking-wide mb-0.5">
-              Available In Hand
-            </p>
-            <p
-              className={`text-2xl font-black leading-tight ${
-                currentInHand === 0 ? "text-red-500" : "text-green-600"
-              }`}
-            >
-              {currentInHand}
-            </p>
-            <p className="text-xs text-gray-400">{item.unit}(s)</p>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Out-of-stock warning ── */}
-      {currentInHand === 0 && (
-        <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-sm text-red-700 font-medium">
-          <AlertTriangle size={14} className="shrink-0" />
-          This item is out of stock. No units can be issued.
-        </div>
-      )}
-
-      {/* ── Qty + Date row ── */}
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="block text-xs font-bold text-gray-600 mb-1.5">
-            Quantity to Issue <span className="text-red-500">*</span>
-          </label>
-          <input
-            type="number"
-            min="1"
-            max={currentInHand}
-            disabled={currentInHand === 0}
-            className={`w-full border rounded-lg px-3 h-10 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all disabled:bg-gray-100 disabled:cursor-not-allowed ${
-              error ? "border-red-400 bg-red-50" : "border-gray-300"
-            }`}
-            placeholder={`Max: ${currentInHand}`}
-            value={qty}
-            onChange={(e) => {
-              setQty(e.target.value);
-              setError("");
-            }}
-            autoFocus
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-bold text-gray-600 mb-1.5">
-            Date <span className="text-red-500">*</span>
-          </label>
-          <input
-            type="date"
-            max={today()}
-            className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-          />
-        </div>
-      </div>
-
-      {/* ── Live Stock Preview ── */}
-      {issueQty > 0 && (
-        <div className="bg-white border border-gray-200 rounded-xl px-4 py-3 space-y-2">
-          <div className="flex items-center justify-between text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            <span>Stock After Issuing</span>
-            <span className={statusColor}>{statusLabel}</span>
-          </div>
-          <div className="flex items-center justify-between text-sm font-bold">
-            <span className="text-gray-600">
-              {currentInHand} →{" "}
-              <span
-                className={remaining < 0 ? "text-red-600" : "text-gray-900"}
-              >
-                {remaining}
-              </span>{" "}
-              <span className="font-normal text-gray-400">{item.unit}(s)</span>
-            </span>
-            <span className="text-xs text-gray-400">
-              of {item.quantity} total
-            </span>
-          </div>
-          <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all duration-300 ${barColor}`}
-              style={{
-                width: `${Math.max(0, Math.min(100, stockAfterPercent))}%`,
-              }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* ── Issued To ── */}
-      <div>
-        <label className="block text-xs font-bold text-gray-600 mb-1.5">
-          <span className="flex items-center gap-1.5">
-            <User size={12} /> Issued To
-            <span className="font-normal text-gray-400">(optional)</span>
-          </span>
-        </label>
-        <input
-          className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-          placeholder="e.g. Technician name, customer, department..."
-          value={issuedTo}
-          onChange={(e) => setIssuedTo(e.target.value)}
-        />
-      </div>
-
-      {/* ── Note ── */}
-      <div>
-        <label className="block text-xs font-bold text-gray-600 mb-1.5">
-          <span className="flex items-center gap-1.5">
-            <FileText size={12} /> Note
-            <span className="font-normal text-gray-400">(optional)</span>
-          </span>
-        </label>
-        <input
-          className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-          placeholder="e.g. New connection at Gulshan, fiber repair..."
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-        />
-      </div>
-
-      {/* ── Error ── */}
-      {error && (
-        <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-sm text-red-700 font-medium">
-          <AlertTriangle size={14} className="shrink-0" />
-          {error}
-        </div>
-      )}
-
-      {/* ── Actions ── */}
-      <div className="flex justify-end gap-3 pt-1 border-t border-gray-100">
-        <button
-          onClick={onClose}
-          className="px-5 py-2 text-sm font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={handleSubmit}
-          disabled={saving || currentInHand === 0}
-          className="flex items-center gap-2 px-6 py-2 text-sm font-semibold bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm"
-        >
-          {saving ? (
-            "Issuing..."
-          ) : (
-            <>
-              <ArrowUpCircle size={15} />
-              Issue {issueQty > 0 ? `${issueQty} ${item.unit}` : "Stock"}
-            </>
-          )}
-        </button>
       </div>
     </div>
   );
@@ -3300,6 +3656,73 @@ const inp = () =>
   "border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all w-full";
 </file>
 
+<file path="src/store/useConnectionJobStore.js">
+import { create } from "zustand";
+import { readAll, writeAll } from "../db/database";
+
+// Connection Jobs are stored in the "connectionJobs" table in localStorage.
+// Each job looks like:
+// {
+//   id: number,
+//   date: "2026-03-01",
+//   technicianName: "Ali",
+//   subscriberName: "Ahmed Ali",         // free-text name OR username
+//   subscriberUsername: "ahmed.ali",     // optional - typed username for tracking
+//   note: "New connection Gulshan B5",
+//   items: [
+//     { inventoryItemId: 3, description: "fiber", unit: "meter", qty: 50, unitRate: 25, totalValue: 1250 },
+//     { inventoryItemId: 1, description: "ONU",   unit: "piece", qty: 1,  unitRate: 150, totalValue: 150 },
+//   ],
+//   totalValue: 1400,
+//   createdAt: "ISO string",
+// }
+
+const TABLE = "connectionJobs";
+
+async function getJobs() {
+  const data = await readAll();
+  return data[TABLE] || [];
+}
+
+async function saveJobs(jobs) {
+  const data = await readAll();
+  data[TABLE] = jobs;
+  await writeAll(data);
+}
+
+const useConnectionJobStore = create((set) => ({
+  jobs: [],
+
+  loadJobs: async () => {
+    const jobs = await getJobs();
+    set({ jobs });
+  },
+
+  addJob: async (jobData) => {
+    const existing = await getJobs();
+    const maxId = existing.reduce((m, j) => Math.max(m, Number(j.id) || 0), 0);
+    const newJob = {
+      ...jobData,
+      id: maxId + 1,
+      createdAt: new Date().toISOString(),
+    };
+    const updated = [...existing, newJob];
+    await saveJobs(updated);
+    set({ jobs: updated });
+    return newJob;
+  },
+
+  deleteJob: async (id) => {
+    const existing = await getJobs();
+    const updated = existing.filter((j) => j.id !== id);
+    await saveJobs(updated);
+    set({ jobs: updated });
+  },
+}));
+
+export default useConnectionJobStore;
+</file>
+
 <file path="src/store/useCustomerStore.js">
 import { create } from "zustand";
 import db from "../db/database";
@@ -4032,6 +4455,668 @@ export default function HistoryModal({ customer, onClose }) {
 }
 </file>
 
+<file path="src/components/ui/Issuehistorymodal.jsx">
+import {
+  ArrowUpCircle,
+  User,
+  FileText,
+  Calendar,
+  Package,
+  Inbox,
+  DollarSign,
+} from "lucide-react";
+import { formatDate } from "../../utils/dateUtils";
+
+/**
+ * IssueHistoryModal
+ * Displays a timeline of all stock issue events for a single inventory item.
+ * Now shows per-unit price and total value per issue.
+ *
+ * Props:
+ *  item    – the inventory item object
+ *  onClose – callback to close
+ */
+export default function IssueHistoryModal({ item, onClose }) {
+  const log = Array.isArray(item.issueLog) ? [...item.issueLog].reverse() : [];
+  const totalIssued = log.reduce((sum, e) => sum + (e.qty || 0), 0);
+  const totalIssuedValue = log.reduce(
+    (sum, e) =>
+      sum + (e.totalValue || (e.qty || 0) * (e.unitRate || item.unitRate || 0)),
+    0,
+  );
+
+  return (
+    <div className="space-y-4">
+      {/* ── Item summary bar ── */}
+      <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2.5">
+          <Package size={16} className="text-gray-500" />
+          <div>
+            <p className="font-bold text-gray-900">{item.description}</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Unit:{" "}
+              <span className="font-semibold text-gray-700">{item.unit}</span>
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-5 text-center">
+          <div>
+            <p className="text-xs text-gray-400 font-medium">Total Issued</p>
+            <p className="text-lg font-black text-red-500">
+              {item.stockOut || 0}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-400 font-medium">Total Value</p>
+            <p className="text-base font-black text-orange-600">
+              PKR {totalIssuedValue.toLocaleString()}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-400 font-medium">In Hand</p>
+            <p
+              className={`text-lg font-black ${(item.inHand ?? 0) === 0 ? "text-red-500" : "text-green-600"}`}
+            >
+              {item.inHand ?? 0}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-400 font-medium">Events</p>
+            <p className="text-lg font-black text-gray-700">{log.length}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Timeline ── */}
+      {log.length === 0 ? (
+        <div className="flex flex-col items-center gap-3 py-10 text-center">
+          <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center">
+            <Inbox size={22} className="text-gray-400" />
+          </div>
+          <p className="font-semibold text-gray-500">No issue history yet</p>
+          <p className="text-xs text-gray-400">
+            Use the <strong>Issue</strong> button to record stock being given
+            out.
+          </p>
+        </div>
+      ) : (
+        <div className="relative">
+          {/* vertical line */}
+          <div className="absolute left-4.75 top-0 bottom-0 w-px bg-gray-200" />
+
+          <div className="space-y-3">
+            {log.map((entry, idx) => {
+              const entryRate = entry.unitRate || item.unitRate || 0;
+              const entryValue =
+                entry.totalValue || (entry.qty || 0) * entryRate;
+              return (
+                <div key={idx} className="flex gap-3 relative">
+                  {/* dot */}
+                  <div className="shrink-0 w-10 flex justify-center pt-1">
+                    <div className="w-5 h-5 rounded-full bg-red-100 border-2 border-red-400 flex items-center justify-center z-10">
+                      <ArrowUpCircle size={10} className="text-red-500" />
+                    </div>
+                  </div>
+
+                  {/* card */}
+                  <div className="flex-1 bg-white border border-gray-200 rounded-xl px-4 py-3 shadow-sm mb-1">
+                    <div className="flex items-start justify-between gap-2 flex-wrap">
+                      {/* qty badge + value */}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="bg-red-50 border border-red-200 text-red-700 text-sm font-black px-2.5 py-0.5 rounded-lg">
+                          − {entry.qty} {item.unit}
+                        </span>
+                        <span className="bg-orange-50 border border-orange-200 text-orange-700 text-xs font-semibold px-2 py-0.5 rounded-lg">
+                          PKR {entryValue.toLocaleString()}
+                        </span>
+                        {idx === 0 && (
+                          <span className="text-xs bg-blue-50 border border-blue-200 text-blue-600 font-semibold px-2 py-0.5 rounded-full">
+                            Latest
+                          </span>
+                        )}
+                      </div>
+                      {/* date */}
+                      <span className="flex items-center gap-1 text-xs text-gray-400 font-medium whitespace-nowrap">
+                        <Calendar size={11} />
+                        {formatDate(entry.date)}
+                      </span>
+                    </div>
+
+                    {/* Rate row */}
+                    <div className="flex items-center gap-1.5 text-xs text-gray-500 mt-2">
+                      <DollarSign size={11} className="text-gray-400" />
+                      <span>
+                        PKR {entryRate.toLocaleString()} per {item.unit}
+                        {entryRate !== item.unitRate && (
+                          <span className="ml-1 text-amber-600 font-semibold">
+                            (custom rate)
+                          </span>
+                        )}
+                      </span>
+                    </div>
+
+                    {/* Technician */}
+                    {entry.issuedTo && (
+                      <p className="flex items-center gap-1.5 text-sm text-gray-700 font-medium mt-1.5">
+                        <User size={12} className="text-gray-400 shrink-0" />
+                        Technician: {entry.issuedTo}
+                      </p>
+                    )}
+
+                    {/* Subscriber */}
+                    {entry.subscriberName && (
+                      <p className="flex items-center gap-1.5 text-sm text-gray-700 font-medium mt-1">
+                        <User size={12} className="text-blue-400 shrink-0" />
+                        Subscriber: {entry.subscriberName}
+                      </p>
+                    )}
+
+                    {/* note */}
+                    {entry.note && (
+                      <p className="flex items-start gap-1.5 text-xs text-gray-500 mt-1.5 leading-relaxed">
+                        <FileText
+                          size={11}
+                          className="text-gray-400 shrink-0 mt-0.5"
+                        />
+                        {entry.note}
+                      </p>
+                    )}
+
+                    {/* running balance */}
+                    <p className="text-xs text-gray-400 mt-2 border-t border-gray-100 pt-1.5">
+                      Balance after this issue:{" "}
+                      <span className="font-semibold text-gray-600">
+                        {entry.balanceAfter} {item.unit}
+                      </span>
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* ── Total summary at bottom ── */}
+          {log.length > 1 && (
+            <div className="ml-10 mt-2 bg-gray-50 border border-gray-200 rounded-xl px-4 py-2.5 space-y-1">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-500 font-medium">
+                  Total issued across all {log.length} events
+                </span>
+                <span className="font-bold text-red-600">
+                  {totalIssued} {item.unit}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-500 font-medium">
+                  Total issued value
+                </span>
+                <span className="font-bold text-orange-600">
+                  PKR {totalIssuedValue.toLocaleString()}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Close ── */}
+      <div className="flex justify-end pt-1 border-t border-gray-100">
+        <button
+          onClick={onClose}
+          className="px-5 py-2 text-sm font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/components/ui/IssueStockModal.jsx">
+import { useState } from "react";
+import {
+  ArrowUpCircle,
+  Warehouse,
+  User,
+  FileText,
+  AlertTriangle,
+  CheckCircle,
+  History,
+  DollarSign,
+  TrendingDown,
+} from "lucide-react";
+import useInventoryStore from "../../store/useInventoryStore";
+import { today } from "../../utils/dateUtils";
+
+/**
+ * IssueStockModal
+ * A focused modal for issuing stock out of a specific inventory item.
+ * Supports custom per-unit price override (defaults to item's recorded rate).
+ * Writes structured entries to item.issueLog (array) for full history tracking.
+ *
+ * Props:
+ *  item          – the inventory item object (required)
+ *  onClose       – callback to close the modal
+ *  onViewHistory – optional callback to open the history modal
+ */
+export default function IssueStockModal({ item, onClose, onViewHistory }) {
+  const updateItem = useInventoryStore((s) => s.updateItem);
+
+  const [qty, setQty] = useState("");
+  const [issuedTo, setIssuedTo] = useState("");
+  const [subscriberName, setSubscriberName] = useState("");
+  const [note, setNote] = useState("");
+  const [date, setDate] = useState(today());
+  const [customRate, setCustomRate] = useState(String(item.unitRate || ""));
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const currentInHand = item.inHand ?? 0;
+  const issueQty = Number(qty) || 0;
+  const effectiveRate = Number(customRate) || item.unitRate || 0;
+  const remaining = currentInHand - issueQty;
+  const totalIssueValue = issueQty * effectiveRate;
+
+  const stockAfterPercent =
+    item.quantity > 0 ? Math.max(0, (remaining / item.quantity) * 100) : 0;
+
+  const barColor =
+    remaining <= 0
+      ? "bg-red-500"
+      : stockAfterPercent <= 20
+        ? "bg-amber-400"
+        : "bg-green-500";
+
+  const statusLabel =
+    remaining < 0
+      ? "Over-issuing!"
+      : remaining === 0
+        ? "Stock will be empty"
+        : stockAfterPercent <= 20
+          ? "Low stock after issue"
+          : "Stock OK";
+
+  const statusColor =
+    remaining < 0
+      ? "text-red-600"
+      : remaining === 0
+        ? "text-amber-600"
+        : stockAfterPercent <= 20
+          ? "text-amber-500"
+          : "text-green-600";
+
+  const existingLog = Array.isArray(item.issueLog) ? item.issueLog : [];
+  const historyCount = existingLog.length;
+
+  const handleSubmit = async () => {
+    setError("");
+    if (!issueQty || issueQty <= 0) {
+      setError("Enter a quantity greater than 0.");
+      return;
+    }
+    if (issueQty > currentInHand) {
+      setError(
+        `Only ${currentInHand} ${item.unit}(s) available in hand. Cannot issue more.`,
+      );
+      return;
+    }
+    if (!effectiveRate || effectiveRate <= 0) {
+      setError("Per-unit price must be greater than 0.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const newStockOut = (item.stockOut || 0) + issueQty;
+      const newInHand = (item.stockIn || 0) - newStockOut;
+
+      // Build structured log entry — now includes rate & total value
+      const logEntry = {
+        date,
+        qty: issueQty,
+        unitRate: effectiveRate,
+        totalValue: issueQty * effectiveRate,
+        issuedTo: issuedTo.trim() || null,
+        subscriberName: subscriberName.trim() || null,
+        note: note.trim() || null,
+        balanceAfter: newInHand,
+        createdAt: new Date().toISOString(),
+      };
+
+      await updateItem(item.id, {
+        ...item,
+        stockOut: newStockOut,
+        inHand: newInHand,
+        balanced: newInHand,
+        issued: newStockOut,
+        issueLog: [...existingLog, logEntry],
+      });
+      setDone(true);
+    } catch (err) {
+      setError("Failed to issue stock: " + err.message);
+    }
+    setSaving(false);
+  };
+
+  // ── Success State ──
+  if (done) {
+    return (
+      <div className="flex flex-col items-center gap-4 py-6 text-center">
+        <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center">
+          <CheckCircle size={28} className="text-green-600" />
+        </div>
+        <div>
+          <p className="text-base font-bold text-gray-900">Stock Issued!</p>
+          <p className="text-sm text-gray-500 mt-1">
+            <span className="font-semibold text-red-500">
+              {issueQty} {item.unit}
+            </span>{" "}
+            of <span className="font-semibold">{item.description}</span> issued
+            successfully.
+            <br />
+            <span className="text-gray-400">
+              Total value:{" "}
+              <span className="font-semibold text-gray-700">
+                PKR {totalIssueValue.toLocaleString()}
+              </span>
+            </span>
+            <br />
+            <span className="text-gray-400">
+              Remaining in hand:{" "}
+              <span className="font-semibold text-gray-600">
+                {remaining} {item.unit}
+              </span>
+            </span>
+          </p>
+        </div>
+        <div className="flex gap-3 mt-1">
+          {onViewHistory && (
+            <button
+              onClick={() => {
+                onClose();
+                onViewHistory();
+              }}
+              className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              <History size={14} /> View History
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            className="px-6 py-2 bg-gray-900 text-white text-sm font-semibold rounded-lg hover:bg-gray-700 transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Form State ──
+  return (
+    <div className="space-y-5">
+      {/* ── Item Info Banner ── */}
+      <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 flex items-center justify-between gap-4">
+        <div>
+          <p className="text-xs text-gray-400 font-medium uppercase tracking-wide mb-0.5">
+            Item
+          </p>
+          <p className="font-bold text-gray-900 text-base">
+            {item.description}
+          </p>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Unit:{" "}
+            <span className="font-semibold text-gray-700">{item.unit}</span>
+            {" · "}
+            <span className="text-gray-400">
+              Recorded rate: PKR {(item.unitRate || 0).toLocaleString()}
+            </span>
+          </p>
+        </div>
+        <div className="flex items-end gap-4">
+          {/* History badge */}
+          {historyCount > 0 && onViewHistory && (
+            <button
+              onClick={() => {
+                onClose();
+                onViewHistory();
+              }}
+              className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-800 transition-colors"
+            >
+              <History size={13} />
+              {historyCount} issue{historyCount !== 1 ? "s" : ""} logged
+            </button>
+          )}
+          <div className="text-right shrink-0">
+            <p className="text-xs text-gray-400 font-medium uppercase tracking-wide mb-0.5">
+              Available In Hand
+            </p>
+            <p
+              className={`text-2xl font-black leading-tight ${
+                currentInHand === 0 ? "text-red-500" : "text-green-600"
+              }`}
+            >
+              {currentInHand}
+            </p>
+            <p className="text-xs text-gray-400">{item.unit}(s)</p>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Out-of-stock warning ── */}
+      {currentInHand === 0 && (
+        <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-sm text-red-700 font-medium">
+          <AlertTriangle size={14} className="shrink-0" />
+          This item is out of stock. No units can be issued.
+        </div>
+      )}
+
+      {/* ── Qty + Date + Per Unit Price row ── */}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs font-bold text-gray-600 mb-1.5">
+            Quantity to Issue <span className="text-red-500">*</span>
+          </label>
+          <input
+            type="number"
+            min="1"
+            max={currentInHand}
+            disabled={currentInHand === 0}
+            className={`w-full border rounded-lg px-3 h-10 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all disabled:bg-gray-100 disabled:cursor-not-allowed ${
+              error && (!issueQty || issueQty > currentInHand)
+                ? "border-red-400 bg-red-50"
+                : "border-gray-300"
+            }`}
+            placeholder={`Max: ${currentInHand}`}
+            value={qty}
+            onChange={(e) => {
+              setQty(e.target.value);
+              setError("");
+            }}
+            autoFocus
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-bold text-gray-600 mb-1.5">
+            Date <span className="text-red-500">*</span>
+          </label>
+          <input
+            type="date"
+            max={today()}
+            className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+          />
+        </div>
+
+        {/* Per Unit Price — full width */}
+        <div className="col-span-2">
+          <label className="block text-xs font-bold text-gray-600 mb-1.5">
+            <span className="flex items-center gap-1.5">
+              <DollarSign size={12} /> Per Unit Price (PKR){" "}
+              <span className="text-red-500">*</span>
+              <span className="font-normal text-gray-400">
+                — default is recorded purchase rate
+              </span>
+            </span>
+          </label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 font-semibold pointer-events-none">
+              PKR
+            </span>
+            <input
+              type="number"
+              min="0"
+              className="w-full border border-gray-300 rounded-lg pl-12 pr-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+              value={customRate}
+              placeholder={`Default: ${item.unitRate || 0}`}
+              onChange={(e) => {
+                setCustomRate(e.target.value);
+                setError("");
+              }}
+            />
+          </div>
+          {Number(customRate) !== item.unitRate && item.unitRate > 0 && (
+            <p className="text-xs text-amber-600 font-medium mt-1 flex items-center gap-1">
+              <AlertTriangle size={11} />
+              Rate changed from recorded PKR {item.unitRate?.toLocaleString()} —
+              this only affects this issue entry, not the item record.
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* ── Live Stock + Value Preview ── */}
+      {issueQty > 0 && effectiveRate > 0 && (
+        <div className="bg-white border border-gray-200 rounded-xl px-4 py-3 space-y-2">
+          <div className="flex items-center justify-between text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            <span>Stock After Issuing</span>
+            <span className={statusColor}>{statusLabel}</span>
+          </div>
+          <div className="flex items-center justify-between text-sm font-bold">
+            <span className="text-gray-600">
+              {currentInHand} →{" "}
+              <span
+                className={remaining < 0 ? "text-red-600" : "text-gray-900"}
+              >
+                {remaining}
+              </span>{" "}
+              <span className="font-normal text-gray-400">{item.unit}(s)</span>
+            </span>
+            <span className="text-xs text-gray-400">
+              of {item.quantity} total
+            </span>
+          </div>
+          <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${barColor}`}
+              style={{
+                width: `${Math.max(0, Math.min(100, stockAfterPercent))}%`,
+              }}
+            />
+          </div>
+          {/* Total value of this issue */}
+          <div className="flex items-center justify-between pt-1 border-t border-gray-100">
+            <span className="flex items-center gap-1.5 text-xs text-gray-500 font-medium">
+              <TrendingDown size={12} className="text-red-500" />
+              Total value of this issue
+            </span>
+            <span className="text-sm font-bold text-red-600">
+              PKR {totalIssueValue.toLocaleString()}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ── Issued To (Technician) ── */}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs font-bold text-gray-600 mb-1.5">
+            <span className="flex items-center gap-1.5">
+              <User size={12} /> Technician Name
+              <span className="font-normal text-gray-400">(optional)</span>
+            </span>
+          </label>
+          <input
+            className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            placeholder="e.g. Ali Technician"
+            value={issuedTo}
+            onChange={(e) => setIssuedTo(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-bold text-gray-600 mb-1.5">
+            <span className="flex items-center gap-1.5">
+              <User size={12} /> Subscriber Name
+              <span className="font-normal text-gray-400">(optional)</span>
+            </span>
+          </label>
+          <input
+            className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            placeholder="e.g. Ahmed Ali (customer)"
+            value={subscriberName}
+            onChange={(e) => setSubscriberName(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {/* ── Note ── */}
+      <div>
+        <label className="block text-xs font-bold text-gray-600 mb-1.5">
+          <span className="flex items-center gap-1.5">
+            <FileText size={12} /> Note
+            <span className="font-normal text-gray-400">(optional)</span>
+          </span>
+        </label>
+        <input
+          className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+          placeholder="e.g. New connection at Gulshan, fiber repair..."
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+        />
+      </div>
+
+      {/* ── Error ── */}
+      {error && (
+        <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-sm text-red-700 font-medium">
+          <AlertTriangle size={14} className="shrink-0" />
+          {error}
+        </div>
+      )}
+
+      {/* ── Actions ── */}
+      <div className="flex justify-end gap-3 pt-1 border-t border-gray-100">
+        <button
+          onClick={onClose}
+          className="px-5 py-2 text-sm font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleSubmit}
+          disabled={saving || currentInHand === 0}
+          className="flex items-center gap-2 px-6 py-2 text-sm font-semibold bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm"
+        >
+          {saving ? (
+            "Issuing..."
+          ) : (
+            <>
+              <ArrowUpCircle size={15} />
+              Issue{" "}
+              {issueQty > 0
+                ? `${issueQty} ${item.unit} · PKR ${totalIssueValue.toLocaleString()}`
+                : "Stock"}
+            </>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+</file>
+
 <file path="src/utils/dateUtils.js">
 // src/utils/dateUtils.js
 
@@ -4119,75 +5204,6 @@ function _toYMD(date) {
   const mm = String(date.getMonth() + 1).padStart(2, "0");
   const dd = String(date.getDate()).padStart(2, "0");
   return `${yy}-${mm}-${dd}`;
-}
-</file>
-
-<file path="src/App.jsx">
-import { useEffect, useState } from "react";
-import Navbar from "./components/layout/Navbar";
-import BackupBanner from "./components/ui/BackupBanner";
-import Dashboard from "./pages/Dashboard";
-import Customers from "./pages/Customers/Customers";
-import Inventory from "./pages/Inventory/Inventory";
-import Expenses from "./pages/Expenses/Expenses";
-import Settings from "./pages/Settings";
-import useCustomerStore from "./store/useCustomerStore";
-import usePaymentStore from "./store/usePaymentStore";
-import usePackageStore from "./store/usePackageStore";
-import useInventoryStore from "./store/useInventoryStore";
-import useExpenseStore from "./store/useExpenseStore";
-
-export default function App() {
-  const [tab, setTab] = useState("dashboard");
-  const [customerFilter, setCustomerFilter] = useState("all");
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    Promise.all([
-      useCustomerStore.getState().loadCustomers(),
-      usePaymentStore.getState().loadCycles(),
-      usePackageStore.getState().loadPackages(),
-      useInventoryStore.getState().loadInventory(),
-      useExpenseStore.getState().loadExpenses(),
-    ]).then(() => setLoading(false));
-  }, []);
-
-  const handleNavigate = (targetTab, filterMode = "all") => {
-    setTab(targetTab);
-    setCustomerFilter(filterMode);
-  };
-
-  if (loading) {
-    return (
-      <div className="h-screen flex items-center justify-center text-gray-400 text-sm">
-        Loading Galaxy ISP...
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
-      <Navbar activeTab={tab} onTabChange={(t) => handleNavigate(t, "all")} />
-      <BackupBanner />
-      <main className="flex-1 overflow-auto">
-        <div style={{ display: tab === "dashboard" ? "block" : "none" }}>
-          <Dashboard onNavigate={handleNavigate} />
-        </div>
-        <div style={{ display: tab === "customers" ? "block" : "none" }}>
-          <Customers initialFilter={customerFilter} />
-        </div>
-        <div style={{ display: tab === "inventory" ? "block" : "none" }}>
-          <Inventory />
-        </div>
-        <div style={{ display: tab === "expenses" ? "block" : "none" }}>
-          <Expenses />
-        </div>
-        <div style={{ display: tab === "settings" ? "block" : "none" }}>
-          <Settings />
-        </div>
-      </main>
-    </div>
-  );
 }
 </file>
 
@@ -4910,797 +5926,6 @@ function Field({ label, error, children }) {
       {children}
       {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
     </div>
-  );
-}
-</file>
-
-<file path="src/pages/Inventory/Inventory.jsx">
-import { useState } from "react";
-import {
-  Plus,
-  Search,
-  X,
-  Package,
-  ArrowDownCircle,
-  ArrowUpCircle,
-  Warehouse,
-  Pencil,
-  Trash2,
-  Info,
-  History,
-  AlertTriangle,
-  RefreshCw,
-  TrendingDown,
-  DollarSign,
-  ChevronUp,
-  ChevronDown,
-  ChevronsUpDown,
-} from "lucide-react";
-import Modal from "../../components/ui/Modal";
-import ConfirmDialog from "../../components/ui/ConfirmDialog";
-import InventoryForm from "./InventoryForm";
-import IssueStockModal from "../../components/ui/IssueStockModal";
-import IssueHistoryModal from "../../components/ui/Issuehistorymodal";
-import RestockModal from "../../components/ui/RestockModal";
-import RestockHistoryModal from "../../components/ui/RestockHistoryModal";
-import useInventoryStore from "../../store/useInventoryStore";
-import { formatDate } from "../../utils/dateUtils";
-
-export default function Inventory() {
-  const items = useInventoryStore((s) => s.items);
-  const deleteItem = useInventoryStore((s) => s.deleteItem);
-  const [showAdd, setShowAdd] = useState(false);
-  const [editItem, setEditItem] = useState(null);
-  const [issueItem, setIssueItem] = useState(null);
-  const [historyItem, setHistoryItem] = useState(null);
-  const [restockItem, setRestockItem] = useState(null);
-  const [restockHistoryItem, setRestockHistoryItem] = useState(null);
-  const [deleteTarget, setDeleteTarget] = useState(null);
-  const [search, setSearch] = useState("");
-  const [showHelp, setShowHelp] = useState(false);
-  const [sortField, setSortField] = useState("createdAt"); // default: newest first
-  const [sortDir, setSortDir] = useState("desc");
-
-  const toggleSort = (field) => {
-    if (sortField === field) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
-      setSortField(field);
-      setSortDir(field === "createdAt" || field === "date" ? "desc" : "asc");
-    }
-  };
-
-  const totalCurrentValue = items.reduce(
-    (sum, i) => sum + (i.inHand ?? 0) * (i.unitRate || 0),
-    0,
-  );
-  const totalOriginalCost = items.reduce((sum, i) => sum + (i.amount || 0), 0);
-  const totalIssuedValue = items.reduce(
-    (sum, i) => sum + (i.stockOut || 0) * (i.unitRate || 0),
-    0,
-  );
-
-  const lowStockItems = items.filter((i) => {
-    if (!i.quantity) return false;
-    return (i.inHand ?? 0) / i.quantity <= 0.2 && (i.inHand ?? 0) > 0;
-  });
-  const outOfStockItems = items.filter(
-    (i) => (i.inHand ?? 0) <= 0 && (i.quantity || 0) > 0,
-  );
-
-  const filtered = items.filter(
-    (item) =>
-      item.description?.toLowerCase().includes(search.toLowerCase()) ||
-      item.invoiceNo?.toLowerCase().includes(search.toLowerCase()) ||
-      item.poNo?.toLowerCase().includes(search.toLowerCase()) ||
-      item.remarks?.toLowerCase().includes(search.toLowerCase()),
-  );
-
-  const sortedFiltered = [...filtered].sort((a, b) => {
-    let aVal, bVal;
-    switch (sortField) {
-      case "date":
-        aVal = a.date || "";
-        bVal = b.date || "";
-        break;
-      case "createdAt":
-        aVal = a.createdAt || a.date || "";
-        bVal = b.createdAt || b.date || "";
-        break;
-      case "description":
-        aVal = (a.description || "").toLowerCase();
-        bVal = (b.description || "").toLowerCase();
-        break;
-      case "inHand":
-        aVal = a.inHand ?? 0;
-        bVal = b.inHand ?? 0;
-        break;
-      case "currentValue":
-        aVal = (a.inHand ?? 0) * (a.unitRate || 0);
-        bVal = (b.inHand ?? 0) * (b.unitRate || 0);
-        break;
-      default:
-        aVal = a.createdAt || "";
-        bVal = b.createdAt || "";
-    }
-    if (aVal < bVal) return sortDir === "asc" ? -1 : 1;
-    if (aVal > bVal) return sortDir === "asc" ? 1 : -1;
-    return 0;
-  });
-
-  const getStockColor = (inHand, quantity) => {
-    if (!quantity) return "text-gray-500";
-    const ratio = inHand / quantity;
-    if (ratio > 0.5) return "text-green-600 font-bold";
-    if (ratio > 0.2) return "text-amber-600 font-bold";
-    return "text-red-600 font-bold";
-  };
-
-  const getStockBadge = (inHand, quantity) => {
-    if (!quantity) return null;
-    const ratio = inHand / quantity;
-    if (ratio <= 0)
-      return (
-        <span className="text-xs bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full font-semibold">
-          Out
-        </span>
-      );
-    if (ratio <= 0.2)
-      return (
-        <span className="text-xs bg-amber-100 text-amber-600 px-1.5 py-0.5 rounded-full font-semibold">
-          Low
-        </span>
-      );
-    return null;
-  };
-
-  return (
-    <div className="p-4 space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-lg font-bold text-gray-900">Inventory</h1>
-            <button
-              onClick={() => setShowHelp((v) => !v)}
-              className={`transition-colors ${showHelp ? "text-blue-500" : "text-gray-400 hover:text-blue-500"}`}
-              title="How does inventory work?"
-            >
-              <Info size={16} />
-            </button>
-          </div>
-          <p className="text-xs text-gray-500 mt-0.5">
-            {items.length} items tracked
-          </p>
-        </div>
-        <button
-          onClick={() => setShowAdd(true)}
-          className="flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-sm transition-colors"
-        >
-          <Plus size={15} /> Add Item
-        </button>
-      </div>
-
-      {/* Help Panel */}
-      {showHelp && (
-        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-3">
-          <div className="flex items-start justify-between">
-            <p className="font-bold text-blue-800">How Inventory Works</p>
-            <button
-              onClick={() => setShowHelp(false)}
-              className="text-blue-400 hover:text-blue-600"
-            >
-              <X size={15} />
-            </button>
-          </div>
-          <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-            <div className="bg-white border border-blue-100 rounded-xl p-3 space-y-1">
-              <p className="font-semibold text-gray-800 flex items-center gap-1.5">
-                <ArrowDownCircle size={14} className="text-green-600" /> Buying
-                Stock
-              </p>
-              <p className="text-xs text-gray-500 leading-relaxed">
-                Click <strong>Add Item</strong> the first time you buy
-                something.
-              </p>
-            </div>
-            <div className="bg-white border border-blue-100 rounded-xl p-3 space-y-1">
-              <p className="font-semibold text-gray-800 flex items-center gap-1.5">
-                <RefreshCw size={14} className="text-green-500" /> Restocking
-              </p>
-              <p className="text-xs text-gray-500 leading-relaxed">
-                When you buy more of the same item months later, click{" "}
-                <strong>Restock</strong>.
-              </p>
-            </div>
-            <div className="bg-white border border-blue-100 rounded-xl p-3 space-y-1">
-              <p className="font-semibold text-gray-800 flex items-center gap-1.5">
-                <ArrowUpCircle size={14} className="text-red-500" /> Issuing
-              </p>
-              <p className="text-xs text-gray-500 leading-relaxed">
-                Click <strong>Issue</strong> to give stock to a technician. In
-                Hand updates live.
-              </p>
-            </div>
-            <div className="bg-white border border-amber-100 rounded-xl p-3 space-y-1">
-              <p className="font-semibold text-gray-800 flex items-center gap-1.5">
-                <History size={14} className="text-purple-600" /> History
-              </p>
-              <p className="text-xs text-gray-500 leading-relaxed">
-                Each item shows two history buttons — one for{" "}
-                <strong>issues</strong>, one for <strong>restocks</strong>.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Alerts */}
-      {(lowStockItems.length > 0 || outOfStockItems.length > 0) && (
-        <div className="space-y-2">
-          {outOfStockItems.map((item) => (
-            <div
-              key={item.id}
-              className="flex items-center justify-between bg-red-50 border border-red-200 rounded-xl px-4 py-2.5"
-            >
-              <div className="flex items-center gap-2.5">
-                <AlertTriangle size={15} className="text-red-500 shrink-0" />
-                <span className="text-sm font-bold text-red-700">
-                  {item.description}
-                </span>
-                <span className="text-xs text-red-500">
-                  — Out of Stock (0 {item.unit})
-                </span>
-              </div>
-              <button
-                onClick={() => setRestockItem(item)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors whitespace-nowrap"
-              >
-                <RefreshCw size={11} /> Restock Now
-              </button>
-            </div>
-          ))}
-          {lowStockItems.map((item) => (
-            <div
-              key={item.id}
-              className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5"
-            >
-              <div className="flex items-center gap-2.5">
-                <AlertTriangle size={15} className="text-amber-500 shrink-0" />
-                <span className="text-sm font-bold text-amber-700">
-                  {item.description}
-                </span>
-                <span className="text-xs text-amber-600">
-                  — Low Stock: {item.inHand} {item.unit} left (
-                  {Math.round(((item.inHand ?? 0) / item.quantity) * 100)}%)
-                </span>
-              </div>
-              <button
-                onClick={() => setRestockItem(item)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors whitespace-nowrap"
-              >
-                <RefreshCw size={11} /> Restock
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Summary Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {/* Card 1 — Current Stock Value */}
-        <div className="col-span-2 lg:col-span-1 bg-white border border-gray-200 rounded-xl px-4 py-3">
-          <div className="flex items-center gap-2 mb-1.5">
-            <div className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center shrink-0">
-              <Package size={14} className="text-blue-600" />
-            </div>
-            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide leading-tight">
-              Current Stock Value
-            </span>
-          </div>
-          <p className="text-2xl font-black text-gray-900 leading-tight">
-            PKR {totalCurrentValue.toLocaleString()}
-          </p>
-          <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
-            What your warehouse stock is worth <em>right now</em> — in-hand qty
-            × unit rate. Updates when you issue or restock.
-          </p>
-        </div>
-
-        {/* Card 2 — Items */}
-        <div className="bg-white border border-gray-200 rounded-xl px-4 py-3">
-          <div className="flex items-center gap-2 mb-1.5">
-            <div className="w-7 h-7 rounded-lg bg-gray-100 flex items-center justify-center shrink-0">
-              <Warehouse size={14} className="text-gray-500" />
-            </div>
-            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-              Items Tracked
-            </span>
-          </div>
-          <p className="text-2xl font-black text-gray-900 leading-tight">
-            {items.length}
-          </p>
-          <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
-            Unique stock types being tracked in your warehouse.
-          </p>
-        </div>
-
-        {/* Card 3 — Total Purchased */}
-        <div className="bg-white border border-gray-200 rounded-xl px-4 py-3">
-          <div className="flex items-center gap-2 mb-1.5">
-            <div className="w-7 h-7 rounded-lg bg-green-100 flex items-center justify-center shrink-0">
-              <DollarSign size={14} className="text-green-600" />
-            </div>
-            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-              Total Purchased
-            </span>
-          </div>
-          <p className="text-2xl font-black text-gray-900 leading-tight">
-            PKR {totalOriginalCost.toLocaleString()}
-          </p>
-          <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
-            Total money spent buying stock — across all purchases ever made.
-          </p>
-        </div>
-
-        {/* Card 4 — Total Issued */}
-        <div className="bg-white border border-gray-200 rounded-xl px-4 py-3">
-          <div className="flex items-center gap-2 mb-1.5">
-            <div className="w-7 h-7 rounded-lg bg-red-100 flex items-center justify-center shrink-0">
-              <TrendingDown size={14} className="text-red-500" />
-            </div>
-            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-              Total Issued
-            </span>
-          </div>
-          <p className="text-2xl font-black text-red-500 leading-tight">
-            PKR {totalIssuedValue.toLocaleString()}
-          </p>
-          <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
-            Value of stock already given out to technicians for field work.
-          </p>
-        </div>
-      </div>
-
-      {/* Search */}
-      <div className="relative">
-        <Search
-          size={14}
-          className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
-        />
-        <input
-          type="text"
-          placeholder="Search by description, invoice no, PO or remarks..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="w-full pl-9 pr-9 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-        />
-        {search && (
-          <button
-            onClick={() => setSearch("")}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-          >
-            <X size={14} />
-          </button>
-        )}
-      </div>
-
-      {/* Table */}
-      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm border-collapse">
-            <thead>
-              <tr className="bg-gray-50 border-b border-gray-200 text-gray-500 text-left text-xs uppercase tracking-wide">
-                {/* Purchase Date — sortable */}
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  <button
-                    onClick={() => toggleSort("date")}
-                    className="flex items-center gap-1 hover:text-gray-800 transition-colors group/th"
-                    title="Purchase Date — the date you entered when adding this item"
-                  >
-                    Purchase Date
-                    <SortIcon
-                      field="date"
-                      sortField={sortField}
-                      sortDir={sortDir}
-                    />
-                  </button>
-                </th>
-
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  Invoice / PO
-                </th>
-
-                {/* Description — sortable */}
-                <th className="px-3 py-3 font-semibold">
-                  <button
-                    onClick={() => toggleSort("description")}
-                    className="flex items-center gap-1 hover:text-gray-800 transition-colors"
-                  >
-                    Description
-                    <SortIcon
-                      field="description"
-                      sortField={sortField}
-                      sortDir={sortDir}
-                    />
-                  </button>
-                </th>
-
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  Unit
-                </th>
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  <span
-                    className="flex items-center gap-1"
-                    title="Total stock received into warehouse"
-                  >
-                    <ArrowDownCircle size={11} className="text-green-500" /> In
-                  </span>
-                </th>
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  <span
-                    className="flex items-center gap-1"
-                    title="Total stock issued to technicians"
-                  >
-                    <ArrowUpCircle size={11} className="text-red-400" /> Out
-                  </span>
-                </th>
-
-                {/* In Hand — sortable */}
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  <button
-                    onClick={() => toggleSort("inHand")}
-                    className="flex items-center gap-1 hover:text-gray-800 transition-colors"
-                  >
-                    <Warehouse size={11} className="text-purple-500" /> In Hand
-                    <SortIcon
-                      field="inHand"
-                      sortField={sortField}
-                      sortDir={sortDir}
-                    />
-                  </button>
-                </th>
-
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  Rate
-                </th>
-
-                {/* Current Value — sortable */}
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  <button
-                    onClick={() => toggleSort("currentValue")}
-                    className="flex items-center gap-1 hover:text-gray-800 transition-colors"
-                  >
-                    Current Value
-                    <SortIcon
-                      field="currentValue"
-                      sortField={sortField}
-                      sortDir={sortDir}
-                    />
-                  </button>
-                </th>
-
-                <th className="px-3 py-3 font-semibold whitespace-nowrap">
-                  Remarks
-                </th>
-                <th
-                  className="px-3 py-3 font-semibold whitespace-nowrap"
-                  style={{ minWidth: "210px" }}
-                >
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {sortedFiltered.map((item) => {
-                const issueLogCount = Array.isArray(item.issueLog)
-                  ? item.issueLog.length
-                  : 0;
-                const restockLogCount = Array.isArray(item.restockLog)
-                  ? item.restockLog.length
-                  : 0;
-                const currentValue = (item.inHand ?? 0) * (item.unitRate || 0);
-                const isOutOfStock = (item.inHand ?? 0) <= 0;
-
-                return (
-                  <tr
-                    key={item.id}
-                    className="hover:bg-blue-50/40 transition-colors group"
-                  >
-                    {/* Purchase Date — with tooltip explaining what it means */}
-                    <td className="px-3 py-3 whitespace-nowrap text-xs text-gray-500">
-                      <div className="font-medium text-gray-700">
-                        {formatDate(item.date)}
-                      </div>
-                      <div
-                        className="text-gray-400 text-xs mt-0.5"
-                        title="Date this item was added to the system"
-                      >
-                        Added{" "}
-                        {formatDate(
-                          (item.createdAt || item.date || "").slice(0, 10),
-                        )}
-                      </div>
-                    </td>
-
-                    <td className="px-3 py-3 text-xs text-gray-500 whitespace-nowrap">
-                      <div>
-                        {item.invoiceNo || (
-                          <span className="text-gray-300">—</span>
-                        )}
-                      </div>
-                      {item.poNo && (
-                        <div className="text-gray-400">{item.poNo}</div>
-                      )}
-                    </td>
-
-                    <td className="px-3 py-3 font-semibold text-gray-900">
-                      {item.description}
-                    </td>
-
-                    <td className="px-3 py-3">
-                      <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full whitespace-nowrap">
-                        {item.unit}
-                      </span>
-                    </td>
-
-                    <td className="px-3 py-3 text-green-600 font-medium text-xs whitespace-nowrap">
-                      {item.stockIn || 0}
-                    </td>
-
-                    <td className="px-3 py-3 text-red-500 font-medium text-xs whitespace-nowrap">
-                      {item.stockOut || 0}
-                    </td>
-
-                    <td className="px-3 py-3 whitespace-nowrap">
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          className={getStockColor(item.inHand, item.quantity)}
-                        >
-                          {item.inHand}
-                        </span>
-                        {getStockBadge(item.inHand, item.quantity)}
-                      </div>
-                    </td>
-
-                    <td className="px-3 py-3 text-gray-600 text-xs whitespace-nowrap">
-                      PKR {item.unitRate?.toLocaleString()}
-                    </td>
-
-                    <td className="px-3 py-3 font-semibold text-gray-900 whitespace-nowrap">
-                      PKR {currentValue.toLocaleString()}
-                    </td>
-
-                    <td className="px-3 py-3" style={{ maxWidth: "120px" }}>
-                      {item.remarks ? (
-                        <span
-                          title={item.remarks}
-                          className="block text-xs text-gray-400 truncate cursor-help underline decoration-dotted decoration-gray-300 underline-offset-2 hover:text-gray-700 transition-colors"
-                        >
-                          {item.remarks}
-                        </span>
-                      ) : (
-                        <span className="text-gray-300 text-xs">—</span>
-                      )}
-                    </td>
-
-                    {/* Actions — 2 neat rows */}
-                    <td className="px-3 py-3">
-                      <div className="flex flex-col gap-1">
-                        {/* Row 1: Restock + Restock History */}
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => setRestockItem(item)}
-                            title="Add more stock (new bulk purchase)"
-                            className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold bg-green-50 text-green-700 border border-green-200 hover:bg-green-100 transition-colors whitespace-nowrap"
-                          >
-                            <RefreshCw size={11} /> Restock
-                          </button>
-                          <button
-                            onClick={() => setRestockHistoryItem(item)}
-                            title={
-                              restockLogCount > 0
-                                ? `${restockLogCount} restock purchase${restockLogCount !== 1 ? "s" : ""} — click to view`
-                                : "No restock history yet"
-                            }
-                            className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold border transition-colors whitespace-nowrap ${
-                              restockLogCount > 0
-                                ? "bg-green-50 text-green-700 border-green-200 hover:bg-green-100"
-                                : "bg-gray-50 text-gray-400 border-gray-200 cursor-default"
-                            }`}
-                          >
-                            <History size={11} />
-                            <span>
-                              {restockLogCount > 0 ? restockLogCount : "0"}
-                            </span>
-                          </button>
-                        </div>
-
-                        {/* Row 2: Issue + Issue History + Edit + Delete */}
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => setIssueItem(item)}
-                            disabled={isOutOfStock}
-                            title={
-                              isOutOfStock
-                                ? "Out of stock — restock first"
-                                : `Issue ${item.description} to a technician`
-                            }
-                            className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold border transition-colors whitespace-nowrap ${
-                              !isOutOfStock
-                                ? "bg-red-50 text-red-600 border-red-200 hover:bg-red-100"
-                                : "bg-gray-50 text-gray-300 border-gray-200 cursor-not-allowed"
-                            }`}
-                          >
-                            <ArrowUpCircle size={11} /> Issue
-                          </button>
-                          <button
-                            onClick={() => setHistoryItem(item)}
-                            title={
-                              issueLogCount > 0
-                                ? `${issueLogCount} issue event${issueLogCount !== 1 ? "s" : ""} — click to view`
-                                : "No issues recorded yet"
-                            }
-                            className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold border transition-colors whitespace-nowrap ${
-                              issueLogCount > 0
-                                ? "bg-purple-50 text-purple-600 border-purple-200 hover:bg-purple-100"
-                                : "bg-gray-50 text-gray-400 border-gray-200 cursor-default"
-                            }`}
-                          >
-                            <History size={11} />
-                            <span>
-                              {issueLogCount > 0 ? issueLogCount : "0"}
-                            </span>
-                          </button>
-                          <button
-                            onClick={() => setEditItem(item)}
-                            title="Edit item"
-                            className="p-1 rounded-md text-gray-300 hover:text-blue-600 hover:bg-blue-50 transition-colors opacity-0 group-hover:opacity-100"
-                          >
-                            <Pencil size={13} />
-                          </button>
-                          <button
-                            onClick={() => setDeleteTarget(item)}
-                            title="Delete item"
-                            className="p-1 rounded-md text-gray-300 hover:text-red-600 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        </div>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-
-              {sortedFiltered.length === 0 && (
-                <tr>
-                  <td colSpan={11} className="px-3 py-14 text-center">
-                    <div className="flex flex-col items-center gap-2">
-                      <Package size={32} className="text-gray-300" />
-                      <p className="font-medium text-gray-500">
-                        {search
-                          ? "No items match your search"
-                          : "No inventory items yet"}
-                      </p>
-                      {!search && (
-                        <p className="text-xs text-gray-400">
-                          Click <strong>Add Item</strong> to record your first
-                          stock purchase
-                        </p>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Modals */}
-      <Modal
-        isOpen={showAdd}
-        onClose={() => setShowAdd(false)}
-        title="Add Inventory Item"
-        size="lg"
-      >
-        <InventoryForm onClose={() => setShowAdd(false)} />
-      </Modal>
-
-      <Modal
-        isOpen={!!editItem}
-        onClose={() => setEditItem(null)}
-        title="Edit Inventory Item"
-        size="lg"
-      >
-        {editItem && (
-          <InventoryForm item={editItem} onClose={() => setEditItem(null)} />
-        )}
-      </Modal>
-
-      <Modal
-        isOpen={!!restockItem}
-        onClose={() => setRestockItem(null)}
-        title={`Restock — ${restockItem?.description ?? ""}`}
-        size="md"
-      >
-        {restockItem && (
-          <RestockModal
-            item={restockItem}
-            onClose={() => setRestockItem(null)}
-            onViewHistory={() => {
-              setRestockHistoryItem(restockItem);
-              setRestockItem(null);
-            }}
-          />
-        )}
-      </Modal>
-
-      <Modal
-        isOpen={!!restockHistoryItem}
-        onClose={() => setRestockHistoryItem(null)}
-        title={`Purchase History — ${restockHistoryItem?.description ?? ""}`}
-        size="md"
-      >
-        {restockHistoryItem && (
-          <RestockHistoryModal
-            item={restockHistoryItem}
-            onClose={() => setRestockHistoryItem(null)}
-          />
-        )}
-      </Modal>
-
-      <Modal
-        isOpen={!!issueItem}
-        onClose={() => setIssueItem(null)}
-        title="Issue Stock"
-        size="md"
-      >
-        {issueItem && (
-          <IssueStockModal
-            item={issueItem}
-            onClose={() => setIssueItem(null)}
-            onViewHistory={() => setHistoryItem(issueItem)}
-          />
-        )}
-      </Modal>
-
-      <Modal
-        isOpen={!!historyItem}
-        onClose={() => setHistoryItem(null)}
-        title="Issue History"
-        size="md"
-      >
-        {historyItem && (
-          <IssueHistoryModal
-            item={historyItem}
-            onClose={() => setHistoryItem(null)}
-          />
-        )}
-      </Modal>
-
-      <ConfirmDialog
-        isOpen={!!deleteTarget}
-        onClose={() => setDeleteTarget(null)}
-        onConfirm={() => deleteItem(deleteTarget.id)}
-        title="Delete Inventory Item"
-        message={`Delete "${deleteTarget?.description}"? All stock data and history for this item will be permanently removed.`}
-        confirmText={deleteTarget?.description}
-        requirePassword
-        danger
-      />
-    </div>
-  );
-}
-
-function SortIcon({ field, sortField, sortDir }) {
-  if (sortField !== field)
-    return <ChevronsUpDown size={11} className="text-gray-300" />;
-  return sortDir === "asc" ? (
-    <ChevronUp size={11} className="text-blue-500" />
-  ) : (
-    <ChevronDown size={11} className="text-blue-500" />
   );
 }
 </file>
@@ -6893,6 +7118,77 @@ export const setupDevTools = () => {
 };
 </file>
 
+<file path="src/App.jsx">
+import { useEffect, useState } from "react";
+import Navbar from "./components/layout/Navbar";
+import BackupBanner from "./components/ui/BackupBanner";
+import Dashboard from "./pages/Dashboard";
+import Customers from "./pages/Customers/Customers";
+import Inventory from "./pages/Inventory/Inventory";
+import Expenses from "./pages/Expenses/Expenses";
+import Settings from "./pages/Settings";
+import useCustomerStore from "./store/useCustomerStore";
+import usePaymentStore from "./store/usePaymentStore";
+import usePackageStore from "./store/usePackageStore";
+import useInventoryStore from "./store/useInventoryStore";
+import useExpenseStore from "./store/useExpenseStore";
+import useConnectionJobStore from "./store/useConnectionJobStore";
+
+export default function App() {
+  const [tab, setTab] = useState("dashboard");
+  const [customerFilter, setCustomerFilter] = useState("all");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.all([
+      useCustomerStore.getState().loadCustomers(),
+      usePaymentStore.getState().loadCycles(),
+      usePackageStore.getState().loadPackages(),
+      useInventoryStore.getState().loadInventory(),
+      useExpenseStore.getState().loadExpenses(),
+      useConnectionJobStore.getState().loadJobs(),
+    ]).then(() => setLoading(false));
+  }, []);
+
+  const handleNavigate = (targetTab, filterMode = "all") => {
+    setTab(targetTab);
+    setCustomerFilter(filterMode);
+  };
+
+  if (loading) {
+    return (
+      <div className="h-screen flex items-center justify-center text-gray-400 text-sm">
+        Loading Galaxy ISP...
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 flex flex-col">
+      <Navbar activeTab={tab} onTabChange={(t) => handleNavigate(t, "all")} />
+      <BackupBanner />
+      <main className="flex-1 overflow-auto">
+        <div style={{ display: tab === "dashboard" ? "block" : "none" }}>
+          <Dashboard onNavigate={handleNavigate} />
+        </div>
+        <div style={{ display: tab === "customers" ? "block" : "none" }}>
+          <Customers initialFilter={customerFilter} />
+        </div>
+        <div style={{ display: tab === "inventory" ? "block" : "none" }}>
+          <Inventory />
+        </div>
+        <div style={{ display: tab === "expenses" ? "block" : "none" }}>
+          <Expenses />
+        </div>
+        <div style={{ display: tab === "settings" ? "block" : "none" }}>
+          <Settings />
+        </div>
+      </main>
+    </div>
+  );
+}
+</file>
+
 <file path="src/pages/Customers/Customers.jsx">
 import { useState, useEffect } from "react";
 import {
@@ -7507,6 +7803,781 @@ export default function Customers({ initialFilter }) {
         danger
       />
     </div>
+  );
+}
+</file>
+
+<file path="src/pages/Inventory/Inventory.jsx">
+import { useState } from "react";
+import {
+  Plus,
+  Search,
+  X,
+  Package,
+  ArrowDownCircle,
+  ArrowUpCircle,
+  Warehouse,
+  Pencil,
+  Trash2,
+  Info,
+  History,
+  AlertTriangle,
+  RefreshCw,
+  TrendingDown,
+  DollarSign,
+  ChevronUp,
+  ChevronDown,
+  ChevronsUpDown,
+  Zap,
+  ClipboardList,
+} from "lucide-react";
+import Modal from "../../components/ui/Modal";
+import ConfirmDialog from "../../components/ui/ConfirmDialog";
+import InventoryForm from "./InventoryForm";
+import IssueStockModal from "../../components/ui/IssueStockModal";
+import IssueHistoryModal from "../../components/ui/Issuehistorymodal";
+import RestockModal from "../../components/ui/RestockModal";
+import RestockHistoryModal from "../../components/ui/RestockHistoryModal";
+import ConnectionJobModal from "../../components/ui/ConnectionJobModal";
+import ConnectionJobsLog from "../../components/ui/ConnectionJobsLog";
+import useInventoryStore from "../../store/useInventoryStore";
+import { formatDate } from "../../utils/dateUtils";
+
+export default function Inventory() {
+  const items = useInventoryStore((s) => s.items);
+  const deleteItem = useInventoryStore((s) => s.deleteItem);
+  const [showAdd, setShowAdd] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const [issueItem, setIssueItem] = useState(null);
+  const [historyItem, setHistoryItem] = useState(null);
+  const [restockItem, setRestockItem] = useState(null);
+  const [restockHistoryItem, setRestockHistoryItem] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [search, setSearch] = useState("");
+  const [showHelp, setShowHelp] = useState(false);
+  const [sortField, setSortField] = useState("createdAt");
+  const [sortDir, setSortDir] = useState("desc");
+  const [showConnectionJob, setShowConnectionJob] = useState(false);
+  const [showJobsLog, setShowJobsLog] = useState(false);
+
+  const toggleSort = (field) => {
+    if (sortField === field) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortField(field);
+      setSortDir(field === "createdAt" || field === "date" ? "desc" : "asc");
+    }
+  };
+
+  const totalCurrentValue = items.reduce(
+    (sum, i) => sum + (i.inHand ?? 0) * (i.unitRate || 0),
+    0,
+  );
+  const totalOriginalCost = items.reduce((sum, i) => sum + (i.amount || 0), 0);
+  const totalIssuedValue = items.reduce(
+    (sum, i) => sum + (i.stockOut || 0) * (i.unitRate || 0),
+    0,
+  );
+
+  const lowStockItems = items.filter((i) => {
+    if (!i.quantity) return false;
+    return (i.inHand ?? 0) / i.quantity <= 0.2 && (i.inHand ?? 0) > 0;
+  });
+  const outOfStockItems = items.filter(
+    (i) => (i.inHand ?? 0) <= 0 && (i.quantity || 0) > 0,
+  );
+
+  const filtered = items.filter(
+    (item) =>
+      item.description?.toLowerCase().includes(search.toLowerCase()) ||
+      item.invoiceNo?.toLowerCase().includes(search.toLowerCase()) ||
+      item.poNo?.toLowerCase().includes(search.toLowerCase()) ||
+      item.remarks?.toLowerCase().includes(search.toLowerCase()),
+  );
+
+  const sortedFiltered = [...filtered].sort((a, b) => {
+    let aVal, bVal;
+    switch (sortField) {
+      case "date":
+        aVal = a.date || "";
+        bVal = b.date || "";
+        break;
+      case "createdAt":
+        aVal = a.createdAt || a.date || "";
+        bVal = b.createdAt || b.date || "";
+        break;
+      case "description":
+        aVal = (a.description || "").toLowerCase();
+        bVal = (b.description || "").toLowerCase();
+        break;
+      case "inHand":
+        aVal = a.inHand ?? 0;
+        bVal = b.inHand ?? 0;
+        break;
+      case "currentValue":
+        aVal = (a.inHand ?? 0) * (a.unitRate || 0);
+        bVal = (b.inHand ?? 0) * (b.unitRate || 0);
+        break;
+      default:
+        aVal = a.createdAt || "";
+        bVal = b.createdAt || "";
+    }
+    if (aVal < bVal) return sortDir === "asc" ? -1 : 1;
+    if (aVal > bVal) return sortDir === "asc" ? 1 : -1;
+    return 0;
+  });
+
+  const getStockColor = (inHand, quantity) => {
+    if (!quantity) return "text-gray-500";
+    const ratio = inHand / quantity;
+    if (ratio > 0.5) return "text-green-600 font-bold";
+    if (ratio > 0.2) return "text-amber-600 font-bold";
+    return "text-red-600 font-bold";
+  };
+
+  const getStockBadge = (inHand, quantity) => {
+    if (!quantity) return null;
+    const ratio = inHand / quantity;
+    if (ratio <= 0)
+      return (
+        <span className="text-xs bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full font-semibold">
+          Out
+        </span>
+      );
+    if (ratio <= 0.2)
+      return (
+        <span className="text-xs bg-amber-100 text-amber-600 px-1.5 py-0.5 rounded-full font-semibold">
+          Low
+        </span>
+      );
+    return null;
+  };
+
+  return (
+    <div className="p-4 space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <h1 className="text-lg font-bold text-gray-900">Inventory</h1>
+            <button
+              onClick={() => setShowHelp((v) => !v)}
+              className={`transition-colors ${showHelp ? "text-blue-500" : "text-gray-400 hover:text-blue-500"}`}
+              title="How does inventory work?"
+            >
+              <Info size={16} />
+            </button>
+          </div>
+          <p className="text-xs text-gray-500 mt-0.5">
+            {items.length} items tracked
+          </p>
+        </div>
+
+        {/* Action buttons */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* View Jobs Log */}
+          <button
+            onClick={() => setShowJobsLog(true)}
+            className="flex items-center gap-2 px-3 py-2 text-sm font-semibold border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 shadow-sm transition-colors"
+          >
+            <ClipboardList size={15} /> Jobs Log
+          </button>
+
+          {/* New Connection Job — highlighted */}
+          <button
+            onClick={() => setShowConnectionJob(true)}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-green-600 text-white rounded-lg hover:bg-green-700 shadow-sm transition-colors"
+          >
+            <Zap size={15} /> New Connection Job
+          </button>
+
+          {/* Add Item */}
+          <button
+            onClick={() => setShowAdd(true)}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-sm transition-colors"
+          >
+            <Plus size={15} /> Add Item
+          </button>
+        </div>
+      </div>
+
+      {/* Help Panel */}
+      {showHelp && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-3">
+          <div className="flex items-start justify-between">
+            <p className="font-bold text-blue-800">How Inventory Works</p>
+            <button
+              onClick={() => setShowHelp(false)}
+              className="text-blue-400 hover:text-blue-600"
+            >
+              <X size={15} />
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+            <div className="bg-white border border-blue-100 rounded-xl p-3 space-y-1">
+              <p className="font-semibold text-gray-800 flex items-center gap-1.5">
+                <ArrowDownCircle size={14} className="text-green-600" /> Buying
+                Stock
+              </p>
+              <p className="text-xs text-gray-500 leading-relaxed">
+                Click <strong>Add Item</strong> the first time you buy
+                something.
+              </p>
+            </div>
+            <div className="bg-white border border-blue-100 rounded-xl p-3 space-y-1">
+              <p className="font-semibold text-gray-800 flex items-center gap-1.5">
+                <RefreshCw size={14} className="text-green-500" /> Restocking
+              </p>
+              <p className="text-xs text-gray-500 leading-relaxed">
+                When you buy more of the same item later, click{" "}
+                <strong>Restock</strong>.
+              </p>
+            </div>
+            <div className="bg-white border border-blue-100 rounded-xl p-3 space-y-1">
+              <p className="font-semibold text-gray-800 flex items-center gap-1.5">
+                <Zap size={14} className="text-green-600" /> Connection Job
+              </p>
+              <p className="text-xs text-gray-500 leading-relaxed">
+                Issue <strong>multiple items at once</strong> for a new
+                subscriber connection. Tracks who got what.
+              </p>
+            </div>
+            <div className="bg-white border border-amber-100 rounded-xl p-3 space-y-1">
+              <p className="font-semibold text-gray-800 flex items-center gap-1.5">
+                <History size={14} className="text-purple-600" /> History
+              </p>
+              <p className="text-xs text-gray-500 leading-relaxed">
+                Each item shows history buttons for <strong>issues</strong> and{" "}
+                <strong>restocks</strong>.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Alerts */}
+      {(lowStockItems.length > 0 || outOfStockItems.length > 0) && (
+        <div className="space-y-2">
+          {outOfStockItems.map((item) => (
+            <div
+              key={item.id}
+              className="flex items-center justify-between bg-red-50 border border-red-200 rounded-xl px-4 py-2.5"
+            >
+              <div className="flex items-center gap-2.5">
+                <AlertTriangle size={15} className="text-red-500 shrink-0" />
+                <span className="text-sm font-bold text-red-700">
+                  {item.description}
+                </span>
+                <span className="text-xs text-red-500">
+                  — Out of Stock (0 {item.unit})
+                </span>
+              </div>
+              <button
+                onClick={() => setRestockItem(item)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors whitespace-nowrap"
+              >
+                <RefreshCw size={11} /> Restock Now
+              </button>
+            </div>
+          ))}
+          {lowStockItems.map((item) => (
+            <div
+              key={item.id}
+              className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5"
+            >
+              <div className="flex items-center gap-2.5">
+                <AlertTriangle size={15} className="text-amber-500 shrink-0" />
+                <span className="text-sm font-bold text-amber-700">
+                  {item.description}
+                </span>
+                <span className="text-xs text-amber-600">
+                  — Low Stock: {item.inHand} {item.unit} left (
+                  {Math.round(((item.inHand ?? 0) / item.quantity) * 100)}%)
+                </span>
+              </div>
+              <button
+                onClick={() => setRestockItem(item)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors whitespace-nowrap"
+              >
+                <RefreshCw size={11} /> Restock
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="col-span-2 lg:col-span-1 bg-white border border-gray-200 rounded-xl px-4 py-3">
+          <div className="flex items-center gap-2 mb-1.5">
+            <div className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center shrink-0">
+              <Package size={14} className="text-blue-600" />
+            </div>
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide leading-tight">
+              Current Stock Value
+            </span>
+          </div>
+          <p className="text-2xl font-black text-gray-900 leading-tight">
+            PKR {totalCurrentValue.toLocaleString()}
+          </p>
+          <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
+            What your warehouse stock is worth <em>right now</em> — in-hand qty
+            × unit rate. Updates when you issue or restock.
+          </p>
+        </div>
+
+        <div className="bg-white border border-gray-200 rounded-xl px-4 py-3">
+          <div className="flex items-center gap-2 mb-1.5">
+            <div className="w-7 h-7 rounded-lg bg-gray-100 flex items-center justify-center shrink-0">
+              <Warehouse size={14} className="text-gray-500" />
+            </div>
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              Items Tracked
+            </span>
+          </div>
+          <p className="text-2xl font-black text-gray-900 leading-tight">
+            {items.length}
+          </p>
+          <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
+            Unique stock types being tracked in your warehouse.
+          </p>
+        </div>
+
+        <div className="bg-white border border-gray-200 rounded-xl px-4 py-3">
+          <div className="flex items-center gap-2 mb-1.5">
+            <div className="w-7 h-7 rounded-lg bg-green-100 flex items-center justify-center shrink-0">
+              <DollarSign size={14} className="text-green-600" />
+            </div>
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              Total Purchased
+            </span>
+          </div>
+          <p className="text-2xl font-black text-gray-900 leading-tight">
+            PKR {totalOriginalCost.toLocaleString()}
+          </p>
+          <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
+            Total money spent buying stock — across all purchases ever made.
+          </p>
+        </div>
+
+        <div className="bg-white border border-gray-200 rounded-xl px-4 py-3">
+          <div className="flex items-center gap-2 mb-1.5">
+            <div className="w-7 h-7 rounded-lg bg-red-100 flex items-center justify-center shrink-0">
+              <TrendingDown size={14} className="text-red-500" />
+            </div>
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              Total Issued
+            </span>
+          </div>
+          <p className="text-2xl font-black text-red-500 leading-tight">
+            PKR {totalIssuedValue.toLocaleString()}
+          </p>
+          <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
+            Value of stock already given out to technicians for field work.
+          </p>
+        </div>
+      </div>
+
+      {/* Search */}
+      <div className="relative">
+        <Search
+          size={14}
+          className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+        />
+        <input
+          type="text"
+          placeholder="Search by description, invoice no, PO or remarks..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-full pl-9 pr-9 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+        />
+        {search && (
+          <button
+            onClick={() => setSearch("")}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+          >
+            <X size={14} />
+          </button>
+        )}
+      </div>
+
+      {/* Table */}
+      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-900 text-white text-left">
+                <th
+                  className="px-3 py-3 font-semibold text-xs whitespace-nowrap cursor-pointer select-none"
+                  onClick={() => toggleSort("date")}
+                >
+                  <div className="flex items-center gap-1">
+                    Purchase Date{" "}
+                    <SortIcon
+                      field="date"
+                      sortField={sortField}
+                      sortDir={sortDir}
+                    />
+                  </div>
+                </th>
+                <th className="px-3 py-3 font-semibold text-xs whitespace-nowrap">
+                  INVOICE / PO
+                </th>
+                <th
+                  className="px-3 py-3 font-semibold text-xs whitespace-nowrap cursor-pointer select-none"
+                  onClick={() => toggleSort("description")}
+                >
+                  <div className="flex items-center gap-1">
+                    Description{" "}
+                    <SortIcon
+                      field="description"
+                      sortField={sortField}
+                      sortDir={sortDir}
+                    />
+                  </div>
+                </th>
+                <th className="px-3 py-3 font-semibold text-xs whitespace-nowrap">
+                  UNIT
+                </th>
+                <th className="px-3 py-3 font-semibold text-xs whitespace-nowrap text-green-400">
+                  <div className="flex items-center gap-1">
+                    <ArrowDownCircle size={12} />
+                    IN
+                  </div>
+                </th>
+                <th className="px-3 py-3 font-semibold text-xs whitespace-nowrap text-red-400">
+                  <div className="flex items-center gap-1">
+                    <ArrowUpCircle size={12} />
+                    OUT
+                  </div>
+                </th>
+                <th
+                  className="px-3 py-3 font-semibold text-xs whitespace-nowrap cursor-pointer select-none text-purple-300"
+                  onClick={() => toggleSort("inHand")}
+                >
+                  <div className="flex items-center gap-1">
+                    In Hand{" "}
+                    <SortIcon
+                      field="inHand"
+                      sortField={sortField}
+                      sortDir={sortDir}
+                    />
+                  </div>
+                </th>
+                <th className="px-3 py-3 font-semibold text-xs whitespace-nowrap">
+                  RATE
+                </th>
+                <th
+                  className="px-3 py-3 font-semibold text-xs whitespace-nowrap cursor-pointer select-none"
+                  onClick={() => toggleSort("currentValue")}
+                >
+                  <div className="flex items-center gap-1">
+                    Current Value{" "}
+                    <SortIcon
+                      field="currentValue"
+                      sortField={sortField}
+                      sortDir={sortDir}
+                    />
+                  </div>
+                </th>
+                <th className="px-3 py-3 font-semibold text-xs whitespace-nowrap">
+                  REMARKS
+                </th>
+                <th className="px-3 py-3 font-semibold text-xs whitespace-nowrap">
+                  ACTIONS
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {sortedFiltered.map((item) => {
+                const issueLogCount = Array.isArray(item.issueLog)
+                  ? item.issueLog.length
+                  : 0;
+                const restockLogCount = Array.isArray(item.restockLog)
+                  ? item.restockLog.length
+                  : 0;
+                const currentValue = (item.inHand ?? 0) * (item.unitRate || 0);
+                const isOutOfStock = (item.inHand ?? 0) <= 0;
+
+                return (
+                  <tr
+                    key={item.id}
+                    className="group hover:bg-gray-50 transition-colors"
+                  >
+                    <td className="px-3 py-3 whitespace-nowrap">
+                      <p className="font-semibold text-gray-800 text-xs">
+                        {formatDate(item.date)}
+                      </p>
+                      <p className="text-gray-400 text-[10px]">
+                        Added {formatDate(item.createdAt || item.date)}
+                      </p>
+                    </td>
+                    <td className="px-3 py-3 text-gray-500 text-xs">
+                      {item.invoiceNo || item.poNo ? (
+                        <div>
+                          {item.invoiceNo && <p>INV: {item.invoiceNo}</p>}
+                          {item.poNo && <p>PO: {item.poNo}</p>}
+                        </div>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                    <td className="px-3 py-3">
+                      <p className="font-bold text-gray-900">
+                        {item.description}
+                      </p>
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className="inline-block px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded-full">
+                        {item.unit}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3 font-bold text-green-600">
+                      {item.stockIn || 0}
+                    </td>
+                    <td className="px-3 py-3 font-bold text-red-500">
+                      {item.stockOut || 0}
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className={getStockColor(item.inHand, item.quantity)}
+                        >
+                          {item.inHand}
+                        </span>
+                        {getStockBadge(item.inHand, item.quantity)}
+                      </div>
+                    </td>
+                    <td className="px-3 py-3 text-gray-700 font-medium text-xs">
+                      PKR {(item.unitRate || 0).toLocaleString()}
+                    </td>
+                    <td className="px-3 py-3 font-bold text-gray-800 text-xs">
+                      PKR {currentValue.toLocaleString()}
+                    </td>
+                    <td className="px-3 py-3 text-xs text-gray-500 max-w-32 truncate">
+                      {item.remarks || "—"}
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="flex flex-col gap-1.5">
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => setRestockItem(item)}
+                            className="flex items-center gap-1 px-2 py-1 text-xs font-semibold bg-green-50 text-green-700 border border-green-200 rounded-md hover:bg-green-100 transition-colors whitespace-nowrap"
+                          >
+                            <RefreshCw size={10} /> Restock
+                          </button>
+                          <button
+                            onClick={() => setRestockHistoryItem(item)}
+                            title={`${restockLogCount} restock event(s)`}
+                            className="flex items-center gap-0.5 px-1.5 py-1 text-xs font-semibold text-gray-400 border border-gray-200 rounded-md hover:bg-gray-50 transition-colors"
+                          >
+                            <History size={11} />
+                            <span>{restockLogCount || "0"}</span>
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => {
+                              if (!isOutOfStock) setIssueItem(item);
+                            }}
+                            disabled={isOutOfStock}
+                            className={`flex items-center gap-1 px-2 py-1 text-xs font-semibold border rounded-md transition-colors whitespace-nowrap ${
+                              isOutOfStock
+                                ? "bg-gray-50 text-gray-300 border-gray-200 cursor-not-allowed"
+                                : "bg-red-50 text-red-700 border-red-200 hover:bg-red-100"
+                            }`}
+                          >
+                            <ArrowUpCircle size={10} /> Issue
+                          </button>
+                          <button
+                            onClick={() => setHistoryItem(item)}
+                            title={
+                              issueLogCount > 0
+                                ? `${issueLogCount} issue event(s) — click to view`
+                                : "No issue history"
+                            }
+                            className={`flex items-center gap-0.5 px-1.5 py-1 text-xs font-semibold border rounded-md transition-colors ${
+                              issueLogCount > 0
+                                ? "text-purple-600 border-purple-200 bg-purple-50 hover:bg-purple-100"
+                                : "text-gray-400 border-gray-200 hover:bg-gray-50"
+                            }`}
+                          >
+                            <History size={11} />
+                            <span>
+                              {issueLogCount > 0 ? issueLogCount : "0"}
+                            </span>
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            onClick={() => setEditItem(item)}
+                            title="Edit item"
+                            className="p-1 rounded-md text-gray-300 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                          >
+                            <Pencil size={13} />
+                          </button>
+                          <button
+                            onClick={() => setDeleteTarget(item)}
+                            title="Delete item"
+                            className="p-1 rounded-md text-gray-300 hover:text-red-600 hover:bg-red-50 transition-colors"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+
+              {sortedFiltered.length === 0 && (
+                <tr>
+                  <td colSpan={11} className="px-3 py-14 text-center">
+                    <div className="flex flex-col items-center gap-2">
+                      <Package size={32} className="text-gray-300" />
+                      <p className="font-medium text-gray-500">
+                        {search
+                          ? "No items match your search"
+                          : "No inventory items yet"}
+                      </p>
+                      {!search && (
+                        <p className="text-xs text-gray-400">
+                          Click <strong>Add Item</strong> to record your first
+                          stock purchase
+                        </p>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* ── Modals ── */}
+      <Modal
+        isOpen={showAdd}
+        onClose={() => setShowAdd(false)}
+        title="Add Inventory Item"
+        size="lg"
+      >
+        <InventoryForm onClose={() => setShowAdd(false)} />
+      </Modal>
+
+      <Modal
+        isOpen={!!editItem}
+        onClose={() => setEditItem(null)}
+        title="Edit Inventory Item"
+        size="lg"
+      >
+        {editItem && (
+          <InventoryForm item={editItem} onClose={() => setEditItem(null)} />
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={!!restockItem}
+        onClose={() => setRestockItem(null)}
+        title={`Restock — ${restockItem?.description ?? ""}`}
+        size="md"
+      >
+        {restockItem && (
+          <RestockModal
+            item={restockItem}
+            onClose={() => setRestockItem(null)}
+            onViewHistory={() => {
+              setRestockHistoryItem(restockItem);
+              setRestockItem(null);
+            }}
+          />
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={!!restockHistoryItem}
+        onClose={() => setRestockHistoryItem(null)}
+        title={`Purchase History — ${restockHistoryItem?.description ?? ""}`}
+        size="md"
+      >
+        {restockHistoryItem && (
+          <RestockHistoryModal
+            item={restockHistoryItem}
+            onClose={() => setRestockHistoryItem(null)}
+          />
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={!!issueItem}
+        onClose={() => setIssueItem(null)}
+        title="Issue Stock"
+        size="md"
+      >
+        {issueItem && (
+          <IssueStockModal
+            item={issueItem}
+            onClose={() => setIssueItem(null)}
+            onViewHistory={() => setHistoryItem(issueItem)}
+          />
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={!!historyItem}
+        onClose={() => setHistoryItem(null)}
+        title="Issue History"
+        size="md"
+      >
+        {historyItem && (
+          <IssueHistoryModal
+            item={historyItem}
+            onClose={() => setHistoryItem(null)}
+          />
+        )}
+      </Modal>
+
+      {/* New Connection Job Modal */}
+      <Modal
+        isOpen={showConnectionJob}
+        onClose={() => setShowConnectionJob(false)}
+        title="New Connection Job"
+        size="lg"
+      >
+        <ConnectionJobModal onClose={() => setShowConnectionJob(false)} />
+      </Modal>
+
+      {/* Connection Jobs Log Modal */}
+      <Modal
+        isOpen={showJobsLog}
+        onClose={() => setShowJobsLog(false)}
+        title="Connection Jobs Log"
+        size="lg"
+      >
+        <ConnectionJobsLog onClose={() => setShowJobsLog(false)} />
+      </Modal>
+
+      <ConfirmDialog
+        isOpen={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => deleteItem(deleteTarget.id)}
+        title="Delete Inventory Item"
+        message={`Delete "${deleteTarget?.description}"? All stock data and history for this item will be permanently removed.`}
+        confirmText={deleteTarget?.description}
+        requirePassword
+        danger
+      />
+    </div>
+  );
+}
+
+function SortIcon({ field, sortField, sortDir }) {
+  if (sortField !== field)
+    return <ChevronsUpDown size={11} className="text-gray-300" />;
+  return sortDir === "asc" ? (
+    <ChevronUp size={11} className="text-blue-500" />
+  ) : (
+    <ChevronDown size={11} className="text-blue-500" />
   );
 }
 </file>
@@ -8805,7 +9876,7 @@ function PaymentHistory({
 </file>
 
 <file path="src/pages/Dashboard.jsx">
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Users,
   TrendingUp,
@@ -8821,6 +9892,7 @@ import {
   EyeOff,
   Package,
   RefreshCw,
+  Info,
 } from "lucide-react";
 import useCustomerStore from "../store/useCustomerStore";
 import usePaymentStore from "../store/usePaymentStore";
@@ -8867,15 +9939,11 @@ export default function Dashboard({ onNavigate }) {
   const [payCustomer, setPayCustomer] = useState(null);
   const [mode, setMode] = useState("alltime"); // alltime | monthly | daily
 
-  // Date state for Monthly view
   const now = new Date();
   const [selYear, setSelYear] = useState(now.getFullYear());
   const [selMonth, setSelMonth] = useState(now.getMonth());
-
-  // Date state for Daily view
   const [selDate, setSelDate] = useState(today());
 
-  // Monthly Navigation
   const prevMonth = () => {
     if (selMonth === 0) {
       setSelMonth(11);
@@ -8892,14 +9960,14 @@ export default function Dashboard({ onNavigate }) {
   const isCurrentMonth =
     selYear === now.getFullYear() && selMonth === now.getMonth();
 
-  // ── Stats Calculation ─────────────────────────────────────────────
+  // ── Stats ────────────────────────────────────────────────────────────────────
   const activeCustomers = customers.filter((c) => !c.isArchived);
 
-  // 1. ALL TIME STATS
+  // 1. ALL TIME
   let at_collected = 0,
     at_pending = 0,
-    at_overdueMoney = 0;
-  let at_overdueCount = 0;
+    at_overdueMoney = 0,
+    at_overdueCount = 0;
   let at_activeCount = 0,
     at_suspendedCount = 0,
     at_totalEver = 0;
@@ -8911,19 +9979,14 @@ export default function Dashboard({ onNavigate }) {
     if (c.status === "suspended") at_suspendedCount++;
     const cycle = getLatestCycle(cycles, c.id);
     if (!cycle) return;
-
     at_collected += cycle.amountPaid || 0;
     at_pending += cycle.amountPending || 0;
-
     const bal = cycle.amountPending || 0;
     if (bal > 0) {
       if (c.status === "suspended") at_suspendedBalance += bal;
       else at_pendingStatusBalance += bal;
     }
-
     const days = daysUntil(cycle.cycleEndDate);
-
-    // Overdue Logic (Pending AND Expired)
     if (cycle.amountPending > 0 && days < 0) {
       at_overdueCount++;
       at_overdueMoney += cycle.amountPending;
@@ -8936,12 +9999,14 @@ export default function Dashboard({ onNavigate }) {
     });
   });
 
-  // All-time inventory value — FIXED: inHand × unitRate (real current value)
+  // Warehouse stock value = money you already spent buying materials still sitting in your store.
+  // This IS your cost. You paid PKR 19,000 for cable — that PKR 19,000 is gone from your pocket.
+  // As you issue cable and collect the cable money from subscribers (included in their payment),
+  // the warehouse stock decreases and Net Income naturally improves.
   const at_inventoryValue = inventoryItems.reduce(
     (s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0),
     0,
   );
-
   const at_totalExpenses = expenses.reduce(
     (s, e) => s + (Number(e.amount) || 0),
     0,
@@ -8960,10 +10025,14 @@ export default function Dashboard({ onNavigate }) {
     suspendedBalance: at_suspendedBalance,
     totalExpenses: at_totalExpenses,
     inventoryValue: at_inventoryValue,
+    // Net Income = Total ever received − Recorded expenses − Current warehouse stock value
+    // The warehouse stock IS a cost you have already paid. As subscribers pay you for
+    // materials (included in their connection fee), your "Ever Collected" goes up and
+    // the warehouse stock goes down — so Net Income grows naturally. Correct!
     netIncome: at_totalEver - at_totalExpenses - at_inventoryValue,
   };
 
-  // 2. MONTHLY STATS
+  // 2. MONTHLY
   const monthStart = new Date(selYear, selMonth, 1);
   const monthEnd = new Date(selYear, selMonth + 1, 0, 23, 59, 59);
   let mo_collected = 0,
@@ -8981,14 +10050,11 @@ export default function Dashboard({ onNavigate }) {
     }
     const cycle = getLatestCycle(cycles, c.id);
     if (!cycle) return;
-
     const cycleStart = new Date(cycle.cycleStartDate);
     const cycleEnd = new Date(cycle.cycleEndDate);
     if (cycleStart > monthEnd || cycleEnd < monthStart) return;
-
     mo_collected += cycle.amountPaid || 0;
     mo_pending += cycle.amountPending || 0;
-
     const days = daysUntil(cycle.cycleEndDate);
     if (cycle.amountPending === 0) mo_clearedCount++;
     else if (days < 0) {
@@ -9004,7 +10070,6 @@ export default function Dashboard({ onNavigate }) {
     })
     .reduce((s, e) => s + (Number(e.amount) || 0), 0);
 
-  // Monthly inventory value — FIXED: inHand × unitRate
   const mo_inventoryValue = inventoryItems
     .filter((i) => {
       const d = new Date(i.date);
@@ -9012,8 +10077,18 @@ export default function Dashboard({ onNavigate }) {
     })
     .reduce((s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0), 0);
 
+  let mo_totalCollected = 0;
+  cycles.forEach((cy) => {
+    (cy.installments || []).forEach((inst) => {
+      const d = new Date(inst.datePaid);
+      if (d >= monthStart && d <= monthEnd)
+        mo_totalCollected += inst.amountPaid || 0;
+    });
+  });
+
   const monthly = {
     collected: mo_collected,
+    totalCollected: mo_totalCollected,
     pending: mo_pending,
     overdueMoney: mo_overdueMoney,
     newCustomers: mo_newCustomers,
@@ -9022,32 +10097,25 @@ export default function Dashboard({ onNavigate }) {
     overdueCount: mo_overdueCount,
     totalExpenses: mo_expenses,
     inventoryValue: mo_inventoryValue,
-    netIncome: mo_collected - mo_expenses - mo_inventoryValue,
+    netIncome: mo_totalCollected - mo_expenses - mo_inventoryValue,
+    pendingStatusBalance: 0,
+    suspendedBalance: 0,
   };
 
-  // 3. DAILY STATS
-  let day_collected = 0;
-  let day_newCustomers = 0;
-
+  // 3. DAILY
+  let day_collected = 0,
+    day_newCustomers = 0;
   cycles.forEach((cy) => {
     (cy.installments || []).forEach((inst) => {
-      if (inst.datePaid === selDate) {
-        day_collected += inst.amountPaid || 0;
-      }
+      if (inst.datePaid === selDate) day_collected += inst.amountPaid || 0;
     });
   });
-
   activeCustomers.forEach((c) => {
-    if (c.createdAt && c.createdAt.startsWith(selDate)) {
-      day_newCustomers++;
-    }
+    if (c.createdAt && c.createdAt.startsWith(selDate)) day_newCustomers++;
   });
-
   const day_expenses = expenses
     .filter((e) => e.date === selDate)
     .reduce((s, e) => s + (Number(e.amount) || 0), 0);
-
-  // Daily inventory value — FIXED: inHand × unitRate
   const day_inventoryValue = inventoryItems
     .filter((i) => i.date === selDate)
     .reduce((s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0), 0);
@@ -9060,7 +10128,7 @@ export default function Dashboard({ onNavigate }) {
     netIncome: day_collected - day_expenses - day_inventoryValue,
   };
 
-  // ── Inventory Stock Alerts ─────────────────────────────────────────
+  // ── Alerts ───────────────────────────────────────────────────────────────────
   const outOfStockInventory = inventoryItems.filter(
     (i) => (i.inHand ?? 0) <= 0 && (i.quantity || 0) > 0,
   );
@@ -9070,7 +10138,6 @@ export default function Dashboard({ onNavigate }) {
     return ratio <= 0.2 && (i.inHand ?? 0) > 0;
   });
 
-  // ── Urgent Customers Logic ─────────────────────────────────────────
   const urgentCustomers = activeCustomers
     .map((c) => ({ customer: c, cycle: getLatestCycle(cycles, c.id) }))
     .filter(({ cycle }) => {
@@ -9085,7 +10152,6 @@ export default function Dashboard({ onNavigate }) {
     });
 
   const displayStats = mode === "monthly" ? monthly : allTime;
-
   const totalAttentionCount =
     urgentCustomers.length +
     outOfStockInventory.length +
@@ -9100,24 +10166,19 @@ export default function Dashboard({ onNavigate }) {
           <p className="text-sm text-gray-500 mt-0.5">{today()}</p>
         </div>
         <div className="flex items-center gap-1 bg-gray-200 rounded-lg p-1">
-          <button
-            onClick={() => setMode("alltime")}
-            className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === "alltime" ? "bg-white text-gray-900 shadow" : "text-gray-500 hover:text-gray-800"}`}
-          >
-            All Time
-          </button>
-          <button
-            onClick={() => setMode("monthly")}
-            className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === "monthly" ? "bg-white text-gray-900 shadow" : "text-gray-500 hover:text-gray-800"}`}
-          >
-            Monthly
-          </button>
-          <button
-            onClick={() => setMode("daily")}
-            className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === "daily" ? "bg-white text-gray-900 shadow" : "text-gray-500 hover:text-gray-800"}`}
-          >
-            Daily
-          </button>
+          {["alltime", "monthly", "daily"].map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === m ? "bg-white text-gray-900 shadow" : "text-gray-500 hover:text-gray-800"}`}
+            >
+              {m === "alltime"
+                ? "All Time"
+                : m === "monthly"
+                  ? "Monthly"
+                  : "Daily"}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -9159,15 +10220,13 @@ export default function Dashboard({ onNavigate }) {
         </div>
       )}
 
-      {/* ─── CARDS GRID ─── */}
-
+      {/* CARDS */}
       {mode !== "daily" ? (
         <>
-          {/* Top Row: 4 Columns */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <BigCard
               icon={<Users size={16} />}
-              label="Total Customers"
+              label="Total Subscribers"
               value={
                 mode === "monthly"
                   ? monthly.newCustomers
@@ -9185,14 +10244,24 @@ export default function Dashboard({ onNavigate }) {
               label={
                 mode === "monthly" ? "Collected This Month" : "Ever Collected"
               }
-              value={`PKR ${mode === "monthly" ? monthly.collected.toLocaleString() : allTime.totalEverCollected.toLocaleString()}`}
+              value={`PKR ${(mode === "monthly" ? monthly.totalCollected : allTime.totalEverCollected).toLocaleString()}`}
               sub={
                 mode === "monthly"
                   ? "Payments received this month"
-                  : "Sum of all payments ever"
+                  : "Sum of all payments ever received"
               }
               color="green"
               isSensitive={true}
+              infoContent={
+                mode === "alltime"
+                  ? {
+                      type: "everCollected",
+                      totalCycles: cycles.length,
+                      totalSubscribers: activeCustomers.length,
+                      pendingBalance: allTime.pending,
+                    }
+                  : null
+              }
             />
             <BigCard
               icon={<XCircle size={16} />}
@@ -9216,13 +10285,12 @@ export default function Dashboard({ onNavigate }) {
             />
           </div>
 
-          {/* Bottom Row: 3 Columns */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <BigCard
               icon={<Users size={16} />}
-              label="Overdue Customers"
+              label="Overdue Subscribers"
               value={displayStats.overdueCount}
-              sub="Count of customers overdue"
+              sub="Count of subscribers overdue"
               color="red"
               highlight={displayStats.overdueCount > 0}
             />
@@ -9239,15 +10307,34 @@ export default function Dashboard({ onNavigate }) {
             <BigCard
               icon={<TrendingUp size={16} />}
               label="Net Income"
-              value={`PKR ${displayStats.netIncome.toLocaleString()}`}
-              sub="Total collected − expenses"
-              color={displayStats.netIncome >= 0 ? "green" : "red"}
+              value={`PKR ${(mode === "monthly" ? monthly.netIncome : allTime.netIncome).toLocaleString()}`}
+              sub="Collected − expenses − warehouse stock"
+              color={
+                (mode === "monthly" ? monthly.netIncome : allTime.netIncome) >=
+                0
+                  ? "green"
+                  : "red"
+              }
               isSensitive={true}
+              infoContent={{
+                type: "netIncome",
+                collected:
+                  mode === "monthly"
+                    ? monthly.totalCollected
+                    : allTime.totalEverCollected,
+                expenses:
+                  mode === "monthly"
+                    ? monthly.totalExpenses
+                    : allTime.totalExpenses,
+                warehouseStock:
+                  mode === "monthly"
+                    ? monthly.inventoryValue
+                    : allTime.inventoryValue,
+              }}
             />
           </div>
         </>
       ) : (
-        /* Daily View */
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <BigCard
             icon={<CreditCard size={16} />}
@@ -9261,20 +10348,22 @@ export default function Dashboard({ onNavigate }) {
             icon={<XCircle size={16} />}
             label="Expenses Today"
             value={`PKR ${(daily.totalExpenses + (daily.inventoryValue || 0)).toLocaleString()}`}
-            sub={`Expenses recorded on ${formatDate(selDate)}`}
+            sub={`Expenses + new stock on ${formatDate(selDate)}`}
             color="red"
+            inventoryValue={daily.inventoryValue || 0}
+            expensesValue={daily.totalExpenses || 0}
           />
           <BigCard
             icon={<TrendingUp size={16} />}
             label="Daily Net Income"
             value={`PKR ${daily.netIncome.toLocaleString()}`}
-            sub="Collected − expenses"
+            sub="Collected − expenses − new stock"
             color={daily.netIncome >= 0 ? "green" : "red"}
             isSensitive={true}
           />
           <BigCard
             icon={<Users size={16} />}
-            label="New Customers"
+            label="New Subscribers"
             value={daily.newCustomers}
             sub="Joined today"
             color="blue"
@@ -9282,7 +10371,7 @@ export default function Dashboard({ onNavigate }) {
         </div>
       )}
 
-      {/* NEEDS ATTENTION SECTION */}
+      {/* NEEDS ATTENTION */}
       <div>
         <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2 mb-3">
           <AlertTriangle size={18} className="text-red-500" />
@@ -9294,7 +10383,6 @@ export default function Dashboard({ onNavigate }) {
           )}
         </h2>
 
-        {/* Out of Stock Alerts */}
         {outOfStockInventory.map((item) => (
           <div
             key={`oos-${item.id}`}
@@ -9320,7 +10408,6 @@ export default function Dashboard({ onNavigate }) {
           </div>
         ))}
 
-        {/* Low Stock Alerts */}
         {lowStockInventory.map((item) => (
           <div
             key={`low-${item.id}`}
@@ -9348,7 +10435,6 @@ export default function Dashboard({ onNavigate }) {
           </div>
         ))}
 
-        {/* All clear state */}
         {totalAttentionCount === 0 ? (
           <div className="bg-green-50 border-2 border-green-200 rounded-xl px-5 py-4 flex items-center gap-3">
             <CheckCircle size={22} className="text-green-600" />
@@ -9361,7 +10447,9 @@ export default function Dashboard({ onNavigate }) {
             <table className="w-full">
               <thead>
                 <tr className="bg-gray-900 text-white text-left">
-                  <th className="px-4 py-3 text-sm font-semibold">Customer</th>
+                  <th className="px-4 py-3 text-sm font-semibold">
+                    Subscriber
+                  </th>
                   <th className="px-4 py-3 text-sm font-semibold">Area</th>
                   <th className="px-4 py-3 text-sm font-semibold">Mobile</th>
                   <th className="px-4 py-3 text-sm font-semibold">
@@ -9409,23 +10497,21 @@ export default function Dashboard({ onNavigate }) {
                   const isExpiringSoon = days >= 0 && days <= 5;
 
                   let waMessage = "";
-                  if (isExpiredUnpaid) {
+                  if (isExpiredUnpaid)
                     waMessage = MESSAGE_TEMPLATES.paymentOverdue(
                       customer,
                       cycle,
                     );
-                  } else if (cycle.amountPending > 0) {
+                  else if (cycle.amountPending > 0)
                     waMessage = MESSAGE_TEMPLATES.paymentDue(customer, cycle);
-                  } else {
+                  else
                     waMessage = MESSAGE_TEMPLATES.expiryReminder(
                       customer,
                       cycle,
                     );
-                  }
 
                   const showPayButton =
                     cycle.amountPending > 0 || isExpiredPaid;
-
                   const rowBg = isExpiredUnpaid
                     ? "bg-red-50"
                     : isExpiredPaid
@@ -9534,7 +10620,7 @@ export default function Dashboard({ onNavigate }) {
   );
 }
 
-// Updated Colors: Softer backgrounds with borders and icons
+// ── Color map ─────────────────────────────────────────────────────────────────
 const colorMap = {
   blue: {
     bg: "bg-blue-50 border border-blue-200",
@@ -9558,6 +10644,7 @@ const colorMap = {
   },
 };
 
+// ── BigCard ───────────────────────────────────────────────────────────────────
 function BigCard({
   icon,
   label,
@@ -9572,9 +10659,25 @@ function BigCard({
   expensesValue,
   pendingStatusBalance,
   suspendedBalance,
+  infoContent,
 }) {
   const c = colorMap[color] || colorMap.blue;
   const [revealed, setRevealed] = useState(false);
+  const [showInfo, setShowInfo] = useState(false);
+  const infoRef = useRef(null);
+
+  // Close tooltip when clicking anywhere outside
+  useEffect(() => {
+    if (!showInfo) return;
+    const handler = (e) => {
+      if (infoRef.current && !infoRef.current.contains(e.target)) {
+        setShowInfo(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showInfo]);
+
   const hasExpenseBreakdown =
     inventoryValue !== undefined && expensesValue !== undefined;
   const hasBalanceBreakdown =
@@ -9592,18 +10695,132 @@ function BigCard({
           >
             {icon}
           </div>
-          {isSensitive && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setRevealed(!revealed);
-              }}
-              className="text-gray-400 hover:text-gray-600 transition-colors"
-              title={revealed ? "Hide Amount" : "Show Amount"}
-            >
-              {revealed ? <EyeOff size={15} /> : <Eye size={15} />}
-            </button>
-          )}
+          <div className="flex items-center gap-1.5">
+            {/* Info tooltip */}
+            {infoContent && (
+              <div className="relative" ref={infoRef}>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowInfo((s) => !s);
+                  }}
+                  className="text-gray-400 hover:text-blue-500 transition-colors"
+                  title="More info"
+                >
+                  <Info size={14} />
+                </button>
+                {showInfo && (
+                  <div className="absolute right-0 top-6 z-50 bg-white border border-gray-200 rounded-xl shadow-xl p-3 w-68 text-xs">
+                    {infoContent.type === "everCollected" && (
+                      <>
+                        <p className="font-bold text-gray-800 mb-2 text-sm">
+                          📥 What is Ever Collected?
+                        </p>
+                        <p className="text-gray-600 leading-relaxed mb-2">
+                          The total of all actual cash payments ever received
+                          from subscribers — across every billing cycle since
+                          day one.
+                        </p>
+                        <div className="space-y-1 border-t border-gray-100 pt-2">
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">
+                              Billing cycles total
+                            </span>
+                            <span className="font-semibold text-gray-700">
+                              {infoContent.totalCycles}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">
+                              Active subscribers
+                            </span>
+                            <span className="font-semibold text-gray-700">
+                              {infoContent.totalSubscribers}
+                            </span>
+                          </div>
+                          {infoContent.pendingBalance > 0 && (
+                            <div className="flex justify-between text-amber-600">
+                              <span>Still pending (not included)</span>
+                              <span className="font-semibold">
+                                PKR{" "}
+                                {infoContent.pendingBalance.toLocaleString()}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                        <p className="text-gray-400 mt-2 italic">
+                          Inventory and expenses are NOT included here — they
+                          show in the Expenses card.
+                        </p>
+                      </>
+                    )}
+                    {infoContent.type === "netIncome" && (
+                      <>
+                        <p className="font-bold text-gray-800 mb-2 text-sm">
+                          📊 Net Income Breakdown
+                        </p>
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between text-green-700">
+                            <span className="font-semibold">+ Collected</span>
+                            <span className="font-bold">
+                              PKR {infoContent.collected.toLocaleString()}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-red-600">
+                            <span>− Recorded Expenses</span>
+                            <span className="font-semibold">
+                              PKR {infoContent.expenses.toLocaleString()}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-red-600">
+                            <span>− Warehouse Stock</span>
+                            <span className="font-semibold">
+                              PKR {infoContent.warehouseStock.toLocaleString()}
+                            </span>
+                          </div>
+                          <div className="border-t border-gray-200 pt-1.5 flex justify-between font-bold text-gray-800">
+                            <span>= Net Income</span>
+                            <span>
+                              PKR{" "}
+                              {(
+                                infoContent.collected -
+                                infoContent.expenses -
+                                infoContent.warehouseStock
+                              ).toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="mt-2 bg-blue-50 border border-blue-100 rounded-lg px-2.5 py-2 text-blue-700 leading-relaxed">
+                          <p className="font-semibold text-xs mb-0.5">
+                            Why does issuing stock increase Net Income?
+                          </p>
+                          <p className="text-xs">
+                            When you issue cable and the technician collects the
+                            cable money from the subscriber (included in their
+                            payment), your "Ever Collected" goes up AND your
+                            warehouse stock goes down — so Net Income grows.
+                            This is correct!
+                          </p>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            {isSensitive && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setRevealed(!revealed);
+                }}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+                title={revealed ? "Hide Amount" : "Show Amount"}
+              >
+                {revealed ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            )}
+          </div>
         </div>
         <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
           {label}

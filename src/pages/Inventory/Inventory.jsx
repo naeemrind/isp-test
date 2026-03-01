@@ -18,7 +18,6 @@ import {
   ChevronUp,
   ChevronDown,
   ChevronsUpDown,
-  Zap,
   ClipboardList,
 } from "lucide-react";
 import Modal from "../../components/ui/Modal";
@@ -28,7 +27,6 @@ import IssueStockModal from "../../components/ui/IssueStockModal";
 import IssueHistoryModal from "../../components/ui/Issuehistorymodal";
 import RestockModal from "../../components/ui/RestockModal";
 import RestockHistoryModal from "../../components/ui/RestockHistoryModal";
-import ConnectionJobModal from "../../components/ui/ConnectionJobModal";
 import ConnectionJobsLog from "../../components/ui/ConnectionJobsLog";
 import useInventoryStore from "../../store/useInventoryStore";
 import { formatDate } from "../../utils/dateUtils";
@@ -47,7 +45,6 @@ export default function Inventory() {
   const [showHelp, setShowHelp] = useState(false);
   const [sortField, setSortField] = useState("createdAt");
   const [sortDir, setSortDir] = useState("desc");
-  const [showConnectionJob, setShowConnectionJob] = useState(false);
   const [showJobsLog, setShowJobsLog] = useState(false);
 
   const toggleSort = (field) => {
@@ -173,14 +170,6 @@ export default function Inventory() {
             <ClipboardList size={15} /> Jobs Log
           </button>
 
-          {/* New Connection Job — highlighted */}
-          <button
-            onClick={() => setShowConnectionJob(true)}
-            className="flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-green-600 text-white rounded-lg hover:bg-green-700 shadow-sm transition-colors"
-          >
-            <Zap size={15} /> New Connection Job
-          </button>
-
           {/* Add Item */}
           <button
             onClick={() => setShowAdd(true)}
@@ -203,7 +192,7 @@ export default function Inventory() {
               <X size={15} />
             </button>
           </div>
-          <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+          <div className="grid grid-cols-3 gap-3 text-sm">
             <div className="bg-white border border-blue-100 rounded-xl p-3 space-y-1">
               <p className="font-semibold text-gray-800 flex items-center gap-1.5">
                 <ArrowDownCircle size={14} className="text-green-600" /> Buying
@@ -221,15 +210,6 @@ export default function Inventory() {
               <p className="text-xs text-gray-500 leading-relaxed">
                 When you buy more of the same item later, click{" "}
                 <strong>Restock</strong>.
-              </p>
-            </div>
-            <div className="bg-white border border-blue-100 rounded-xl p-3 space-y-1">
-              <p className="font-semibold text-gray-800 flex items-center gap-1.5">
-                <Zap size={14} className="text-green-600" /> Connection Job
-              </p>
-              <p className="text-xs text-gray-500 leading-relaxed">
-                Issue <strong>multiple items at once</strong> for a new
-                subscriber connection. Tracks who got what.
               </p>
             </div>
             <div className="bg-white border border-amber-100 rounded-xl p-3 space-y-1">
@@ -725,16 +705,6 @@ export default function Inventory() {
             onClose={() => setHistoryItem(null)}
           />
         )}
-      </Modal>
-
-      {/* New Connection Job Modal */}
-      <Modal
-        isOpen={showConnectionJob}
-        onClose={() => setShowConnectionJob(false)}
-        title="New Connection Job"
-        size="lg"
-      >
-        <ConnectionJobModal onClose={() => setShowConnectionJob(false)} />
       </Modal>
 
       {/* Connection Jobs Log Modal */}

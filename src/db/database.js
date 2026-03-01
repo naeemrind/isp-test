@@ -77,6 +77,7 @@ async function readAll() {
     packages: [],
     inventory: [],
     expenses: [],
+    connectionJobs: [],
     settings: {},
   };
 }
@@ -198,6 +199,13 @@ const db = {
     add: (row) => addRow("expenses", row).then((r) => r.id),
     update: (id, data) => updateRow("expenses", id, data),
     delete: (id) => deleteRow("expenses", id),
+  },
+  connectionJobs: {
+    toArray: () => getTable("connectionJobs"),
+    get: (id) => getRow("connectionJobs", id),
+    add: (row) => addRow("connectionJobs", row).then((r) => r.id),
+    update: (id, data) => updateRow("connectionJobs", id, data),
+    delete: (id) => deleteRow("connectionJobs", id),
   },
   settings: {
     get: (key) => getSetting(key),

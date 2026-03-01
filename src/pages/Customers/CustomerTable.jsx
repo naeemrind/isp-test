@@ -55,7 +55,7 @@ export default function CustomerTable({
           <thead>
             <tr className="bg-gray-100 text-gray-600 text-left">
               <th className="px-3 py-2 font-medium w-10 text-center">#</th>
-              <th className="px-3 py-2 font-medium min-w-48">Customer</th>
+              <th className="px-3 py-2 font-medium min-w-48">Subscriber</th>
               <th className="px-3 py-2 font-medium">Area</th>
               <th className="px-3 py-2 font-medium">Package</th>
               <th className="px-3 py-2 font-medium">Expires</th>
@@ -220,14 +220,14 @@ export default function CustomerTable({
                       <button
                         onClick={() => onEdit(customer)}
                         className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium bg-white text-gray-700 rounded hover:bg-gray-50 border border-gray-300 transition-colors"
-                        title="Edit Customer"
+                        title="Edit Subscriber"
                       >
                         <Pencil size={12} /> Edit
                       </button>
                       <button
                         onClick={() => onDelete(customer)}
                         className="flex items-center justify-center w-7 h-7 text-xs font-medium bg-white text-red-500 rounded hover:bg-red-50 border border-gray-200 transition-colors"
-                        title="Delete Customer"
+                        title="Delete Subscriber"
                       >
                         <Trash2 size={13} />
                       </button>

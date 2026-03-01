@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import {
-  Plus,
   Search,
   Archive,
   ArchiveRestore,
@@ -8,12 +7,14 @@ import {
   ArrowUpDown,
   ChevronLeft,
   ChevronRight,
+  Zap,
 } from "lucide-react";
 import Modal from "../../components/ui/Modal";
 import ConfirmDialog from "../../components/ui/ConfirmDialog";
 import CustomerTable from "./CustomerTable";
 import CustomerForm from "./CustomerForm";
 import PaymentForm from "../Payments/PaymentForm";
+import NewConnectionForm from "./NewConnectionForm";
 import useCustomerStore from "../../store/useCustomerStore";
 import usePaymentStore from "../../store/usePaymentStore";
 import { formatDate, daysUntil } from "../../utils/dateUtils";
@@ -89,51 +90,43 @@ export default function Customers({ initialFilter }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
   const [sortBy, setSortBy] = useState("newest");
-
-  const [archiveFilter, setArchiveFilter] = useState("all"); // all | deleted | terminated
-  const [archiveSort, setArchiveSort] = useState("newest"); // newest | oldest | name
+  const [archiveFilter, setArchiveFilter] = useState("all");
+  const [archiveSort, setArchiveSort] = useState("newest");
   const [activePage, setActivePage] = useState(1);
   const [archivePage, setArchivePage] = useState(1);
   const PAGE_SIZE = 20;
 
-  const [showAdd, setShowAdd] = useState(false);
-  const [editCustomer, setEditCustomer] = useState(null);
-  const [payCustomer, setPayCustomer] = useState(null);
+  // Modal state
+  const [showNewConnection, setShowNewConnection] = useState(false);
+  const [editSubscriber, setEditSubscriber] = useState(null);
+  const [paySubscriber, setPaySubscriber] = useState(null);
   const [archiveTarget, setArchiveTarget] = useState(null);
   const [restoreTarget, setRestoreTarget] = useState(null);
   const [purgeTarget, setPurgeTarget] = useState(null);
 
-  // Sync prop filter to local state when prop changes
   useEffect(() => {
-    const timer = setTimeout(() => {
+    const t = setTimeout(() => {
       if (initialFilter) {
         setFilter(initialFilter);
         setActivePage(1);
       }
     }, 0);
-    return () => clearTimeout(timer);
+    return () => clearTimeout(t);
   }, [initialFilter]);
 
-  // Reset pages on search change
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setActivePage(1);
-    }, 0);
-    return () => clearTimeout(timer);
+    const t = setTimeout(() => setActivePage(1), 0);
+    return () => clearTimeout(t);
   }, [search, filter, sortBy]);
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setArchivePage(1);
-    }, 0);
-
-    return () => clearTimeout(timer);
+    const t = setTimeout(() => setArchivePage(1), 0);
+    return () => clearTimeout(t);
   }, [search]);
 
   const activeCustomers = customers.filter((c) => !c.isArchived);
   const archivedCustomers = customers.filter((c) => c.isArchived);
 
-  // 1. FILTERING
   const q = search.toLowerCase();
   const matchSearch = (c) =>
     !search ||
@@ -143,61 +136,38 @@ export default function Customers({ initialFilter }) {
     c.mainArea?.toLowerCase().includes(q);
 
   const filteredActive = activeCustomers.filter((c) => {
-    // Check search first
     if (!matchSearch(c)) return false;
-
-    // Check Filter
     if (filter === "all") return true;
     if (filter === "active") return c.status === "active";
     if (filter === "suspended") return c.status === "suspended";
-    // New filters based on payment status
     const cycle = getActiveCycle(c.id);
     const days = cycle ? daysUntil(cycle.cycleEndDate) : 0;
     const pending = cycle ? cycle.amountPending : 0;
-
-    if (filter === "balance-due") {
-      // Any customer with an outstanding balance, regardless of status
-      return pending > 0;
-    }
-    if (filter === "overdue") {
-      // Must be active AND have pending balance AND be overdue (days < 0)
+    if (filter === "balance-due") return pending > 0;
+    if (filter === "overdue")
       return c.status === "active" && pending > 0 && days < 0;
-    }
-    if (filter === "pending") {
-      // Must be active AND have pending balance BUT NOT overdue (days >= 0)
+    if (filter === "pending")
       return c.status === "active" && pending > 0 && days >= 0;
-    }
-
     return true;
   });
 
-  // 2. SORTING
   const sortedActive = [...filteredActive].sort((a, b) => {
-    const cycleA = getActiveCycle(a.id);
-    const cycleB = getActiveCycle(b.id);
-
+    const cA = getActiveCycle(a.id);
+    const cB = getActiveCycle(b.id);
     switch (sortBy) {
       case "name":
         return a.fullName.localeCompare(b.fullName);
-
       case "pending":
-        // Highest balance first
-        return (cycleB?.amountPending || 0) - (cycleA?.amountPending || 0);
-
+        return (cB?.amountPending || 0) - (cA?.amountPending || 0);
       case "expiring":
-        // Soonest expiry date first.
-        if (!cycleA) return 1;
-        if (!cycleB) return -1;
-        return new Date(cycleA.cycleEndDate) - new Date(cycleB.cycleEndDate);
-
-      case "newest":
+        if (!cA) return 1;
+        if (!cB) return -1;
+        return new Date(cA.cycleEndDate) - new Date(cB.cycleEndDate);
       default:
-        // IDs are auto-incrementing
         return b.id - a.id;
     }
   });
 
-  // Archive filtering
   const filteredArchived = archivedCustomers
     .filter((c) => {
       if (!matchSearch(c)) return false;
@@ -210,11 +180,9 @@ export default function Customers({ initialFilter }) {
       if (archiveSort === "name") return a.fullName.localeCompare(b.fullName);
       if (archiveSort === "oldest")
         return new Date(a.archivedAt || 0) - new Date(b.archivedAt || 0);
-      // newest (default)
       return new Date(b.archivedAt || 0) - new Date(a.archivedAt || 0);
     });
 
-  // Pagination helpers
   const totalActivePages = Math.max(
     1,
     Math.ceil(sortedActive.length / PAGE_SIZE),
@@ -243,12 +211,11 @@ export default function Customers({ initialFilter }) {
 
   return (
     <div className="p-4 space-y-3">
-      {/* HEADER */}
+      {/* ── HEADER ── */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <h1 className="text-base font-semibold text-gray-800">Customers</h1>
+          <h1 className="text-base font-semibold text-gray-800">Subscribers</h1>
 
-          {/* Active / Archived tab switcher */}
           <div className="flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5">
             <button
               onClick={() => setView("active")}
@@ -283,17 +250,16 @@ export default function Customers({ initialFilter }) {
 
         {view === "active" && (
           <button
-            onClick={() => setShowAdd(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
+            onClick={() => setShowNewConnection(true)}
+            className="flex items-center gap-1.5 px-4 py-1.5 text-sm bg-blue-600 text-white rounded font-semibold hover:bg-blue-700 transition-colors"
           >
-            <Plus size={14} /> Add Customer
+            <Zap size={14} /> New Connection
           </button>
         )}
       </div>
 
-      {/* SEARCH + FILTER + SORT */}
+      {/* ── SEARCH + FILTER + SORT ── */}
       <div className="flex items-center justify-between flex-wrap gap-2">
-        {/* Left Side: Search & Status Filters */}
         <div className="flex items-center gap-2 flex-1 min-w-62.5">
           <div className="relative flex-1 max-w-xs">
             <Search
@@ -302,7 +268,7 @@ export default function Customers({ initialFilter }) {
             />
             <input
               className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-              placeholder="Search..."
+              placeholder="Search subscribers..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -326,7 +292,6 @@ export default function Customers({ initialFilter }) {
           )}
         </div>
 
-        {/* Right Side: Sorting Dropdown */}
         {view === "active" && (
           <div className="flex items-center gap-2">
             <span className="text-xs text-gray-500 font-medium">Sort by:</span>
@@ -350,15 +315,15 @@ export default function Customers({ initialFilter }) {
         )}
       </div>
 
-      {/* ACTIVE TABLE */}
+      {/* ── ACTIVE TABLE ── */}
       {view === "active" && (
         <div className="space-y-2">
           <div className="bg-white border border-gray-200 rounded overflow-hidden">
             <CustomerTable
               customers={pagedActive}
-              searchQuery={""} // Search handled above
-              onEdit={(c) => setEditCustomer(c)}
-              onPay={(c) => setPayCustomer(c)}
+              searchQuery=""
+              onEdit={(c) => setEditSubscriber(c)}
+              onPay={(c) => setPaySubscriber(c)}
               onDelete={(c) => setArchiveTarget(c)}
             />
           </div>
@@ -374,10 +339,9 @@ export default function Customers({ initialFilter }) {
         </div>
       )}
 
-      {/* ARCHIVED TABLE */}
+      {/* ── ARCHIVED TABLE ── */}
       {view === "archived" && (
         <div className="space-y-2">
-          {/* Archive toolbar: filter + sort */}
           <div className="flex items-center gap-2 flex-wrap">
             <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-0.5">
               {[
@@ -423,16 +387,16 @@ export default function Customers({ initialFilter }) {
             {filteredArchived.length === 0 ? (
               <div className="py-16 flex flex-col items-center gap-2 text-gray-400">
                 <Archive size={36} className="text-gray-300" />
-                <p className="text-sm font-medium">No archived customers</p>
+                <p className="text-sm font-medium">No archived subscribers</p>
                 <p className="text-xs text-gray-300">
-                  Deleted customers appear here — nothing is ever lost.
+                  Deleted subscribers appear here — nothing is ever lost.
                 </p>
               </div>
             ) : (
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-800 text-white text-left text-xs">
-                    <th className="px-4 py-2.5 font-medium">Customer</th>
+                    <th className="px-4 py-2.5 font-medium">Subscriber</th>
                     <th className="px-4 py-2.5 font-medium">Area</th>
                     <th className="px-4 py-2.5 font-medium">Archived On</th>
                     <th className="px-4 py-2.5 font-medium">Reason</th>
@@ -509,7 +473,6 @@ export default function Customers({ initialFilter }) {
                             </button>
                             <button
                               onClick={() => setPurgeTarget(c)}
-                              title="Permanently delete all data"
                               className="flex items-center gap-1 px-2.5 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 font-medium"
                             >
                               <Trash2 size={12} /> Purge
@@ -535,76 +498,80 @@ export default function Customers({ initialFilter }) {
         </div>
       )}
 
-      {/* MODALS */}
+      {/* ── MODALS ── */}
+
+      {/* New Connection — unified form */}
       <Modal
-        isOpen={showAdd}
-        onClose={() => setShowAdd(false)}
-        title="Add New Customer"
+        isOpen={showNewConnection}
+        onClose={() => setShowNewConnection(false)}
+        title="New Connection"
         size="lg"
       >
-        <CustomerForm onClose={() => setShowAdd(false)} />
+        <NewConnectionForm onClose={() => setShowNewConnection(false)} />
       </Modal>
 
+      {/* Edit Subscriber */}
       <Modal
-        isOpen={!!editCustomer}
-        onClose={() => setEditCustomer(null)}
-        title="Edit Customer"
+        isOpen={!!editSubscriber}
+        onClose={() => setEditSubscriber(null)}
+        title="Edit Subscriber"
         size="lg"
       >
-        {editCustomer && (
+        {editSubscriber && (
           <CustomerForm
-            customer={editCustomer}
-            onClose={() => setEditCustomer(null)}
+            customer={editSubscriber}
+            onClose={() => setEditSubscriber(null)}
           />
         )}
       </Modal>
 
+      {/* Record Payment */}
       <Modal
-        isOpen={!!payCustomer}
-        onClose={() => setPayCustomer(null)}
+        isOpen={!!paySubscriber}
+        onClose={() => setPaySubscriber(null)}
         title="Record Payment"
         size="md"
       >
-        {payCustomer && (
+        {paySubscriber && (
           <PaymentForm
-            customer={payCustomer}
-            onClose={() => setPayCustomer(null)}
+            customer={paySubscriber}
+            onClose={() => setPaySubscriber(null)}
           />
         )}
       </Modal>
 
-      {/* Archive dialog */}
+      {/* Archive */}
       <ConfirmDialog
         isOpen={!!archiveTarget}
         onClose={() => setArchiveTarget(null)}
         onConfirm={(reason) => archiveCustomer(archiveTarget.id, reason)}
-        title="Archive Customer"
-        message={`"${archiveTarget?.fullName}" will be moved to the Archived tab. All payment history is preserved and you can restore them at any time.`}
-        confirmLabel="Archive Customer"
+        title="Archive Subscriber"
+        message={`"${archiveTarget?.fullName}" will be moved to the Archived tab. All payment history is preserved.`}
+        confirmLabel="Archive Subscriber"
         confirmText={archiveTarget?.fullName}
         showReason
         reasonLabel="Reason for archiving (optional)"
         danger
       />
 
-      {/* Restore dialog */}
+      {/* Restore */}
       <ConfirmDialog
         isOpen={!!restoreTarget}
         onClose={() => setRestoreTarget(null)}
         onConfirm={() => restoreCustomer(restoreTarget.id)}
-        title="Restore Customer"
-        message={`Restore "${restoreTarget?.fullName}" back to Active customers? Their full payment history will remain intact.`}
+        title="Restore Subscriber"
+        message={`Restore "${restoreTarget?.fullName}" back to active? Their full payment history will remain intact.`}
         confirmLabel="Yes, Restore"
         danger={false}
       />
 
-      {/* Purge dialog */}
+      {/* Purge */}
       <ConfirmDialog
         isOpen={!!purgeTarget}
         onClose={() => setPurgeTarget(null)}
         onConfirm={() => permanentlyDeleteCustomer(purgeTarget.id)}
         title="Permanently Delete"
-        message={`This will PERMANENTLY delete "${purgeTarget?.fullName}" and every payment record forever. This cannot be undone.`}
+        message={`This will PERMANENTLY delete "${purgeTarget?.fullName}" and all payment records forever. This cannot be undone.`}
         confirmLabel="Permanently Delete"
         confirmText={purgeTarget?.fullName}
         requirePassword

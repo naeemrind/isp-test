@@ -11,7 +11,7 @@ export default function Navbar({ activeTab, onTabChange }) {
 
   const tabs = [
     { id: "dashboard", label: "Dashboard" },
-    { id: "customers", label: "Customers" },
+    { id: "customers", label: "Subscribers" },
     { id: "inventory", label: "Inventory" },
     { id: "expenses", label: "Expenses" },
     { id: "settings", label: "Settings" },

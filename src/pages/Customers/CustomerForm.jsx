@@ -224,7 +224,7 @@ export default function CustomerForm({ customer, onClose }) {
       {/* ── CUSTOMER INFO ── */}
       <div>
         <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-3">
-          Customer Information
+          Subscriber Information
         </p>
         <div className="grid grid-cols-2 gap-4">
           <Field label="Full Name *" error={errors.fullName}>
@@ -390,7 +390,7 @@ export default function CustomerForm({ customer, onClose }) {
                 Record First Payment Now
               </span>
               <p className="text-xs text-gray-400">
-                Optionally log a payment while adding the customer
+                Optionally log a payment while adding the subscriber
               </p>
             </div>
           </label>
@@ -482,8 +482,8 @@ export default function CustomerForm({ customer, onClose }) {
             : isEdit
               ? "Save Changes"
               : payment.recordPayment
-                ? "Add Customer & Record Payment"
-                : "Add Customer"}
+                ? "Add Subscriber & Record Payment"
+                : "Add Subscriber"}
         </button>
       </div>
     </div>
