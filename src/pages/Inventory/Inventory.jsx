@@ -19,6 +19,8 @@ import {
   ChevronDown,
   ChevronsUpDown,
   ClipboardList,
+  Link2,
+  Hammer,
 } from "lucide-react";
 import Modal from "../../components/ui/Modal";
 import ConfirmDialog from "../../components/ui/ConfirmDialog";
@@ -61,10 +63,30 @@ export default function Inventory() {
     0,
   );
   const totalOriginalCost = items.reduce((sum, i) => sum + (i.amount || 0), 0);
-  const totalIssuedValue = items.reduce(
-    (sum, i) => sum + (i.stockOut || 0) * (i.unitRate || 0),
-    0,
-  );
+  // Fix 3: Split issued value into Connection dispatches vs Ad-hoc dispatches
+  // Uses issueLog[].dispatchType or jobRef to distinguish the two paths
+  const { totalIssuedValue, connectionIssuedValue, adhocIssuedValue } = (() => {
+    let connection = 0;
+    let adhoc = 0;
+    for (const item of items) {
+      const log = Array.isArray(item.issueLog) ? item.issueLog : [];
+      for (const entry of log) {
+        const val =
+          entry.totalValue ||
+          (entry.qty || 0) * (entry.unitRate || item.unitRate || 0);
+        if (entry.jobRef === true || entry.dispatchType === "connection") {
+          connection += val;
+        } else {
+          adhoc += val;
+        }
+      }
+    }
+    return {
+      totalIssuedValue: connection + adhoc,
+      connectionIssuedValue: connection,
+      adhocIssuedValue: adhoc,
+    };
+  })();
 
   const lowStockItems = items.filter((i) => {
     if (!i.quantity) return false;
@@ -167,7 +189,7 @@ export default function Inventory() {
             onClick={() => setShowJobsLog(true)}
             className="flex items-center gap-2 px-3 py-2 text-sm font-semibold border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 shadow-sm transition-colors"
           >
-            <ClipboardList size={15} /> Jobs Log
+            <ClipboardList size={15} /> Jobs & Dispatch Log
           </button>
 
           {/* Add Item */}
@@ -217,8 +239,8 @@ export default function Inventory() {
                 <History size={14} className="text-purple-600" /> History
               </p>
               <p className="text-xs text-gray-500 leading-relaxed">
-                Each item shows history buttons for <strong>issues</strong> and{" "}
-                <strong>restocks</strong>.
+                Each item shows history buttons for <strong>dispatches</strong>{" "}
+                and <strong>restocks</strong>.
               </p>
             </div>
           </div>
@@ -277,7 +299,7 @@ export default function Inventory() {
       )}
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <div className="col-span-2 lg:col-span-1 bg-white border border-gray-200 rounded-xl px-4 py-3">
           <div className="flex items-center gap-2 mb-1.5">
             <div className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center shrink-0">
@@ -330,20 +352,46 @@ export default function Inventory() {
           </p>
         </div>
 
-        <div className="bg-white border border-gray-200 rounded-xl px-4 py-3">
+        {/* Fix 3: Split into two cards — Connection vs Ad-hoc */}
+        <div className="bg-white border border-blue-200 rounded-xl px-4 py-3">
           <div className="flex items-center gap-2 mb-1.5">
-            <div className="w-7 h-7 rounded-lg bg-red-100 flex items-center justify-center shrink-0">
-              <TrendingDown size={14} className="text-red-500" />
+            <div className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center shrink-0">
+              <Link2 size={14} className="text-blue-600" />
             </div>
-            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-              Total Issued
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide leading-tight">
+              Issued to Connections
             </span>
           </div>
-          <p className="text-2xl font-black text-red-500 leading-tight">
-            PKR {totalIssuedValue.toLocaleString()}
+          <p className="text-2xl font-black text-blue-700 leading-tight">
+            PKR {connectionIssuedValue.toLocaleString()}
           </p>
           <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
-            Value of stock already given out to technicians for field work.
+            Stock dispatched for{" "}
+            <strong className="text-blue-600">
+              new subscriber connections
+            </strong>
+            . Visible in Jobs Log.
+          </p>
+        </div>
+
+        <div className="bg-white border border-amber-200 rounded-xl px-4 py-3">
+          <div className="flex items-center gap-2 mb-1.5">
+            <div className="w-7 h-7 rounded-lg bg-amber-100 flex items-center justify-center shrink-0">
+              <Hammer size={14} className="text-amber-600" />
+            </div>
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide leading-tight">
+              Ad-hoc Dispatches
+            </span>
+          </div>
+          <p className="text-2xl font-black text-amber-600 leading-tight">
+            PKR {adhocIssuedValue.toLocaleString()}
+          </p>
+          <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
+            Stock for{" "}
+            <strong className="text-amber-600">
+              repairs, spares & field work
+            </strong>{" "}
+            — no subscriber linked.
           </p>
         </div>
       </div>
@@ -557,14 +605,14 @@ export default function Inventory() {
                                 : "bg-red-50 text-red-700 border-red-200 hover:bg-red-100"
                             }`}
                           >
-                            <ArrowUpCircle size={10} /> Issue
+                            <ArrowUpCircle size={10} /> Dispatch
                           </button>
                           <button
                             onClick={() => setHistoryItem(item)}
                             title={
                               issueLogCount > 0
-                                ? `${issueLogCount} issue event(s) — click to view`
-                                : "No issue history"
+                                ? `${issueLogCount} dispatch(es) — click to view`
+                                : "No dispatch history"
                             }
                             className={`flex items-center gap-0.5 px-1.5 py-1 text-xs font-semibold border rounded-md transition-colors ${
                               issueLogCount > 0
@@ -681,7 +729,7 @@ export default function Inventory() {
       <Modal
         isOpen={!!issueItem}
         onClose={() => setIssueItem(null)}
-        title="Issue Stock"
+        title="Dispatch Stock"
         size="md"
       >
         {issueItem && (
@@ -711,7 +759,7 @@ export default function Inventory() {
       <Modal
         isOpen={showJobsLog}
         onClose={() => setShowJobsLog(false)}
-        title="Connection Jobs Log"
+        title="Jobs & Dispatch Log"
         size="lg"
       >
         <ConnectionJobsLog onClose={() => setShowJobsLog(false)} />

@@ -7302,78 +7302,153 @@ export default function App() {
 
 <file path="src/db/database.js">
 /**
- * database.js — Modified for Vercel / LocalStorage
+ * database.js
+ *
+ * This file has THREE sections:
+ *
+ *   PART 1 — Production code (Electron + npm run dev)
+ *             ► UNCOMMENT this when development is complete and you switch to Electron.
+ *             ► KEEP COMMENTED during the Vercel demo phase.
+ *
+ *   PART 2 — Temporary Vercel / localStorage code
+ *             ► KEEP this ACTIVE right now (development / Vercel demo phase).
+ *             ► DELETE entirely when you switch to Electron production.
+ *
+ *   PART 3 — Shared database logic (NEVER touch this section)
+ *             ► Always active. Never comment this out. Both Part 1 and Part 2
+ *               plug into this section through readAll() / writeAll().
+ *
+ * ─── How to switch when going to production ──────────────────────────────────
+ *   1. Delete all of PART 2 (localStorage block).
+ *   2. Uncomment PART 1.
+ *   3. Done. Nothing else in the app needs to change.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
-// Make Sure to Remove localStorage Code once the app is fully ready for production.
-
-// ------------------------------------------------------------------
-// PART 1: ORIGINAL CODE (COMMENTED OUT)
-// ------------------------------------------------------------------
+// =============================================================================
+// PART 1 — PRODUCTION CODE (Electron desktop app + npm run dev)
+// STATUS: 🔴 COMMENTED OUT — only uncomment when switching to Electron
+// =============================================================================
 /*
+
 const API = "/api/data";
 
-// In-memory cache so we don't hit the file on every single read
+// In-memory cache. Stores a deep-clone of the last known database state so
+// that every read operation works on an isolated copy and never accidentally
+// mutates the shared cache object.
 let _cache = null;
 
 async function readAll() {
-  if (_cache) return _cache;
+  // Return a deep clone of the cache so callers can freely mutate the result
+  // without corrupting the shared in-memory state. This prevents the race
+  // condition where two concurrent writes both read the same cache reference
+  // and the second write silently overwrites whatever the first write added.
+  if (_cache) return structuredClone(_cache);
 
-  // 1. Check if we are running inside the Electron Desktop App
+  let data;
+
+  // ── Path A: Running inside the packaged Electron desktop app ──────────────
   if (window.electronAPI) {
-    _cache = await window.electronAPI.readData();
-    return _cache;
+    data = await window.electronAPI.readData();
+
+    // Electron may return null/undefined if the data file is brand new or
+    // was deleted. Fall back to an empty structure so the app never crashes.
+    if (!data || typeof data !== "object") data = _getEmptyStructure();
+
+    // Ensure every expected table exists even if the file predates a new
+    // table being added (forward-compatibility guard).
+    data = _ensureAllTables(data);
+
+    _cache = structuredClone(data);
+    return structuredClone(_cache);
   }
 
-  // 2. Fallback for normal browser (npm run dev)
+  // ── Path B: Running in the browser with `npm run dev` ─────────────────────
+  // Vite's localDataPlugin in vite.config.js serves galaxy-data.json via
+  // GET /api/data and accepts POST /api/data to write it back to disk.
   const res = await fetch(API);
-  if (!res.ok) throw new Error("Failed to read data file");
-  _cache = await res.json();
-  return _cache;
+  if (!res.ok) throw new Error(`[db] Failed to read data file: ${res.status}`);
+  data = await res.json();
+
+  data = _ensureAllTables(data);
+  _cache = structuredClone(data);
+  return structuredClone(_cache);
 }
 
 async function writeAll(data) {
-  _cache = data;
+  // Store a deep clone so future mutation of `data` by the caller cannot
+  // corrupt the cache.
+  _cache = structuredClone(data);
 
-  // 1. Check if we are running inside the Electron Desktop App
+  // ── Path A: Electron ───────────────────────────────────────────────────────
   if (window.electronAPI) {
-    await window.electronAPI.writeData(data);
+    const result = await window.electronAPI.writeData(data);
+    if (result && result.ok === false) {
+      // The Electron main process reported a write failure. Invalidate the
+      // cache so the next read goes back to disk and we don't serve stale data.
+      _cache = null;
+      throw new Error(`[db] Electron write failed: ${result.error}`);
+    }
     return;
   }
 
-  // 2. Fallback for normal browser (npm run dev)
+  // ── Path B: npm run dev (Vite dev server) ──────────────────────────────────
   const res = await fetch(API, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-  if (!res.ok) throw new Error("Failed to write data file");
+  if (!res.ok) {
+    _cache = null; // invalidate on failure so next read is fresh from disk
+    throw new Error(`[db] Failed to write data file: ${res.status}`);
+  }
 }
 
+// Call this if you ever write to the data file from outside the normal db
+// interface (e.g. a one-off migration script). Forces the next readAll() to
+// re-read from disk instead of serving stale cache.
 function invalidate() {
   _cache = null;
 }
+
 */
 
-// ------------------------------------------------------------------
-// PART 2: NEW CODE (FOR VERCEL / LOCALSTORAGE)
-// ------------------------------------------------------------------
+// =============================================================================
+// PART 2 — TEMPORARY CODE (Vercel demo / localStorage)
+// STATUS: 🟢 ACTIVE — delete this entire block when switching to Electron
+// =============================================================================
 
-// This key is where your data lives in the browser
 const DB_KEY = "galaxy_isp_data_v1";
 
-// New readAll function
 async function readAll() {
-  // 1. Try to get data from Chrome/Browser LocalStorage
-  const rawData = localStorage.getItem(DB_KEY);
+  const raw = localStorage.getItem(DB_KEY);
+  const data = raw ? JSON.parse(raw) : _getEmptyStructure();
+  return _ensureAllTables(data);
+}
 
-  // 2. If data exists, parse it into JSON and return it
-  if (rawData) {
-    return JSON.parse(rawData);
-  }
+async function writeAll(data) {
+  localStorage.setItem(DB_KEY, JSON.stringify(data));
+}
 
-  // 3. If NO data exists (first time loading), return an empty structure.
-  // This prevents "undefined" errors in the rest of your app.
+function invalidate() {
+  // No cache to clear in localStorage mode — localStorage.getItem always
+  // reads the latest value, so there is no stale-data problem here.
+}
+
+// =============================================================================
+// PART 3 — SHARED DATABASE LOGIC
+// STATUS: 🟢 ALWAYS ACTIVE — never comment this out
+// This section never cares whether Part 1 or Part 2 is active above.
+// =============================================================================
+
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Returns the canonical empty database structure.
+ * Add new tables here when you add a new feature — they will automatically
+ * appear for existing users on their next app launch (forward-compatibility).
+ */
+function _getEmptyStructure() {
   return {
     customers: [],
     paymentCycles: [],
@@ -7385,21 +7460,24 @@ async function readAll() {
   };
 }
 
-// New writeAll function
-async function writeAll(data) {
-  // Save the data object as a string in LocalStorage
-  localStorage.setItem(DB_KEY, JSON.stringify(data));
+/**
+ * Guarantees every expected table exists on a data object loaded from disk.
+ * This is important for users who installed an older version of the app —
+ * their data file won't have tables that were added in newer versions, and
+ * without this guard those missing tables would crash the app.
+ */
+function _ensureAllTables(data) {
+  const empty = _getEmptyStructure();
+  const result = { ...data };
+  for (const key of Object.keys(empty)) {
+    if (result[key] === undefined) {
+      result[key] = empty[key];
+    }
+  }
+  return result;
 }
 
-// New invalidate function (does nothing, but prevents errors)
-function invalidate() {
-  // No cache to clear in LocalStorage mode
-}
-
-// ------------------------------------------------------------------
-// PART 3: EXISTING LOGIC (KEEP EVERYTHING BELOW THIS LINE AS IS)
-// ------------------------------------------------------------------
-// ── Generic table operations ─────────────────────────────────────
+// ── Generic table operations ──────────────────────────────────────────────────
 
 async function getTable(table) {
   const data = await readAll();
@@ -7409,9 +7487,14 @@ async function getTable(table) {
 async function addRow(table, row) {
   const data = await readAll();
   const rows = data[table] || [];
-  // Auto-increment ID
+
+  // Auto-increment ID: always one higher than the current maximum.
+  // Using max() instead of rows.length ensures IDs stay unique even if rows
+  // were deleted in the past (deleted ID 3 out of [1,2,3,4] → next is still 5,
+  // not 4, which would collide with existing row 4).
   const maxId = rows.reduce((m, r) => Math.max(m, Number(r.id) || 0), 0);
   const newRow = { ...row, id: maxId + 1 };
+
   data[table] = [...rows, newRow];
   await writeAll(data);
   return newRow;
@@ -7442,7 +7525,7 @@ async function deleteManyWhere(table, field, value) {
   await writeAll(data);
 }
 
-// ── Settings (key/value store) ───────────────────────────────────
+// ── Settings (key/value store) ────────────────────────────────────────────────
 
 async function getSetting(key) {
   const data = await readAll();
@@ -7456,7 +7539,10 @@ async function setSetting(key, value) {
   await writeAll(data);
 }
 
-// ── db interface (mirrors the Dexie API used by stores) ─────────
+// ── Public db interface ───────────────────────────────────────────────────────
+// All Zustand stores and utility functions in the app talk to this object only.
+// They never call readAll() or writeAll() directly (except backup.js which is
+// a deliberate low-level utility).
 
 const db = {
   customers: {
@@ -7466,6 +7552,7 @@ const db = {
     update: (id, data) => updateRow("customers", id, data),
     delete: (id) => deleteRow("customers", id),
   },
+
   paymentCycles: {
     toArray: () => getTable("paymentCycles"),
     get: (id) => getRow("paymentCycles", id),
@@ -7482,6 +7569,7 @@ const db = {
       }),
     }),
   },
+
   packages: {
     toArray: () => getTable("packages"),
     get: (id) => getRow("packages", id),
@@ -7489,6 +7577,7 @@ const db = {
     update: (id, data) => updateRow("packages", id, data),
     delete: (id) => deleteRow("packages", id),
   },
+
   inventory: {
     toArray: () => getTable("inventory"),
     get: (id) => getRow("inventory", id),
@@ -7496,6 +7585,7 @@ const db = {
     update: (id, data) => updateRow("inventory", id, data),
     delete: (id) => deleteRow("inventory", id),
   },
+
   expenses: {
     toArray: () => getTable("expenses"),
     get: (id) => getRow("expenses", id),
@@ -7503,6 +7593,7 @@ const db = {
     update: (id, data) => updateRow("expenses", id, data),
     delete: (id) => deleteRow("expenses", id),
   },
+
   connectionJobs: {
     toArray: () => getTable("connectionJobs"),
     get: (id) => getRow("connectionJobs", id),
@@ -7510,6 +7601,7 @@ const db = {
     update: (id, data) => updateRow("connectionJobs", id, data),
     delete: (id) => deleteRow("connectionJobs", id),
   },
+
   settings: {
     get: (key) => getSetting(key),
     put: ({ key, value }) => setSetting(key, value),
@@ -7518,983 +7610,6 @@ const db = {
 
 export default db;
 export { readAll, writeAll, invalidate };
-</file>
-
-<file path="src/utils/devTools.js">
-// src/utils/devTools.js
-import db from "../db/database";
-import usePaymentStore from "../store/usePaymentStore";
-import useCustomerStore from "../store/useCustomerStore";
-import useExpenseStore from "../store/useExpenseStore";
-import useInventoryStore from "../store/useInventoryStore";
-import usePackageStore from "../store/usePackageStore";
-import useConnectionJobStore from "../store/useConnectionJobStore";
-import { addDays, today, CYCLE_LENGTH_DAYS } from "./dateUtils";
-
-// ─── Seed Data Definitions ────────────────────────────────────────────────────
-
-const SEED_AREAS = [
-  "City Center",
-  "North Town",
-  "South Block",
-  "Garden Colony",
-  "Model Town",
-  "DHA Phase 1",
-];
-
-const SEED_PACKAGES = [
-  { name: "Basic 5 MB", speedMbps: 5, price: 800 },
-  { name: "Standard 10 MB", speedMbps: 10, price: 1500 },
-  { name: "Fast 25 MB", speedMbps: 25, price: 2200 },
-  { name: "Ultra 50 MB", speedMbps: 50, price: 3200 },
-  { name: "Pro 100 MB", speedMbps: 100, price: 4500 },
-];
-
-const SEED_INVENTORY = [
-  { description: "ONU", unit: "piece", qty: 200, unitRate: 850 },
-  { description: "Fiber Cable", unit: "meter", qty: 5000, unitRate: 18 },
-  { description: "Ethernet Cable", unit: "meter", qty: 3000, unitRate: 12 },
-  { description: "Splitter 1:8", unit: "piece", qty: 100, unitRate: 350 },
-  { description: "Wall Socket", unit: "piece", qty: 300, unitRate: 120 },
-  { description: "Cable Tie", unit: "piece", qty: 1000, unitRate: 5 },
-];
-
-// Pakistani-sounding first and last names for realistic data
-const FIRST_NAMES = [
-  "Ahmed",
-  "Ali",
-  "Hassan",
-  "Usman",
-  "Bilal",
-  "Tariq",
-  "Imran",
-  "Faisal",
-  "Zubair",
-  "Naveed",
-  "Kamran",
-  "Salman",
-  "Asad",
-  "Omar",
-  "Adeel",
-  "Fatima",
-  "Ayesha",
-  "Sana",
-  "Nadia",
-  "Maria",
-  "Hira",
-  "Zara",
-  "Sara",
-  "Amna",
-  "Rabia",
-  "Saima",
-  "Uzma",
-  "Shazia",
-  "Bushra",
-  "Nazia",
-];
-const LAST_NAMES = [
-  "Khan",
-  "Ahmed",
-  "Ali",
-  "Malik",
-  "Sheikh",
-  "Butt",
-  "Chaudhry",
-  "Akhtar",
-  "Hussain",
-  "Baig",
-  "Mirza",
-  "Qureshi",
-  "Siddiqui",
-  "Ansari",
-  "Hashmi",
-  "Raza",
-  "Rizvi",
-  "Javed",
-  "Iqbal",
-  "Nawaz",
-  "Zafar",
-  "Mehmood",
-  "Aslam",
-];
-
-// Payment status distribution weights for 500 subscribers:
-// active-paid 40%, active-pending 30%, active-expired 10%,
-// suspended 10%, archived 10%
-const STATUS_POOL = [
-  ...Array(40).fill("active_paid"),
-  ...Array(30).fill("active_pending"),
-  ...Array(10).fill("active_expired"),
-  ...Array(10).fill("suspended"),
-  ...Array(10).fill("archived"),
-];
-
-function pick(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
-function randomPhone() {
-  const prefixes = [
-    "0300",
-    "0301",
-    "0302",
-    "0303",
-    "0311",
-    "0312",
-    "0321",
-    "0333",
-    "0345",
-    "0346",
-  ];
-  return pick(prefixes) + String(Math.floor(Math.random() * 9000000) + 1000000);
-}
-
-function randomUsername(firstName, lastName, idx) {
-  const base = (firstName.toLowerCase() + lastName.toLowerCase()).replace(
-    /\s/g,
-    "",
-  );
-  return base + idx;
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-async function reloadAll() {
-  await Promise.all([
-    useCustomerStore.getState().loadCustomers(),
-    usePaymentStore.getState().loadCycles(),
-    useExpenseStore.getState().loadExpenses(),
-    useInventoryStore.getState().loadInventory(),
-    usePackageStore.getState().loadPackages(),
-    useConnectionJobStore.getState().loadJobs(),
-  ]);
-}
-
-async function buildCyclesForCustomer(customerId, packagePrice, statusType) {
-  // All subscribers get 3 historical cycles + 1 current cycle
-  const numCycles = 4;
-  const ranges = [];
-  let end = addDays(addDays(today(), -5), CYCLE_LENGTH_DAYS);
-  let start = addDays(today(), -5);
-  for (let i = 0; i < numCycles; i++) {
-    ranges.unshift({ start, end });
-    end = addDays(start, -1);
-    start = addDays(end, -CYCLE_LENGTH_DAYS);
-  }
-
-  // First 3 historical cycles — always alternating paid / carried-forward
-  let pendingFromPrev = 0;
-  for (let i = 0; i < numCycles - 1; i++) {
-    const { start: s, end: e } = ranges[i];
-    const isPaid = i % 2 === 0;
-    const totalAmount = packagePrice + pendingFromPrev;
-    const previousBalance = pendingFromPrev;
-
-    if (isPaid) {
-      await db.paymentCycles.add({
-        customerId: Number(customerId),
-        cycleStartDate: s,
-        cycleEndDate: e,
-        totalAmount,
-        amountPaid: totalAmount,
-        amountPending: 0,
-        status: "clear",
-        shiftedAmount: 0,
-        previousBalance,
-        installments: [
-          {
-            id: crypto.randomUUID(),
-            amountPaid: totalAmount,
-            datePaid: s,
-            note: "Seed: paid",
-            createdAt: new Date().toISOString(),
-          },
-        ],
-        isRenewal: i > 0,
-        createdAt: new Date().toISOString(),
-      });
-      pendingFromPrev = 0;
-    } else {
-      await db.paymentCycles.add({
-        customerId: Number(customerId),
-        cycleStartDate: s,
-        cycleEndDate: e,
-        totalAmount,
-        amountPaid: 0,
-        amountPending: 0,
-        status: "clear",
-        shiftedAmount: totalAmount,
-        previousBalance,
-        installments: [],
-        isRenewal: i > 0,
-        createdAt: new Date().toISOString(),
-      });
-      pendingFromPrev = totalAmount;
-    }
-  }
-
-  // Current (newest) cycle — shape depends on statusType
-  const { start: cs, end: ce } = ranges[numCycles - 1];
-  const totalAmount = packagePrice + pendingFromPrev;
-  const previousBalance = pendingFromPrev;
-
-  if (statusType === "active_paid") {
-    await db.paymentCycles.add({
-      customerId: Number(customerId),
-      cycleStartDate: cs,
-      cycleEndDate: ce,
-      totalAmount,
-      amountPaid: totalAmount,
-      amountPending: 0,
-      status: "clear",
-      shiftedAmount: 0,
-      previousBalance,
-      installments: [
-        {
-          id: crypto.randomUUID(),
-          amountPaid: totalAmount,
-          datePaid: cs,
-          note: "Seed: paid",
-          createdAt: new Date().toISOString(),
-        },
-      ],
-      isRenewal: true,
-      createdAt: new Date().toISOString(),
-    });
-  } else if (statusType === "active_pending") {
-    await db.paymentCycles.add({
-      customerId: Number(customerId),
-      cycleStartDate: cs,
-      cycleEndDate: ce,
-      totalAmount,
-      amountPaid: 0,
-      amountPending: totalAmount,
-      status: "pending",
-      shiftedAmount: 0,
-      previousBalance,
-      installments: [],
-      isRenewal: true,
-      createdAt: new Date().toISOString(),
-    });
-  } else if (statusType === "active_expired") {
-    // Expired: cycle ended 10 days ago, still unpaid
-    const expiredEnd = addDays(today(), -10);
-    const expiredStart = addDays(expiredEnd, -CYCLE_LENGTH_DAYS);
-    await db.paymentCycles.add({
-      customerId: Number(customerId),
-      cycleStartDate: expiredStart,
-      cycleEndDate: expiredEnd,
-      totalAmount,
-      amountPaid: 0,
-      amountPending: totalAmount,
-      status: "pending",
-      shiftedAmount: 0,
-      previousBalance,
-      installments: [],
-      isRenewal: true,
-      createdAt: new Date().toISOString(),
-    });
-  } else if (statusType === "suspended") {
-    // Partially paid, still owes balance
-    const partial = Math.floor(totalAmount * 0.4);
-    await db.paymentCycles.add({
-      customerId: Number(customerId),
-      cycleStartDate: cs,
-      cycleEndDate: ce,
-      totalAmount,
-      amountPaid: partial,
-      amountPending: totalAmount - partial,
-      status: "pending",
-      shiftedAmount: 0,
-      previousBalance,
-      installments: [
-        {
-          id: crypto.randomUUID(),
-          amountPaid: partial,
-          datePaid: cs,
-          note: "Seed: partial",
-          createdAt: new Date().toISOString(),
-        },
-      ],
-      isRenewal: true,
-      createdAt: new Date().toISOString(),
-    });
-  } else if (statusType === "archived") {
-    // Archived subscribers get no current cycle — their last cycle is old
-    const oldEnd = addDays(today(), -60);
-    const oldStart = addDays(oldEnd, -CYCLE_LENGTH_DAYS);
-    await db.paymentCycles.add({
-      customerId: Number(customerId),
-      cycleStartDate: oldStart,
-      cycleEndDate: oldEnd,
-      totalAmount: packagePrice,
-      amountPaid: packagePrice,
-      amountPending: 0,
-      status: "clear",
-      shiftedAmount: 0,
-      previousBalance: 0,
-      installments: [
-        {
-          id: crypto.randomUUID(),
-          amountPaid: packagePrice,
-          datePaid: oldStart,
-          note: "Seed: paid",
-          createdAt: new Date().toISOString(),
-        },
-      ],
-      isRenewal: true,
-      createdAt: new Date().toISOString(),
-    });
-  }
-}
-
-// ─── Main DevTools Setup ───────────────────────────────────────────────────────
-
-export const setupDevTools = () => {
-  // ── 1. Seed Everything ──────────────────────────────────────────────────────
-  /**
-   * Seeds areas, packages, inventory, and N subscribers with mixed statuses.
-   * Usage: seedAll()         → 500 subscribers
-   *        seedAll(50)       → 50 subscribers (quick test)
-   *        seedAll(500, true) → also wipes existing data first
-   */
-  window.seedAll = async (count = 500, wipeFirst = false) => {
-    if (wipeFirst) {
-      const ok = confirm(
-        `⚠️ This will DELETE all existing data and seed ${count} subscribers. Continue?`,
-      );
-      if (!ok) return;
-      await _wipeAllData();
-    }
-
-    console.log(
-      `⏳ Seeding ${count} subscribers + packages + areas + inventory...`,
-    );
-    const t0 = Date.now();
-
-    // ── Step 1: Areas ──────────────────────────────────────────────────────
-    const existingAreas = (await db.settings.get("areas"))?.value || [];
-    const mergedAreas = [...new Set([...existingAreas, ...SEED_AREAS])];
-    await db.settings.put({ key: "areas", value: mergedAreas });
-    console.log(`  ✅ Areas: ${mergedAreas.join(", ")}`);
-
-    // ── Step 2: Packages ──────────────────────────────────────────────────
-    let existingPackages = await db.packages.toArray();
-    if (existingPackages.length === 0) {
-      for (const pkg of SEED_PACKAGES) {
-        await db.packages.add({
-          ...pkg,
-          priceHistory: [],
-          lastUpdated: null,
-          createdAt: new Date().toISOString(),
-        });
-      }
-      existingPackages = await db.packages.toArray();
-      console.log(
-        `  ✅ Packages: ${existingPackages.map((p) => p.name).join(", ")}`,
-      );
-    } else {
-      console.log(
-        `  ℹ️  Packages already exist (${existingPackages.length}), skipping.`,
-      );
-    }
-
-    // ── Step 3: Inventory ─────────────────────────────────────────────────
-    let existingInventory = await db.inventory.toArray();
-    if (existingInventory.length === 0) {
-      for (const item of SEED_INVENTORY) {
-        await db.inventory.add({
-          description: item.description,
-          unit: item.unit,
-          quantity: item.qty,
-          unitRate: item.unitRate,
-          amount: item.qty * item.unitRate,
-          stockIn: item.qty,
-          stockOut: 0,
-          inHand: item.qty,
-          received: item.qty,
-          issued: 0,
-          balanced: item.qty,
-          purchaseDate: today(),
-          invoiceNo: null,
-          remarks: "Seeded by devTools",
-          restockLog: [],
-          issueLog: [],
-          createdAt: new Date().toISOString(),
-        });
-      }
-      console.log(
-        `  ✅ Inventory: ${SEED_INVENTORY.map((i) => i.description).join(", ")}`,
-      );
-    } else {
-      console.log(
-        `  ℹ️  Inventory already exists (${existingInventory.length} items), skipping.`,
-      );
-    }
-
-    // ── Step 4: Subscribers ───────────────────────────────────────────────
-    const packages = await db.packages.toArray();
-    const areas = (await db.settings.get("areas"))?.value || SEED_AREAS;
-
-    let created = 0,
-      failed = 0;
-    const batchSize = 50;
-
-    for (let i = 0; i < count; i++) {
-      try {
-        const firstName = pick(FIRST_NAMES);
-        const lastName = pick(LAST_NAMES);
-        const statusType = STATUS_POOL[i % STATUS_POOL.length];
-        const pkg = pick(packages);
-        const area = pick(areas);
-        const isArchived = statusType === "archived";
-
-        const customerId = await db.customers.add({
-          fullName: `${firstName} ${lastName}`,
-          userName: randomUsername(firstName, lastName, i + 1),
-          mobileNo: randomPhone(),
-          mainArea: area,
-          packageId: pkg.id,
-          status: isArchived ? "terminated" : "active",
-          isArchived: isArchived,
-          archivedAt: isArchived ? addDays(today(), -50) : null,
-          archiveReason: isArchived ? "Left area" : "",
-          lockedPackagePrice: pkg.price,
-          createdAt: new Date().toISOString(),
-        });
-
-        await buildCyclesForCustomer(customerId, pkg.price, statusType);
-        created++;
-
-        // Progress log every batch
-        if ((i + 1) % batchSize === 0) {
-          console.log(`  ⏳ ${i + 1}/${count} subscribers created...`);
-        }
-      } catch (err) {
-        failed++;
-        console.warn(`  ⚠️  Failed on subscriber ${i + 1}:`, err.message);
-      }
-    }
-
-    // ── Step 5: Reload stores ─────────────────────────────────────────────
-    await reloadAll();
-
-    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(`\n✅ Seeding complete in ${elapsed}s`);
-    console.log(`   👥 Subscribers: ${created} created, ${failed} failed`);
-    console.log(`   📦 Status breakdown (~):`);
-    console.log(`      Paid (active):     ${Math.round(count * 0.4)}`);
-    console.log(`      Pending (active):  ${Math.round(count * 0.3)}`);
-    console.log(`      Expired:           ${Math.round(count * 0.1)}`);
-    console.log(`      Suspended:         ${Math.round(count * 0.1)}`);
-    console.log(`      Archived:          ${Math.round(count * 0.1)}`);
-  };
-
-  // ── 2. Seed only Areas ──────────────────────────────────────────────────────
-  /**
-   * Usage: seedAreas()
-   *        seedAreas(["Block A", "Block B", "Cantt"])  → custom list
-   */
-  window.seedAreas = async (customAreas) => {
-    const list = customAreas || SEED_AREAS;
-    const existing = (await db.settings.get("areas"))?.value || [];
-    const merged = [...new Set([...existing, ...list])];
-    await db.settings.put({ key: "areas", value: merged });
-    await reloadAll();
-    console.log(`✅ Areas saved: ${merged.join(", ")}`);
-  };
-
-  // ── 3. Seed only Packages ───────────────────────────────────────────────────
-  /**
-   * Usage: seedPackages()
-   *        seedPackages([{ name: "Gold 20MB", speedMbps: 20, price: 1800 }])
-   */
-  window.seedPackages = async (customPackages) => {
-    const list = customPackages || SEED_PACKAGES;
-    for (const pkg of list) {
-      await db.packages.add({
-        ...pkg,
-        price: Number(pkg.price),
-        speedMbps: Number(pkg.speedMbps) || 0,
-        priceHistory: [],
-        lastUpdated: null,
-        createdAt: new Date().toISOString(),
-      });
-    }
-    await usePackageStore.getState().loadPackages();
-    console.log(`✅ Added ${list.length} packages.`);
-    console.table(list);
-  };
-
-  // ── 4. Seed only Inventory ──────────────────────────────────────────────────
-  /**
-   * Usage: seedInventory()
-   *        seedInventory([{ description: "Router", unit: "piece", qty: 50, unitRate: 2500 }])
-   */
-  window.seedInventory = async (customItems) => {
-    const list = customItems || SEED_INVENTORY;
-    for (const item of list) {
-      await db.inventory.add({
-        description: item.description,
-        unit: item.unit,
-        quantity: item.qty,
-        unitRate: item.unitRate,
-        amount: item.qty * item.unitRate,
-        stockIn: item.qty,
-        stockOut: 0,
-        inHand: item.qty,
-        received: item.qty,
-        issued: 0,
-        balanced: item.qty,
-        purchaseDate: today(),
-        invoiceNo: null,
-        remarks: "Seeded by devTools",
-        restockLog: [],
-        issueLog: [],
-        createdAt: new Date().toISOString(),
-      });
-    }
-    await useInventoryStore.getState().loadInventory();
-    console.log(`✅ Added ${list.length} inventory items.`);
-    console.table(list);
-  };
-
-  // ── 5. Seed only Subscribers ────────────────────────────────────────────────
-  /**
-   * Adds N subscribers using existing packages and areas.
-   * Usage: seedSubscribers(100)
-   */
-  window.seedSubscribers = async (count = 100) => {
-    const packages = await db.packages.toArray();
-    const areas = (await db.settings.get("areas"))?.value || [];
-
-    if (packages.length === 0) {
-      return console.error("❌ No packages found. Run seedPackages() first.");
-    }
-    if (areas.length === 0) {
-      return console.error("❌ No areas found. Run seedAreas() first.");
-    }
-
-    console.log(`⏳ Adding ${count} subscribers...`);
-    let created = 0;
-
-    for (let i = 0; i < count; i++) {
-      const firstName = pick(FIRST_NAMES);
-      const lastName = pick(LAST_NAMES);
-      const statusType = STATUS_POOL[i % STATUS_POOL.length];
-      const pkg = pick(packages);
-      const area = pick(areas);
-      const isArchived = statusType === "archived";
-
-      const customerId = await db.customers.add({
-        fullName: `${firstName} ${lastName}`,
-        userName: randomUsername(firstName, lastName, Date.now() + i),
-        mobileNo: randomPhone(),
-        mainArea: area,
-        packageId: pkg.id,
-        status: isArchived ? "terminated" : "active",
-        isArchived: isArchived,
-        archivedAt: isArchived ? addDays(today(), -50) : null,
-        archiveReason: isArchived ? "Left area" : "",
-        lockedPackagePrice: pkg.price,
-        createdAt: new Date().toISOString(),
-      });
-
-      await buildCyclesForCustomer(customerId, pkg.price, statusType);
-      created++;
-    }
-
-    await useCustomerStore.getState().loadCustomers();
-    await usePaymentStore.getState().loadCycles();
-    console.log(`✅ Added ${created} subscribers.`);
-  };
-
-  // ── 6. Legacy: generateTestCycles (kept for backward compatibility) ─────────
-  window.generateTestCycles = async (
-    customerId,
-    packagePrice = 2500,
-    numCycles = 10,
-  ) => {
-    if (!customerId) return console.error("❌ Please provide a customerId.");
-    try {
-      const allCycles = await db.paymentCycles.toArray();
-      for (const c of allCycles.filter(
-        (c) => Number(c.customerId) === Number(customerId),
-      ))
-        await db.paymentCycles.delete(c.id);
-
-      const ranges = [];
-      let end = addDays(addDays(today(), -10), CYCLE_LENGTH_DAYS);
-      let start = addDays(today(), -10);
-      for (let i = 0; i < numCycles; i++) {
-        ranges.unshift({ start, end });
-        end = addDays(start, -1);
-        start = addDays(end, -CYCLE_LENGTH_DAYS);
-      }
-
-      let pendingFromPrev = 0;
-      for (let i = 0; i < ranges.length; i++) {
-        const { start: cycleStart, end: cycleEnd } = ranges[i];
-        const isNewest = i === ranges.length - 1;
-        const isPaid = isNewest ? false : i % 2 !== 0;
-        const totalAmount = packagePrice + pendingFromPrev;
-        const previousBalance = pendingFromPrev;
-
-        if (isPaid) {
-          await db.paymentCycles.add({
-            customerId: Number(customerId),
-            cycleStartDate: cycleStart,
-            cycleEndDate: cycleEnd,
-            totalAmount,
-            amountPaid: totalAmount,
-            amountPending: 0,
-            status: "clear",
-            shiftedAmount: 0,
-            previousBalance,
-            installments: [
-              {
-                id: crypto.randomUUID(),
-                amountPaid: totalAmount,
-                datePaid: cycleStart,
-                note: `Payment (cycle ${i + 1})`,
-                createdAt: new Date().toISOString(),
-              },
-            ],
-            isRenewal: i > 0,
-            createdAt: new Date().toISOString(),
-          });
-          pendingFromPrev = 0;
-        } else if (!isNewest) {
-          await db.paymentCycles.add({
-            customerId: Number(customerId),
-            cycleStartDate: cycleStart,
-            cycleEndDate: cycleEnd,
-            totalAmount,
-            amountPaid: 0,
-            amountPending: 0,
-            status: "clear",
-            shiftedAmount: totalAmount,
-            previousBalance,
-            installments: [],
-            isRenewal: i > 0,
-            createdAt: new Date().toISOString(),
-          });
-          pendingFromPrev = totalAmount;
-        } else {
-          await db.paymentCycles.add({
-            customerId: Number(customerId),
-            cycleStartDate: cycleStart,
-            cycleEndDate: cycleEnd,
-            totalAmount,
-            amountPaid: 0,
-            amountPending: totalAmount,
-            status: "pending",
-            shiftedAmount: 0,
-            previousBalance,
-            installments: [],
-            isRenewal: i > 0,
-            createdAt: new Date().toISOString(),
-          });
-        }
-      }
-      await usePaymentStore.getState().loadCycles();
-      console.log(`✅ ${numCycles} cycles for customer ${customerId}`);
-    } catch (err) {
-      console.error("❌", err);
-    }
-  };
-
-  // ── 7. Legacy: generateStreakTest ───────────────────────────────────────────
-  window.generateStreakTest = async (
-    customerId,
-    packagePrice = 1500,
-    unpaidStreak = 4,
-    totalCycles = 8,
-  ) => {
-    if (!customerId) return console.error("❌ Please provide a customerId.");
-    if (unpaidStreak >= totalCycles)
-      return console.error("❌ unpaidStreak must be less than totalCycles.");
-    try {
-      const allCycles = await db.paymentCycles.toArray();
-      for (const c of allCycles.filter(
-        (c) => Number(c.customerId) === Number(customerId),
-      ))
-        await db.paymentCycles.delete(c.id);
-
-      const ranges = [];
-      let end = addDays(addDays(today(), -10), CYCLE_LENGTH_DAYS);
-      let start = addDays(today(), -10);
-      for (let i = 0; i < totalCycles; i++) {
-        ranges.unshift({ start, end });
-        end = addDays(start, -1);
-        start = addDays(end, -CYCLE_LENGTH_DAYS);
-      }
-
-      let pendingFromPrev = 0;
-      for (let i = 0; i < ranges.length; i++) {
-        const { start: cs, end: ce } = ranges[i];
-        const isNewest = i === ranges.length - 1;
-        const totalAmount = packagePrice + pendingFromPrev;
-        const previousBalance = pendingFromPrev;
-        const isInStreak = i < unpaidStreak;
-        const isMegaPayment = i === unpaidStreak;
-        const isPaidAfterStreak = !isNewest && (i - unpaidStreak) % 2 === 1;
-
-        if (isInStreak) {
-          await db.paymentCycles.add({
-            customerId: Number(customerId),
-            cycleStartDate: cs,
-            cycleEndDate: ce,
-            totalAmount,
-            amountPaid: 0,
-            amountPending: 0,
-            status: "clear",
-            shiftedAmount: totalAmount,
-            previousBalance,
-            installments: [],
-            isRenewal: i > 0,
-            createdAt: new Date().toISOString(),
-          });
-          pendingFromPrev = totalAmount;
-        } else if (isMegaPayment) {
-          await db.paymentCycles.add({
-            customerId: Number(customerId),
-            cycleStartDate: cs,
-            cycleEndDate: ce,
-            totalAmount,
-            amountPaid: totalAmount,
-            amountPending: 0,
-            status: "clear",
-            shiftedAmount: 0,
-            previousBalance,
-            installments: [
-              {
-                id: crypto.randomUUID(),
-                amountPaid: totalAmount,
-                datePaid: cs,
-                note: `Full clearance — PKR ${totalAmount.toLocaleString()}`,
-                createdAt: new Date().toISOString(),
-              },
-            ],
-            isRenewal: i > 0,
-            createdAt: new Date().toISOString(),
-          });
-          pendingFromPrev = 0;
-        } else if (isNewest) {
-          await db.paymentCycles.add({
-            customerId: Number(customerId),
-            cycleStartDate: cs,
-            cycleEndDate: ce,
-            totalAmount,
-            amountPaid: 0,
-            amountPending: totalAmount,
-            status: "pending",
-            shiftedAmount: 0,
-            previousBalance,
-            installments: [],
-            isRenewal: i > 0,
-            createdAt: new Date().toISOString(),
-          });
-        } else if (isPaidAfterStreak) {
-          await db.paymentCycles.add({
-            customerId: Number(customerId),
-            cycleStartDate: cs,
-            cycleEndDate: ce,
-            totalAmount,
-            amountPaid: totalAmount,
-            amountPending: 0,
-            status: "clear",
-            shiftedAmount: 0,
-            previousBalance,
-            installments: [
-              {
-                id: crypto.randomUUID(),
-                amountPaid: totalAmount,
-                datePaid: cs,
-                note: `Payment (cycle ${i + 1})`,
-                createdAt: new Date().toISOString(),
-              },
-            ],
-            isRenewal: i > 0,
-            createdAt: new Date().toISOString(),
-          });
-          pendingFromPrev = 0;
-        } else {
-          await db.paymentCycles.add({
-            customerId: Number(customerId),
-            cycleStartDate: cs,
-            cycleEndDate: ce,
-            totalAmount,
-            amountPaid: 0,
-            amountPending: 0,
-            status: "clear",
-            shiftedAmount: totalAmount,
-            previousBalance,
-            installments: [],
-            isRenewal: i > 0,
-            createdAt: new Date().toISOString(),
-          });
-          pendingFromPrev = totalAmount;
-        }
-      }
-      await usePaymentStore.getState().loadCycles();
-      console.log(
-        `✅ Streak test for customer ${customerId}: ${unpaidStreak} unpaid → mega payment → alternating`,
-      );
-    } catch (err) {
-      console.error("❌", err);
-    }
-  };
-
-  // ── 8. Inspect ──────────────────────────────────────────────────────────────
-  window.listCustomers = () => {
-    const customers = useCustomerStore.getState().customers;
-    console.table(
-      customers.map((c, i) => ({
-        "#": i + 1,
-        ID: c.id,
-        Name: c.fullName,
-        Username: c.userName,
-        Area: c.mainArea,
-        Archived: c.isArchived ? "Yes" : "No",
-      })),
-    );
-    console.log(`Total: ${customers.length} (including archived)`);
-  };
-
-  window.dbStats = async () => {
-    const customers = await db.customers.toArray();
-    const cycles = await db.paymentCycles.toArray();
-    const packages = await db.packages.toArray();
-    const inventory = await db.inventory.toArray();
-    const expenses = await db.expenses.toArray();
-    const areas = (await db.settings.get("areas"))?.value || [];
-    const jobs =
-      JSON.parse(localStorage.getItem("isp_db") || "{}").connectionJobs || [];
-
-    console.log("📊 Database Stats:");
-    console.table({
-      Subscribers: {
-        count: customers.length,
-        archived: customers.filter((c) => c.isArchived).length,
-      },
-      PaymentCycles: { count: cycles.length },
-      Packages: { count: packages.length },
-      InventoryItems: { count: inventory.length },
-      Expenses: { count: expenses.length },
-      ConnectionJobs: { count: jobs.length },
-      CoverageAreas: { count: areas.length },
-    });
-  };
-
-  // ── 9. Clear All Data ────────────────────────────────────────────────────────
-  window.clearAllData = async () => {
-    if (
-      !confirm(
-        "⚠️ DELETE ALL customers, payments, inventory, expenses, and jobs? Packages & areas will be kept.",
-      )
-    )
-      return;
-    await _wipeAllData();
-    console.log("✨ All data cleared. Packages and areas kept.");
-  };
-
-  window.clearEverything = async () => {
-    if (
-      !confirm("⚠️ DELETE ABSOLUTELY EVERYTHING including packages and areas?")
-    )
-      return;
-    await _wipeAllData();
-    // Also wipe packages and areas
-    const pkgs = await db.packages.toArray();
-    for (const p of pkgs) await db.packages.delete(p.id);
-    await db.settings.put({ key: "areas", value: [] });
-    await reloadAll();
-    console.log("💥 Everything wiped. Fresh slate.");
-  };
-
-  // ── Internal wipe helper ────────────────────────────────────────────────────
-  async function _wipeAllData() {
-    console.log("🧹 Wiping data...");
-    const [customers, cycles, expenses, inventory] = await Promise.all([
-      db.customers.toArray(),
-      db.paymentCycles.toArray(),
-      db.expenses.toArray(),
-      db.inventory.toArray(),
-    ]);
-    for (const c of customers) await db.customers.delete(c.id);
-    for (const c of cycles) await db.paymentCycles.delete(c.id);
-    for (const e of expenses) await db.expenses.delete(e.id);
-    for (const i of inventory) await db.inventory.delete(i.id);
-
-    // Wipe connection jobs from localStorage
-    try {
-      const raw = localStorage.getItem("isp_db");
-      const data = raw ? JSON.parse(raw) : {};
-      data.connectionJobs = [];
-      localStorage.setItem("isp_db", JSON.stringify(data));
-    } catch (_) {
-      console.log("haha", _);
-    }
-
-    await reloadAll();
-  }
-
-  // ── Help ────────────────────────────────────────────────────────────────────
-  console.log("🛠️  DevTools Ready — available commands:");
-  console.log("");
-  console.log(
-    "── QUICK START ────────────────────────────────────────────────",
-  );
-  console.log(
-    "  seedAll()              → seed everything: areas + packages + inventory + 500 subscribers",
-  );
-  console.log(
-    "  seedAll(50)            → same but only 50 subscribers (faster for quick checks)",
-  );
-  console.log(
-    "  seedAll(500, true)     → wipe first, then seed 500 subscribers",
-  );
-  console.log("");
-  console.log(
-    "── SEED INDIVIDUALLY ──────────────────────────────────────────",
-  );
-  console.log("  seedAreas()            → add 6 coverage areas");
-  console.log("  seedAreas(['A','B'])   → add custom areas");
-  console.log("  seedPackages()         → add 5 packages (Basic → Pro)");
-  console.log("  seedInventory()        → add 6 inventory items");
-  console.log(
-    "  seedSubscribers(100)   → add 100 subscribers (needs packages+areas first)",
-  );
-  console.log("");
-  console.log(
-    "── INSPECT ────────────────────────────────────────────────────",
-  );
-  console.log("  dbStats()              → count of every table");
-  console.log(
-    "  listCustomers()        → table of all subscriber IDs and names",
-  );
-  console.log("");
-  console.log(
-    "── CYCLE TOOLS ────────────────────────────────────────────────",
-  );
-  console.log(
-    "  generateTestCycles(id, price, count)        → mixed paid/unpaid history",
-  );
-  console.log(
-    "  generateStreakTest(id, price, streak, total) → streak of unpaid then mega payment",
-  );
-  console.log("");
-  console.log(
-    "── CLEAR DATA ─────────────────────────────────────────────────",
-  );
-  console.log(
-    "  clearAllData()         → delete subscribers, payments, inventory, expenses",
-  );
-  console.log(
-    "  clearEverything()      → delete EVERYTHING including packages and areas",
-  );
-};
 </file>
 
 <file path="src/pages/Customers/CustomerForm.jsx">
@@ -9729,6 +8844,1238 @@ function SortIcon({ field, sortField, sortDir }) {
     <ChevronDown size={11} className="text-blue-500" />
   );
 }
+</file>
+
+<file path="src/utils/devTools.js">
+// src/utils/devTools.js
+// ─────────────────────────────────────────────────────────────────────────────
+//  Galaxy ISP — Developer / Test-Data Tools
+//  Attach to window so you can call them from the browser console.
+// ─────────────────────────────────────────────────────────────────────────────
+import db from "../db/database";
+import usePaymentStore from "../store/usePaymentStore";
+import useCustomerStore from "../store/useCustomerStore";
+import useExpenseStore from "../store/useExpenseStore";
+import useInventoryStore from "../store/useInventoryStore";
+import usePackageStore from "../store/usePackageStore";
+import useConnectionJobStore from "../store/useConnectionJobStore";
+import { addDays, today, CYCLE_LENGTH_DAYS } from "./dateUtils";
+
+// ─── Seed Data ────────────────────────────────────────────────────────────────
+
+const SEED_AREAS = [
+  "City Center",
+  "North Town",
+  "South Block",
+  "Garden Colony",
+  "Model Town",
+  "DHA Phase 1",
+];
+
+const SEED_AGENTS = [
+  "Usman Tariq",
+  "Bilal Raza",
+  "Kamran Sheikh",
+  "Naveed Akhtar",
+  "Zubair Malik",
+  "Adeel Hussain",
+];
+
+const SEED_PACKAGES = [
+  { name: "Starter 5 MB", speedMbps: 5, price: 800 },
+  { name: "Basic 10 MB", speedMbps: 10, price: 1400 },
+  { name: "Standard 25 MB", speedMbps: 25, price: 2200 },
+  { name: "Fast 50 MB", speedMbps: 50, price: 3200 },
+  { name: "Ultra 100 MB", speedMbps: 100, price: 4800 },
+];
+
+// 7 inventory items with varied stock levels
+const SEED_INVENTORY = [
+  { description: "ONU Device", unit: "piece", qty: 250, unitRate: 900 },
+  { description: "Fiber Cable", unit: "meter", qty: 8000, unitRate: 18 },
+  { description: "Ethernet Cable", unit: "meter", qty: 4000, unitRate: 12 },
+  { description: "Splitter 1:8", unit: "piece", qty: 120, unitRate: 380 },
+  { description: "Wall Socket", unit: "piece", qty: 350, unitRate: 130 },
+  { description: "Cable Tie", unit: "piece", qty: 2000, unitRate: 5 },
+  { description: "Fiber Connector", unit: "piece", qty: 500, unitRate: 45 },
+];
+
+// Pakistani names pool
+const FIRST_NAMES = [
+  "Ahmed",
+  "Ali",
+  "Hassan",
+  "Usman",
+  "Bilal",
+  "Tariq",
+  "Imran",
+  "Faisal",
+  "Zubair",
+  "Naveed",
+  "Kamran",
+  "Salman",
+  "Asad",
+  "Omar",
+  "Adeel",
+  "Hamid",
+  "Waseem",
+  "Shoaib",
+  "Irfan",
+  "Javed",
+  "Fatima",
+  "Ayesha",
+  "Sana",
+  "Nadia",
+  "Maria",
+  "Hira",
+  "Zara",
+  "Sara",
+  "Amna",
+  "Rabia",
+  "Saima",
+  "Uzma",
+  "Shazia",
+  "Bushra",
+  "Nazia",
+  "Sobia",
+  "Rubina",
+  "Samia",
+  "Asma",
+  "Kiran",
+];
+const LAST_NAMES = [
+  "Khan",
+  "Ahmed",
+  "Ali",
+  "Malik",
+  "Sheikh",
+  "Butt",
+  "Chaudhry",
+  "Akhtar",
+  "Hussain",
+  "Baig",
+  "Mirza",
+  "Qureshi",
+  "Siddiqui",
+  "Ansari",
+  "Hashmi",
+  "Raza",
+  "Rizvi",
+  "Javed",
+  "Iqbal",
+  "Nawaz",
+  "Zafar",
+  "Mehmood",
+  "Aslam",
+  "Farooq",
+  "Bhatti",
+  "Dogar",
+  "Gondal",
+  "Niazi",
+  "Warraich",
+  "Bajwa",
+];
+
+// ─── Status Distribution ──────────────────────────────────────────────────────
+//
+//  Display statuses (from Statusutils.js):
+//    "clear"     → active customer, active cycle, fully paid
+//    "pending"   → active customer, active cycle, unpaid balance
+//    "expired"   → active customer, cycle ended + unpaid
+//    "renewal"   → active customer, cycle ended + paid (needs renewal)
+//    "suspended" → manually suspended by operator
+//
+//  We map these to internal "scenario" keys used by buildCycles():
+//    "clear"     → 35 %
+//    "pending"   → 25 %
+//    "expired"   → 15 %
+//    "renewal"   → 10 %
+//    "suspended" → 10 %
+//    "archived"  → 5  %
+
+const STATUS_POOL = [
+  ...Array(35).fill("clear"),
+  ...Array(25).fill("pending"),
+  ...Array(15).fill("expired"),
+  ...Array(10).fill("renewal"),
+  ...Array(10).fill("suspended"),
+  ...Array(5).fill("archived"),
+];
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function pick(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function rand(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function randomPhone() {
+  const prefixes = [
+    "0300",
+    "0301",
+    "0302",
+    "0303",
+    "0311",
+    "0312",
+    "0321",
+    "0333",
+    "0345",
+    "0346",
+  ];
+  return pick(prefixes) + String(rand(1000000, 9999999));
+}
+
+function randomUsername(firstName, lastName, idx) {
+  return (firstName + lastName).toLowerCase().replace(/\s/g, "") + idx;
+}
+
+function makeInstallment(amountPaid, datePaid, note = "Seeded") {
+  return {
+    id: crypto.randomUUID(),
+    amountPaid,
+    datePaid,
+    note,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+async function reloadAll() {
+  await Promise.all([
+    useCustomerStore.getState().loadCustomers(),
+    usePaymentStore.getState().loadCycles(),
+    useExpenseStore.getState().loadExpenses(),
+    useInventoryStore.getState().loadInventory(),
+    usePackageStore.getState().loadPackages(),
+    useConnectionJobStore.getState().loadJobs(),
+  ]);
+}
+
+// ─── Core: Build payment cycles for one customer ──────────────────────────────
+//
+//  numHistoricalCycles: how many past cycles to create before the current one.
+//  scenario:           drives the shape of the CURRENT (latest) cycle.
+//
+//  Historical pattern (cycles before the current one):
+//    Even index → paid in full
+//    Odd  index → carried forward (shifted to next cycle)
+//
+async function buildCycles(
+  customerId,
+  packagePrice,
+  scenario,
+  numHistoricalCycles = 3,
+) {
+  const totalCycles = numHistoricalCycles + 1; // historical + current
+
+  // Build date ranges (oldest → newest)
+  const ranges = [];
+  // Current cycle: started 5 days ago, ends CYCLE_LENGTH_DAYS later
+  let end = addDays(today(), CYCLE_LENGTH_DAYS - 5);
+  let start = addDays(today(), -5);
+  for (let i = 0; i < totalCycles; i++) {
+    ranges.unshift({ start, end });
+    end = addDays(start, -1);
+    start = addDays(end, -CYCLE_LENGTH_DAYS);
+  }
+
+  let pendingFromPrev = 0;
+
+  // Historical cycles
+  for (let i = 0; i < numHistoricalCycles; i++) {
+    const { start: s, end: e } = ranges[i];
+    const isPaid = i % 2 === 0;
+    const totalAmount = packagePrice + pendingFromPrev;
+    const previousBalance = pendingFromPrev;
+
+    if (isPaid) {
+      await db.paymentCycles.add({
+        customerId: Number(customerId),
+        cycleStartDate: s,
+        cycleEndDate: e,
+        totalAmount,
+        amountPaid: totalAmount,
+        amountPending: 0,
+        status: "clear",
+        shiftedAmount: 0,
+        previousBalance,
+        installments: [makeInstallment(totalAmount, s, "Seed: paid")],
+        isRenewal: i > 0,
+        createdAt: new Date().toISOString(),
+      });
+      pendingFromPrev = 0;
+    } else {
+      // Unpaid — carried forward
+      await db.paymentCycles.add({
+        customerId: Number(customerId),
+        cycleStartDate: s,
+        cycleEndDate: e,
+        totalAmount,
+        amountPaid: 0,
+        amountPending: 0,
+        status: "clear",
+        shiftedAmount: totalAmount,
+        previousBalance,
+        installments: [],
+        isRenewal: i > 0,
+        createdAt: new Date().toISOString(),
+      });
+      pendingFromPrev = totalAmount;
+    }
+  }
+
+  // Current cycle
+  const { start: cs, end: ce } = ranges[totalCycles - 1];
+  const totalAmount = packagePrice + pendingFromPrev;
+  const previousBalance = pendingFromPrev;
+
+  switch (scenario) {
+    case "clear":
+      await db.paymentCycles.add({
+        customerId: Number(customerId),
+        cycleStartDate: cs,
+        cycleEndDate: ce,
+        totalAmount,
+        amountPaid: totalAmount,
+        amountPending: 0,
+        status: "clear",
+        shiftedAmount: 0,
+        previousBalance,
+        installments: [makeInstallment(totalAmount, cs, "Seed: cleared")],
+        isRenewal: true,
+        createdAt: new Date().toISOString(),
+      });
+      break;
+
+    case "pending": {
+      // Partially paid — some amount still owed within active cycle
+      const partialPaid = Math.floor(totalAmount * (rand(10, 60) / 100));
+      const stillOwed = totalAmount - partialPaid;
+      await db.paymentCycles.add({
+        customerId: Number(customerId),
+        cycleStartDate: cs,
+        cycleEndDate: ce,
+        totalAmount,
+        amountPaid: partialPaid,
+        amountPending: stillOwed,
+        status: "pending",
+        shiftedAmount: 0,
+        previousBalance,
+        installments:
+          partialPaid > 0
+            ? [
+                makeInstallment(
+                  partialPaid,
+                  addDays(cs, rand(1, 5)),
+                  "Seed: partial",
+                ),
+              ]
+            : [],
+        isRenewal: true,
+        createdAt: new Date().toISOString(),
+      });
+      break;
+    }
+
+    case "expired": {
+      // Cycle ended 10–20 days ago, still unpaid
+      const expiredEnd = addDays(today(), -rand(10, 20));
+      const expiredStart = addDays(expiredEnd, -CYCLE_LENGTH_DAYS);
+      await db.paymentCycles.add({
+        customerId: Number(customerId),
+        cycleStartDate: expiredStart,
+        cycleEndDate: expiredEnd,
+        totalAmount,
+        amountPaid: 0,
+        amountPending: totalAmount,
+        status: "pending",
+        shiftedAmount: 0,
+        previousBalance,
+        installments: [],
+        isRenewal: true,
+        createdAt: new Date().toISOString(),
+      });
+      break;
+    }
+
+    case "renewal": {
+      // Cycle ended recently, fully paid → needs renewal
+      const renewEnd = addDays(today(), -rand(1, 5));
+      const renewStart = addDays(renewEnd, -CYCLE_LENGTH_DAYS);
+      await db.paymentCycles.add({
+        customerId: Number(customerId),
+        cycleStartDate: renewStart,
+        cycleEndDate: renewEnd,
+        totalAmount,
+        amountPaid: totalAmount,
+        amountPending: 0,
+        status: "clear",
+        shiftedAmount: 0,
+        previousBalance,
+        installments: [
+          makeInstallment(totalAmount, renewStart, "Seed: renewal"),
+        ],
+        isRenewal: true,
+        createdAt: new Date().toISOString(),
+      });
+      break;
+    }
+
+    case "suspended": {
+      // Partial payment, cycle active, customer manually suspended
+      const partial = Math.floor(totalAmount * (rand(20, 50) / 100));
+      await db.paymentCycles.add({
+        customerId: Number(customerId),
+        cycleStartDate: cs,
+        cycleEndDate: ce,
+        totalAmount,
+        amountPaid: partial,
+        amountPending: totalAmount - partial,
+        status: "pending",
+        shiftedAmount: 0,
+        previousBalance,
+        installments: [
+          makeInstallment(
+            partial,
+            addDays(cs, 2),
+            "Seed: partial before suspend",
+          ),
+        ],
+        isRenewal: true,
+        createdAt: new Date().toISOString(),
+      });
+      break;
+    }
+
+    case "archived": {
+      // Old, fully paid cycle from 60–90 days ago
+      const archEnd = addDays(today(), -rand(60, 90));
+      const archStart = addDays(archEnd, -CYCLE_LENGTH_DAYS);
+      await db.paymentCycles.add({
+        customerId: Number(customerId),
+        cycleStartDate: archStart,
+        cycleEndDate: archEnd,
+        totalAmount: packagePrice,
+        amountPaid: packagePrice,
+        amountPending: 0,
+        status: "clear",
+        shiftedAmount: 0,
+        previousBalance: 0,
+        installments: [
+          makeInstallment(packagePrice, archStart, "Seed: archived final"),
+        ],
+        isRenewal: true,
+        createdAt: new Date().toISOString(),
+      });
+      break;
+    }
+
+    default:
+      break;
+  }
+}
+
+// ─── Main DevTools Setup ──────────────────────────────────────────────────────
+
+export const setupDevTools = () => {
+  // ════════════════════════════════════════════════════════════════════════════
+  //  seedAll(count, wipeFirst)
+  //  The one-command full seeder.
+  //
+  //  Usage:
+  //    seedAll()              → seed everything with 1000 subscribers
+  //    seedAll(200)           → 200 subscribers (faster for quick checks)
+  //    seedAll(1000, true)    → wipe all existing data first, then seed 1000
+  // ════════════════════════════════════════════════════════════════════════════
+  window.seedAll = async (count = 1000, wipeFirst = false) => {
+    if (wipeFirst) {
+      const ok = confirm(
+        `⚠️ This will DELETE all existing data and seed ${count} subscribers. Continue?`,
+      );
+      if (!ok) return;
+      await _wipeAllData(true);
+    }
+
+    console.log(
+      `⏳ Starting full seed: areas + agents + packages + inventory + ${count} subscribers…`,
+    );
+    const t0 = Date.now();
+
+    // ── Areas ────────────────────────────────────────────────────────────────
+    const existingAreas = (await db.settings.get("areas"))?.value || [];
+    const mergedAreas = [...new Set([...existingAreas, ...SEED_AREAS])];
+    await db.settings.put({ key: "areas", value: mergedAreas });
+    console.log(
+      `  ✅ Areas (${mergedAreas.length}): ${mergedAreas.join(", ")}`,
+    );
+
+    // ── Recovery Agents ──────────────────────────────────────────────────────
+    const existingAgents = (await db.settings.get("agents"))?.value || [];
+    const mergedAgents = [...new Set([...existingAgents, ...SEED_AGENTS])];
+    await db.settings.put({ key: "agents", value: mergedAgents });
+    console.log(
+      `  ✅ Agents (${mergedAgents.length}): ${mergedAgents.join(", ")}`,
+    );
+
+    // ── Packages ─────────────────────────────────────────────────────────────
+    let existingPkgs = await db.packages.toArray();
+    if (existingPkgs.length === 0) {
+      for (const pkg of SEED_PACKAGES) {
+        await db.packages.add({
+          ...pkg,
+          priceHistory: [],
+          lastUpdated: null,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      existingPkgs = await db.packages.toArray();
+      console.log(
+        `  ✅ Packages (${existingPkgs.length}): ${existingPkgs.map((p) => p.name).join(", ")}`,
+      );
+    } else {
+      console.log(
+        `  ℹ️  Packages already exist (${existingPkgs.length}), skipping.`,
+      );
+    }
+
+    // ── Inventory ────────────────────────────────────────────────────────────
+    let existingInv = await db.inventory.toArray();
+    if (existingInv.length === 0) {
+      for (const item of SEED_INVENTORY) {
+        await db.inventory.add({
+          description: item.description,
+          unit: item.unit,
+          quantity: item.qty,
+          unitRate: item.unitRate,
+          amount: item.qty * item.unitRate,
+          stockIn: item.qty,
+          stockOut: 0,
+          inHand: item.qty,
+          received: item.qty,
+          issued: 0,
+          balanced: item.qty,
+          purchaseDate: today(),
+          invoiceNo: null,
+          remarks: "Seeded by devTools",
+          restockLog: [],
+          issueLog: [],
+          createdAt: new Date().toISOString(),
+        });
+      }
+      console.log(
+        `  ✅ Inventory (${SEED_INVENTORY.length} items): ${SEED_INVENTORY.map((i) => i.description).join(", ")}`,
+      );
+    } else {
+      console.log(
+        `  ℹ️  Inventory already exists (${existingInv.length} items), skipping.`,
+      );
+    }
+
+    // ── Subscribers ──────────────────────────────────────────────────────────
+    const packages = await db.packages.toArray();
+    const areas = (await db.settings.get("areas"))?.value || SEED_AREAS;
+
+    let created = 0,
+      failed = 0;
+    const BATCH = 50;
+
+    for (let i = 0; i < count; i++) {
+      try {
+        const firstName = pick(FIRST_NAMES);
+        const lastName = pick(LAST_NAMES);
+        const scenario = STATUS_POOL[i % STATUS_POOL.length];
+        const pkg = pick(packages);
+        const area = pick(areas);
+        const isArchived = scenario === "archived";
+        const isSuspended = scenario === "suspended";
+
+        // Some subscribers get extra historical cycles (2–6) to stress-test multi-cycle UI
+        const numHistorical = rand(1, 6);
+
+        const customerId = await db.customers.add({
+          fullName: `${firstName} ${lastName}`,
+          userName: randomUsername(firstName, lastName, i + 1),
+          mobileNo: randomPhone(),
+          mainArea: area,
+          packageId: pkg.id,
+          status: isArchived
+            ? "terminated"
+            : isSuspended
+              ? "suspended"
+              : "active",
+          isArchived,
+          archivedAt: isArchived ? addDays(today(), -rand(50, 100)) : null,
+          archiveReason: isArchived
+            ? pick([
+                "Left area",
+                "Relocated",
+                "Switched provider",
+                "Non-payment",
+              ])
+            : "",
+          lockedPackagePrice: pkg.price,
+          createdAt: new Date().toISOString(),
+        });
+
+        await buildCycles(customerId, pkg.price, scenario, numHistorical);
+        created++;
+
+        if ((i + 1) % BATCH === 0) {
+          console.log(`  ⏳ ${i + 1}/${count} subscribers created…`);
+        }
+      } catch (err) {
+        failed++;
+        console.warn(`  ⚠️  Failed on subscriber ${i + 1}:`, err.message);
+      }
+    }
+
+    // Reload all stores
+    await reloadAll();
+
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    const breakdown = {
+      "✅ Clear (paid)": Math.round(count * 0.35),
+      "🟡 Pending": Math.round(count * 0.25),
+      "🔴 Expired": Math.round(count * 0.15),
+      "🔄 Renewal due": Math.round(count * 0.1),
+      "⛔ Suspended": Math.round(count * 0.1),
+      "📦 Archived": Math.round(count * 0.05),
+    };
+    console.log(`\n✅ Seeding complete in ${elapsed}s`);
+    console.log(`   👥 Subscribers: ${created} created, ${failed} failed`);
+    console.log(`   📊 Approximate status breakdown:`);
+    Object.entries(breakdown).forEach(([k, v]) =>
+      console.log(`      ${k}: ~${v}`),
+    );
+    console.log(
+      `\n   ℹ️  Each subscriber has 2–7 historical cycles (great for stress-testing).`,
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  seedAreas(customList?)
+  //  Usage:
+  //    seedAreas()
+  //    seedAreas(["Block A", "Cantt", "Gulberg"])
+  // ════════════════════════════════════════════════════════════════════════════
+  window.seedAreas = async (customList) => {
+    const list = customList || SEED_AREAS;
+    const existing = (await db.settings.get("areas"))?.value || [];
+    const merged = [...new Set([...existing, ...list])];
+    await db.settings.put({ key: "areas", value: merged });
+    await reloadAll();
+    console.log(`✅ Areas saved (${merged.length}): ${merged.join(", ")}`);
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  seedAgents(customList?)
+  //  Usage:
+  //    seedAgents()
+  //    seedAgents(["Ali Raza", "Hamid Khan"])
+  // ════════════════════════════════════════════════════════════════════════════
+  window.seedAgents = async (customList) => {
+    const list = customList || SEED_AGENTS;
+    const existing = (await db.settings.get("agents"))?.value || [];
+    const merged = [...new Set([...existing, ...list])];
+    await db.settings.put({ key: "agents", value: merged });
+    await reloadAll();
+    console.log(
+      `✅ Recovery Agents saved (${merged.length}): ${merged.join(", ")}`,
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  seedPackages(customList?)
+  //  Usage:
+  //    seedPackages()
+  //    seedPackages([{ name: "Gold 20MB", speedMbps: 20, price: 1800 }])
+  // ════════════════════════════════════════════════════════════════════════════
+  window.seedPackages = async (customList) => {
+    const list = customList || SEED_PACKAGES;
+    for (const pkg of list) {
+      await db.packages.add({
+        ...pkg,
+        price: Number(pkg.price),
+        speedMbps: Number(pkg.speedMbps) || 0,
+        priceHistory: [],
+        lastUpdated: null,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    await usePackageStore.getState().loadPackages();
+    console.log(`✅ Added ${list.length} packages:`);
+    console.table(list);
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  seedInventory(customList?)
+  //  Usage:
+  //    seedInventory()
+  //    seedInventory([{ description: "Router", unit: "piece", qty: 50, unitRate: 2500 }])
+  // ════════════════════════════════════════════════════════════════════════════
+  window.seedInventory = async (customList) => {
+    const list = customList || SEED_INVENTORY;
+    for (const item of list) {
+      await db.inventory.add({
+        description: item.description,
+        unit: item.unit,
+        quantity: item.qty,
+        unitRate: item.unitRate,
+        amount: item.qty * item.unitRate,
+        stockIn: item.qty,
+        stockOut: 0,
+        inHand: item.qty,
+        received: item.qty,
+        issued: 0,
+        balanced: item.qty,
+        purchaseDate: today(),
+        invoiceNo: null,
+        remarks: "Seeded by devTools",
+        restockLog: [],
+        issueLog: [],
+        createdAt: new Date().toISOString(),
+      });
+    }
+    await useInventoryStore.getState().loadInventory();
+    console.log(`✅ Added ${list.length} inventory items:`);
+    console.table(
+      list.map((i) => ({
+        Item: i.description,
+        Unit: i.unit,
+        Qty: i.qty,
+        Rate: i.unitRate,
+      })),
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  seedSubscribers(count)
+  //  Adds more subscribers using already-seeded packages and areas.
+  //  Usage:
+  //    seedSubscribers(500)
+  // ════════════════════════════════════════════════════════════════════════════
+  window.seedSubscribers = async (count = 100) => {
+    const packages = await db.packages.toArray();
+    const areas = (await db.settings.get("areas"))?.value || [];
+
+    if (packages.length === 0)
+      return console.error("❌ No packages. Run seedPackages() first.");
+    if (areas.length === 0)
+      return console.error("❌ No areas. Run seedAreas() first.");
+
+    console.log(`⏳ Adding ${count} subscribers…`);
+    let created = 0;
+
+    for (let i = 0; i < count; i++) {
+      const firstName = pick(FIRST_NAMES);
+      const lastName = pick(LAST_NAMES);
+      const scenario = STATUS_POOL[i % STATUS_POOL.length];
+      const pkg = pick(packages);
+      const area = pick(areas);
+      const isArchived = scenario === "archived";
+      const isSuspended = scenario === "suspended";
+      const numHistorical = rand(1, 6);
+
+      const customerId = await db.customers.add({
+        fullName: `${firstName} ${lastName}`,
+        userName: randomUsername(firstName, lastName, Date.now() + i),
+        mobileNo: randomPhone(),
+        mainArea: area,
+        packageId: pkg.id,
+        status: isArchived
+          ? "terminated"
+          : isSuspended
+            ? "suspended"
+            : "active",
+        isArchived,
+        archivedAt: isArchived ? addDays(today(), -rand(50, 100)) : null,
+        archiveReason: isArchived
+          ? pick(["Left area", "Relocated", "Non-payment"])
+          : "",
+        lockedPackagePrice: pkg.price,
+        createdAt: new Date().toISOString(),
+      });
+
+      await buildCycles(customerId, pkg.price, scenario, numHistorical);
+      created++;
+    }
+
+    await useCustomerStore.getState().loadCustomers();
+    await usePaymentStore.getState().loadCycles();
+    console.log(`✅ Added ${created} subscribers.`);
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  generateTestCycles(customerId, packagePrice, numCycles)
+  //  Replace a specific customer's cycles with a full alternating paid/unpaid history.
+  //  Usage:
+  //    generateTestCycles(5, 2500, 10)
+  // ════════════════════════════════════════════════════════════════════════════
+  window.generateTestCycles = async (
+    customerId,
+    packagePrice = 2500,
+    numCycles = 10,
+  ) => {
+    if (!customerId)
+      return console.error(
+        "❌ Provide a customerId. Example: generateTestCycles(5, 2500, 10)",
+      );
+    try {
+      // Wipe existing cycles for this customer
+      const allCycles = await db.paymentCycles.toArray();
+      for (const c of allCycles.filter(
+        (c) => Number(c.customerId) === Number(customerId),
+      )) {
+        await db.paymentCycles.delete(c.id);
+      }
+
+      const ranges = [];
+      let end = addDays(today(), CYCLE_LENGTH_DAYS - 10);
+      let start = addDays(today(), -10);
+      for (let i = 0; i < numCycles; i++) {
+        ranges.unshift({ start, end });
+        end = addDays(start, -1);
+        start = addDays(end, -CYCLE_LENGTH_DAYS);
+      }
+
+      let pendingFromPrev = 0;
+      for (let i = 0; i < ranges.length; i++) {
+        const { start: cs, end: ce } = ranges[i];
+        const isNewest = i === ranges.length - 1;
+        const isPaid = !isNewest && i % 2 !== 0;
+        const totalAmount = packagePrice + pendingFromPrev;
+        const prevBal = pendingFromPrev;
+
+        if (isPaid) {
+          await db.paymentCycles.add({
+            customerId: Number(customerId),
+            cycleStartDate: cs,
+            cycleEndDate: ce,
+            totalAmount,
+            amountPaid: totalAmount,
+            amountPending: 0,
+            status: "clear",
+            shiftedAmount: 0,
+            previousBalance: prevBal,
+            installments: [makeInstallment(totalAmount, cs, `Cycle ${i + 1}`)],
+            isRenewal: i > 0,
+            createdAt: new Date().toISOString(),
+          });
+          pendingFromPrev = 0;
+        } else if (!isNewest) {
+          await db.paymentCycles.add({
+            customerId: Number(customerId),
+            cycleStartDate: cs,
+            cycleEndDate: ce,
+            totalAmount,
+            amountPaid: 0,
+            amountPending: 0,
+            status: "clear",
+            shiftedAmount: totalAmount,
+            previousBalance: prevBal,
+            installments: [],
+            isRenewal: i > 0,
+            createdAt: new Date().toISOString(),
+          });
+          pendingFromPrev = totalAmount;
+        } else {
+          await db.paymentCycles.add({
+            customerId: Number(customerId),
+            cycleStartDate: cs,
+            cycleEndDate: ce,
+            totalAmount,
+            amountPaid: 0,
+            amountPending: totalAmount,
+            status: "pending",
+            shiftedAmount: 0,
+            previousBalance: prevBal,
+            installments: [],
+            isRenewal: i > 0,
+            createdAt: new Date().toISOString(),
+          });
+        }
+      }
+
+      await usePaymentStore.getState().loadCycles();
+      console.log(
+        `✅ ${numCycles} alternating cycles created for customer ${customerId}.`,
+      );
+    } catch (err) {
+      console.error("❌", err);
+    }
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  generateStreakTest(customerId, packagePrice, unpaidStreak, totalCycles)
+  //  Creates a streak of consecutive unpaid cycles, then a mega-clearance payment.
+  //  Usage:
+  //    generateStreakTest(5, 1500, 4, 8)
+  //    → 4 unpaid → mega payment → alternating paid/unpaid until newest (pending)
+  // ════════════════════════════════════════════════════════════════════════════
+  window.generateStreakTest = async (
+    customerId,
+    packagePrice = 1500,
+    unpaidStreak = 4,
+    totalCycles = 8,
+  ) => {
+    if (!customerId) return console.error("❌ Provide a customerId.");
+    if (unpaidStreak >= totalCycles)
+      return console.error("❌ unpaidStreak must be < totalCycles.");
+    try {
+      const allCycles = await db.paymentCycles.toArray();
+      for (const c of allCycles.filter(
+        (c) => Number(c.customerId) === Number(customerId),
+      )) {
+        await db.paymentCycles.delete(c.id);
+      }
+
+      const ranges = [];
+      let end = addDays(today(), CYCLE_LENGTH_DAYS - 10);
+      let start = addDays(today(), -10);
+      for (let i = 0; i < totalCycles; i++) {
+        ranges.unshift({ start, end });
+        end = addDays(start, -1);
+        start = addDays(end, -CYCLE_LENGTH_DAYS);
+      }
+
+      let pendingFromPrev = 0;
+      for (let i = 0; i < ranges.length; i++) {
+        const { start: cs, end: ce } = ranges[i];
+        const isNewest = i === ranges.length - 1;
+        const totalAmount = packagePrice + pendingFromPrev;
+        const prevBal = pendingFromPrev;
+        const isInStreak = i < unpaidStreak;
+        const isMegaPayment = i === unpaidStreak;
+        const isPaidPostStreak = !isNewest && (i - unpaidStreak) % 2 === 1;
+
+        if (isInStreak) {
+          await db.paymentCycles.add({
+            customerId: Number(customerId),
+            cycleStartDate: cs,
+            cycleEndDate: ce,
+            totalAmount,
+            amountPaid: 0,
+            amountPending: 0,
+            status: "clear",
+            shiftedAmount: totalAmount,
+            previousBalance: prevBal,
+            installments: [],
+            isRenewal: i > 0,
+            createdAt: new Date().toISOString(),
+          });
+          pendingFromPrev = totalAmount;
+        } else if (isMegaPayment) {
+          await db.paymentCycles.add({
+            customerId: Number(customerId),
+            cycleStartDate: cs,
+            cycleEndDate: ce,
+            totalAmount,
+            amountPaid: totalAmount,
+            amountPending: 0,
+            status: "clear",
+            shiftedAmount: 0,
+            previousBalance: prevBal,
+            installments: [
+              makeInstallment(
+                totalAmount,
+                cs,
+                `Full clearance — PKR ${totalAmount.toLocaleString()}`,
+              ),
+            ],
+            isRenewal: i > 0,
+            createdAt: new Date().toISOString(),
+          });
+          pendingFromPrev = 0;
+        } else if (isNewest) {
+          await db.paymentCycles.add({
+            customerId: Number(customerId),
+            cycleStartDate: cs,
+            cycleEndDate: ce,
+            totalAmount,
+            amountPaid: 0,
+            amountPending: totalAmount,
+            status: "pending",
+            shiftedAmount: 0,
+            previousBalance: prevBal,
+            installments: [],
+            isRenewal: i > 0,
+            createdAt: new Date().toISOString(),
+          });
+        } else if (isPaidPostStreak) {
+          await db.paymentCycles.add({
+            customerId: Number(customerId),
+            cycleStartDate: cs,
+            cycleEndDate: ce,
+            totalAmount,
+            amountPaid: totalAmount,
+            amountPending: 0,
+            status: "clear",
+            shiftedAmount: 0,
+            previousBalance: prevBal,
+            installments: [makeInstallment(totalAmount, cs, `Cycle ${i + 1}`)],
+            isRenewal: i > 0,
+            createdAt: new Date().toISOString(),
+          });
+          pendingFromPrev = 0;
+        } else {
+          await db.paymentCycles.add({
+            customerId: Number(customerId),
+            cycleStartDate: cs,
+            cycleEndDate: ce,
+            totalAmount,
+            amountPaid: 0,
+            amountPending: 0,
+            status: "clear",
+            shiftedAmount: totalAmount,
+            previousBalance: prevBal,
+            installments: [],
+            isRenewal: i > 0,
+            createdAt: new Date().toISOString(),
+          });
+          pendingFromPrev = totalAmount;
+        }
+      }
+
+      await usePaymentStore.getState().loadCycles();
+      console.log(`✅ Streak test set for customer ${customerId}:`);
+      console.log(
+        `   ${unpaidStreak} unpaid → mega clearance → alternating → newest pending`,
+      );
+    } catch (err) {
+      console.error("❌", err);
+    }
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  inspectCustomer(customerId)
+  //  Print full cycle history for one subscriber.
+  //  Usage:
+  //    inspectCustomer(5)
+  // ════════════════════════════════════════════════════════════════════════════
+  window.inspectCustomer = async (customerId) => {
+    if (!customerId) return console.error("❌ Provide a customerId.");
+    const customer = await db.customers.get(Number(customerId));
+    if (!customer) return console.error(`❌ No customer with id ${customerId}`);
+    const allCycles = await db.paymentCycles.toArray();
+    const cycles = allCycles
+      .filter((c) => Number(c.customerId) === Number(customerId))
+      .sort((a, b) => a.cycleStartDate.localeCompare(b.cycleStartDate));
+
+    console.log(
+      `\n👤 ${customer.fullName} (@${customer.userName}) — ${customer.status}`,
+    );
+    console.log(
+      `   Package ID: ${customer.packageId} | Area: ${customer.mainArea}`,
+    );
+    console.log(`   Cycles: ${cycles.length}`);
+    console.table(
+      cycles.map((c, i) => ({
+        "#": i + 1,
+        Start: c.cycleStartDate,
+        End: c.cycleEndDate,
+        Total: c.totalAmount,
+        Paid: c.amountPaid,
+        Pending: c.amountPending,
+        Shifted: c.shiftedAmount,
+        PrevBal: c.previousBalance,
+        Status: c.status,
+        Payments: c.installments?.length || 0,
+      })),
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  listCustomers()
+  //  Quick table of all subscribers with their IDs.
+  // ════════════════════════════════════════════════════════════════════════════
+  window.listCustomers = () => {
+    const customers = useCustomerStore.getState().customers;
+    console.table(
+      customers.map((c, i) => ({
+        "#": i + 1,
+        ID: c.id,
+        Name: c.fullName,
+        Username: c.userName,
+        Area: c.mainArea,
+        Status: c.status,
+        Archived: c.isArchived ? "Yes" : "No",
+      })),
+    );
+    console.log(`Total: ${customers.length} subscribers (incl. archived)`);
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  dbStats()
+  //  Print row counts for every table + status breakdown.
+  // ════════════════════════════════════════════════════════════════════════════
+  window.dbStats = async () => {
+    const [customers, cycles, packages, inventory, expenses] =
+      await Promise.all([
+        db.customers.toArray(),
+        db.paymentCycles.toArray(),
+        db.packages.toArray(),
+        db.inventory.toArray(),
+        db.expenses.toArray(),
+      ]);
+    const areas = (await db.settings.get("areas"))?.value || [];
+    const agents = (await db.settings.get("agents"))?.value || [];
+
+    const active = customers.filter(
+      (c) => !c.isArchived && c.status === "active",
+    );
+    const suspended = customers.filter((c) => c.status === "suspended");
+    const archived = customers.filter((c) => c.isArchived);
+
+    console.log("📊 Database Stats:");
+    console.table({
+      "Subscribers (total)": { count: customers.length },
+      "  → Active": { count: active.length },
+      "  → Suspended": { count: suspended.length },
+      "  → Archived": { count: archived.length },
+      "Payment Cycles": { count: cycles.length },
+      Packages: { count: packages.length },
+      "Inventory Items": { count: inventory.length },
+      Expenses: { count: expenses.length },
+      "Coverage Areas": { count: areas.length },
+      "Recovery Agents": { count: agents.length },
+    });
+
+    const cyclesByCustomer = {};
+    for (const c of cycles) {
+      cyclesByCustomer[c.customerId] =
+        (cyclesByCustomer[c.customerId] || 0) + 1;
+    }
+    const counts = Object.values(cyclesByCustomer);
+    if (counts.length > 0) {
+      const avg = (counts.reduce((a, b) => a + b, 0) / counts.length).toFixed(
+        1,
+      );
+      const max = Math.max(...counts);
+      console.log(`\n   Cycles per subscriber — avg: ${avg}, max: ${max}`);
+    }
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  clearAllData()    — removes subscribers, payments, inventory, expenses
+  //  clearEverything() — also removes packages and areas
+  // ════════════════════════════════════════════════════════════════════════════
+  window.clearAllData = async () => {
+    if (
+      !confirm(
+        "⚠️ DELETE all subscribers, payments, inventory, and expenses?\n(Packages and areas will be kept.)",
+      )
+    )
+      return;
+    await _wipeAllData(false);
+    console.log("✨ Data cleared. Packages, areas, and agents kept.");
+  };
+
+  window.clearEverything = async () => {
+    if (
+      !confirm(
+        "⚠️ DELETE ABSOLUTELY EVERYTHING including packages, areas, and agents?",
+      )
+    )
+      return;
+    await _wipeAllData(true);
+    console.log("💥 Everything wiped. Fresh slate.");
+  };
+
+  // ── Internal wipe helper ──────────────────────────────────────────────────
+  async function _wipeAllData(alsoWipeSettings = false) {
+    console.log("🧹 Wiping data…");
+    const [customers, cycles, expenses, inventory, packages] =
+      await Promise.all([
+        db.customers.toArray(),
+        db.paymentCycles.toArray(),
+        db.expenses.toArray(),
+        db.inventory.toArray(),
+        db.packages.toArray(),
+      ]);
+
+    for (const r of customers) await db.customers.delete(r.id);
+    for (const r of cycles) await db.paymentCycles.delete(r.id);
+    for (const r of expenses) await db.expenses.delete(r.id);
+    for (const r of inventory) await db.inventory.delete(r.id);
+
+    if (alsoWipeSettings) {
+      for (const r of packages) await db.packages.delete(r.id);
+      await db.settings.put({ key: "areas", value: [] });
+      await db.settings.put({ key: "agents", value: [] });
+    }
+
+    await reloadAll();
+  }
+
+  // ── Help banner ───────────────────────────────────────────────────────────
+  console.log(
+    "%c🛠️  Galaxy ISP DevTools Ready",
+    "font-weight:bold;font-size:14px;color:#4f46e5",
+  );
+  console.log("");
+  console.log(
+    "── QUICK START ──────────────────────────────────────────────────────────",
+  );
+  console.log(
+    "  seedAll()              → seed EVERYTHING with 1000 subscribers",
+  );
+  console.log(
+    "  seedAll(200)           → same but only 200 subscribers (faster)",
+  );
+  console.log("  seedAll(1000, true)    → wipe all data first, then seed 1000");
+  console.log("");
+  console.log(
+    "── SEED INDIVIDUALLY ────────────────────────────────────────────────────",
+  );
+  console.log("  seedAreas()            → add 6 coverage areas to Settings");
+  console.log("  seedAgents()           → add 6 recovery agents to Settings");
+  console.log("  seedPackages()         → add 5 packages (Starter → Ultra)");
+  console.log("  seedInventory()        → add 7 inventory items");
+  console.log(
+    "  seedSubscribers(500)   → add 500 more subscribers (needs packages+areas)",
+  );
+  console.log("");
+  console.log(
+    "── STATUS MIX (per 100 subscribers) ────────────────────────────────────",
+  );
+  console.log(
+    "  ✅ Clear (paid)    ~35   🟡 Pending     ~25   🔴 Expired    ~15",
+  );
+  console.log(
+    "  🔄 Renewal due     ~10   ⛔ Suspended   ~10   📦 Archived   ~5",
+  );
+  console.log("");
+  console.log(
+    "── INSPECT ──────────────────────────────────────────────────────────────",
+  );
+  console.log("  dbStats()              → count every table + cycle stats");
+  console.log("  listCustomers()        → table of all subscriber IDs/names");
+  console.log(
+    "  inspectCustomer(id)    → full cycle history for one subscriber",
+  );
+  console.log("");
+  console.log(
+    "── CYCLE TOOLS ──────────────────────────────────────────────────────────",
+  );
+  console.log(
+    "  generateTestCycles(id, price, count)         → alternating paid/unpaid",
+  );
+  console.log(
+    "  generateStreakTest(id, price, streak, total) → streak + mega clearance",
+  );
+  console.log("");
+  console.log(
+    "── CLEAR DATA ───────────────────────────────────────────────────────────",
+  );
+  console.log(
+    "  clearAllData()         → delete subscribers, payments, inventory",
+  );
+  console.log(
+    "  clearEverything()      → delete EVERYTHING (incl. packages, areas)",
+  );
+};
 </file>
 
 <file path="src/pages/Payments/PaymentForm.jsx">

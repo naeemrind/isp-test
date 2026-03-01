@@ -432,7 +432,7 @@ export default function Dashboard({ onNavigate }) {
               icon={<TrendingUp size={16} />}
               label="Net Income"
               value={`PKR ${(mode === "monthly" ? monthly.netIncome : allTime.netIncome).toLocaleString()}`}
-              sub="Collected − expenses − warehouse stock"
+              sub="Revenue after expenses & unsold stock"
               color={
                 (mode === "monthly" ? monthly.netIncome : allTime.netIncome) >=
                 0
@@ -880,31 +880,66 @@ function BigCard({
                     )}
                     {infoContent.type === "netIncome" && (
                       <>
-                        <p className="font-bold text-gray-800 mb-2 text-sm">
+                        <p className="font-bold text-gray-800 mb-3 text-sm">
                           📊 Net Income Breakdown
                         </p>
-                        <div className="space-y-1.5">
-                          <div className="flex justify-between text-green-700">
-                            <span className="font-semibold">+ Collected</span>
-                            <span className="font-bold">
+                        <div className="space-y-2">
+                          {/* Collected */}
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <span className="font-semibold text-green-700 text-sm">
+                                ✅ Ever Collected
+                              </span>
+                              <p className="text-[10px] text-gray-400 mt-0.5 leading-relaxed">
+                                All subscriber payments received so far
+                              </p>
+                            </div>
+                            <span className="font-bold text-green-700 text-sm whitespace-nowrap ml-4">
                               PKR {infoContent.collected.toLocaleString()}
                             </span>
                           </div>
-                          <div className="flex justify-between text-red-600">
-                            <span>− Recorded Expenses</span>
-                            <span className="font-semibold">
+                          {/* Expenses */}
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <span className="text-red-600 font-semibold text-sm">
+                                ➖ Recorded Expenses
+                              </span>
+                              <p className="text-[10px] text-gray-400 mt-0.5">
+                                Bills, salaries, tools, etc.
+                              </p>
+                            </div>
+                            <span className="font-semibold text-red-600 text-sm whitespace-nowrap ml-4">
                               PKR {infoContent.expenses.toLocaleString()}
                             </span>
                           </div>
-                          <div className="flex justify-between text-red-600">
-                            <span>− Warehouse Stock</span>
-                            <span className="font-semibold">
+                          {/* Warehouse stock */}
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <span className="text-red-600 font-semibold text-sm">
+                                ➖ Stock in Warehouse
+                              </span>
+                              <p className="text-[10px] text-gray-400 mt-0.5 leading-relaxed max-w-44">
+                                Cash you already spent on materials still
+                                sitting unsold
+                              </p>
+                            </div>
+                            <span className="font-semibold text-red-600 text-sm whitespace-nowrap ml-4">
                               PKR {infoContent.warehouseStock.toLocaleString()}
                             </span>
                           </div>
-                          <div className="border-t border-gray-200 pt-1.5 flex justify-between font-bold text-gray-800">
-                            <span>= Net Income</span>
-                            <span>
+                          {/* Divider + result */}
+                          <div className="border-t-2 border-gray-200 pt-2 flex justify-between font-bold text-gray-900">
+                            <span className="text-sm">= Net Income</span>
+                            <span
+                              className={`text-sm whitespace-nowrap ml-4 ${
+                                infoContent.collected -
+                                  infoContent.expenses -
+                                  infoContent.warehouseStock >=
+                                0
+                                  ? "text-green-700"
+                                  : "text-red-600"
+                              }`}
+                            >
                               PKR{" "}
                               {(
                                 infoContent.collected -
@@ -914,18 +949,40 @@ function BigCard({
                             </span>
                           </div>
                         </div>
-                        <div className="mt-2 bg-blue-50 border border-blue-100 rounded-lg px-2.5 py-2 text-blue-700 leading-relaxed">
-                          <p className="font-semibold text-xs mb-0.5">
-                            Why does issuing stock increase Net Income?
-                          </p>
-                          <p className="text-xs">
-                            When you issue cable and the technician collects the
-                            cable money from the subscriber (included in their
-                            payment), your "Ever Collected" goes up AND your
-                            warehouse stock goes down — so Net Income grows.
-                            This is correct!
-                          </p>
-                        </div>
+                        {/* Contextual explanation */}
+                        {infoContent.collected -
+                          infoContent.expenses -
+                          infoContent.warehouseStock <
+                          0 && (
+                          <div className="mt-3 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2.5 text-blue-700 leading-relaxed">
+                            <p className="font-semibold text-xs mb-1">
+                              Why is this negative?
+                            </p>
+                            <p className="text-xs">
+                              You have{" "}
+                              <strong>
+                                PKR{" "}
+                                {infoContent.warehouseStock.toLocaleString()} of
+                                stock
+                              </strong>{" "}
+                              sitting in your warehouse that you paid for but
+                              haven't yet recovered. As subscribers pay and you
+                              issue more stock, this number will improve
+                              automatically.
+                            </p>
+                          </div>
+                        )}
+                        {infoContent.collected -
+                          infoContent.expenses -
+                          infoContent.warehouseStock >=
+                          0 && (
+                          <div className="mt-3 bg-green-50 border border-green-100 rounded-lg px-3 py-2.5 text-green-700">
+                            <p className="text-xs font-semibold">
+                              ✅ You are in profit after all costs and remaining
+                              stock.
+                            </p>
+                          </div>
+                        )}
                       </>
                     )}
                   </div>
