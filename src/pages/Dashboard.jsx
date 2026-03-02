@@ -20,6 +20,7 @@ import useCustomerStore from "../store/useCustomerStore";
 import usePaymentStore from "../store/usePaymentStore";
 import useExpenseStore from "../store/useExpenseStore";
 import useInventoryStore from "../store/useInventoryStore";
+import useConnectionJobStore from "../store/useConnectionJobStore";
 import { daysUntil, formatDate, today } from "../utils/dateUtils";
 import Badge from "../components/ui/Badge";
 import Modal from "../components/ui/Modal";
@@ -57,6 +58,7 @@ export default function Dashboard({ onNavigate }) {
   const cycles = usePaymentStore((s) => s.cycles);
   const expenses = useExpenseStore((s) => s.expenses);
   const inventoryItems = useInventoryStore((s) => s.items);
+  const jobs = useConnectionJobStore((s) => s.jobs);
 
   const [payCustomer, setPayCustomer] = useState(null);
   const [mode, setMode] = useState("alltime"); // alltime | monthly | daily
@@ -129,6 +131,15 @@ export default function Dashboard({ onNavigate }) {
     });
   });
 
+  // Inventory job payments — jobs where subscriber paid for hardware/equipment
+  let at_inventoryPaid = 0;
+  let at_inventoryPending = 0;
+  jobs.forEach((job) => {
+    at_inventoryPaid += Number(job.amountPaid) || 0;
+    at_inventoryPending += Number(job.amountPending) || 0;
+  });
+  at_totalEver += at_inventoryPaid;
+
   // Warehouse stock value = money you already spent buying materials still sitting in your store.
   // This IS your cost. You paid PKR 19,000 for cable — that PKR 19,000 is gone from your pocket.
   // As you issue cable and collect the cable money from subscribers (included in their payment),
@@ -158,9 +169,11 @@ export default function Dashboard({ onNavigate }) {
     inventoryValue: at_inventoryValue,
     // Net Income = Total ever received − Recorded expenses − Current warehouse stock value
     // The warehouse stock IS a cost you have already paid. As subscribers pay you for
-    // materials (included in their connection fee), your "Ever Collected" goes up and
+    // materials (included in their connection fee), your "Total Revenue" goes up and
     // the warehouse stock goes down — so Net Income grows naturally. Correct!
     netIncome: at_totalEver - at_totalExpenses - at_inventoryValue,
+    inventoryPending: at_inventoryPending,
+    inventoryPaid: at_inventoryPaid,
   };
 
   // 2. MONTHLY
@@ -373,7 +386,7 @@ export default function Dashboard({ onNavigate }) {
             <BigCard
               icon={<CheckCircle size={16} />}
               label={
-                mode === "monthly" ? "Collected This Month" : "Ever Collected"
+                mode === "monthly" ? "Collected This Month" : "Total Revenue"
               }
               value={`PKR ${(mode === "monthly" ? monthly.totalCollected : allTime.totalEverCollected).toLocaleString()}`}
               sub={
@@ -398,7 +411,7 @@ export default function Dashboard({ onNavigate }) {
               icon={<XCircle size={16} />}
               label="Total Expenses"
               value={`PKR ${((displayStats.totalExpenses || 0) + (displayStats.inventoryValue || 0)).toLocaleString()}`}
-              sub="Recorded expenses"
+              sub="Operational expenses"
               color="red"
               inventoryValue={displayStats.inventoryValue || 0}
               expensesValue={displayStats.totalExpenses || 0}
@@ -406,13 +419,17 @@ export default function Dashboard({ onNavigate }) {
             <BigCard
               icon={<Clock size={16} />}
               label="Total Balance Due"
-              value={`PKR ${displayStats.pending.toLocaleString()}`}
+              value={`PKR ${((displayStats.pending || 0) + (allTime.inventoryPending || 0)).toLocaleString()}`}
               sub="Click to view all"
               color="amber"
               onClick={() => onNavigate("customers", "balance-due")}
               isClickable
               pendingStatusBalance={displayStats.pendingStatusBalance || 0}
               suspendedBalance={displayStats.suspendedBalance || 0}
+              inventoryPending={allTime.inventoryPending || 0}
+              onInventoryPendingClick={() =>
+                onNavigate("customers", "inventory-dues")
+              }
             />
           </div>
 
@@ -802,6 +819,8 @@ function BigCard({
   expensesValue,
   pendingStatusBalance,
   suspendedBalance,
+  inventoryPending,
+  onInventoryPendingClick,
   infoContent,
 }) {
   const c = colorMap[color] || colorMap.blue;
@@ -823,8 +842,11 @@ function BigCard({
 
   const hasExpenseBreakdown =
     inventoryValue !== undefined && expensesValue !== undefined;
+  const hasInventoryPending =
+    inventoryPending !== undefined && inventoryPending > 0;
   const hasBalanceBreakdown =
-    pendingStatusBalance !== undefined && suspendedBalance !== undefined;
+    (pendingStatusBalance !== undefined && suspendedBalance !== undefined) ||
+    hasInventoryPending;
 
   return (
     <div
@@ -857,7 +879,7 @@ function BigCard({
                     {infoContent.type === "everCollected" && (
                       <>
                         <p className="font-bold text-gray-800 mb-2 text-sm">
-                          📥 What is Ever Collected?
+                          📥 What is Total Revenue?
                         </p>
                         <p className="text-gray-600 leading-relaxed mb-2">
                           The total of all actual cash payments ever received
@@ -907,7 +929,7 @@ function BigCard({
                           <div className="flex justify-between items-start">
                             <div>
                               <span className="font-semibold text-green-700 text-sm">
-                                ✅ Ever Collected
+                                ✅ Total Revenue
                               </span>
                               <p className="text-[10px] text-gray-400 mt-0.5 leading-relaxed">
                                 All subscriber payments received so far
@@ -921,7 +943,7 @@ function BigCard({
                           <div className="flex justify-between items-start">
                             <div>
                               <span className="text-red-600 font-semibold text-sm">
-                                ➖ Recorded Expenses
+                                ➖ Operational Expenses
                               </span>
                               <p className="text-[10px] text-gray-400 mt-0.5">
                                 Bills, salaries, tools, etc.
@@ -1041,7 +1063,7 @@ function BigCard({
           <div className="mt-1 space-y-0.5">
             <div className="flex items-center justify-between text-xs">
               <span className="text-gray-500 font-medium">
-                Recorded expenses
+                Operational expenses
               </span>
               <span className="font-semibold text-gray-700">
                 PKR {expensesValue.toLocaleString()}
@@ -1080,6 +1102,26 @@ function BigCard({
                   PKR {suspendedBalance.toLocaleString()}
                 </span>
               </div>
+            )}
+            {hasInventoryPending && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (onInventoryPendingClick) onInventoryPendingClick();
+                }}
+                className="w-full flex items-center justify-between text-xs hover:bg-purple-50 rounded px-1 py-0.5 -mx-1 transition-colors group"
+              >
+                <span className="flex items-center gap-1 text-purple-600 font-medium">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-purple-400"></span>
+                  Inventory Dues
+                  <span className="text-purple-400 group-hover:text-purple-600">
+                    ↗
+                  </span>
+                </span>
+                <span className="font-semibold text-purple-700">
+                  PKR {inventoryPending.toLocaleString()}
+                </span>
+              </button>
             )}
             <div className="text-xs text-gray-400 mt-0.5">
               Click to view all

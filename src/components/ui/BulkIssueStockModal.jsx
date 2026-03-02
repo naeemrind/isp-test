@@ -9,6 +9,7 @@ import {
   DollarSign,
   User,
   FileText,
+  CreditCard,
 } from "lucide-react";
 import useInventoryStore from "../../store/useInventoryStore";
 import useConnectionJobStore from "../../store/useConnectionJobStore";
@@ -16,10 +17,11 @@ import { today } from "../../utils/dateUtils";
 
 /**
  * BulkIssueStockModal
- * Lets you issue multiple inventory items to a subscriber in one go.
+ * Issues multiple inventory items to a subscriber in one go.
+ * Now tracks amountPaid so inventory dues flow into the Dashboard.
  *
  * Props:
- *  customer  – the subscriber object (used for default subscriberName)
+ *  customer  – the subscriber object
  *  onClose   – callback to close the modal
  */
 export default function BulkIssueStockModal({ customer, onClose }) {
@@ -28,10 +30,8 @@ export default function BulkIssueStockModal({ customer, onClose }) {
   const addJob = useConnectionJobStore((s) => s.addJob);
   const nextId = useRef(2);
 
-  // Only items with stock available
   const availableItems = inventoryItems.filter((i) => (i.inHand ?? 0) > 0);
 
-  // Each row: { itemId, qty, customRate }
   const [rows, setRows] = useState(() => [
     {
       id: 1,
@@ -49,10 +49,13 @@ export default function BulkIssueStockModal({ customer, onClose }) {
   );
   const [note, setNote] = useState("");
   const [date, setDate] = useState(today());
+  const [amountPaid, setAmountPaid] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState(false);
   const [issuedSummary, setIssuedSummary] = useState([]);
+  const [finalPaid, setFinalPaid] = useState(0);
+  const [finalPending, setFinalPending] = useState(0);
 
   // ── Row helpers ──────────────────────────────────────────────────────────────
 
@@ -104,12 +107,14 @@ export default function BulkIssueStockModal({ customer, onClose }) {
     return sum + qty * rate;
   }, 0);
 
+  const paid = Math.min(grandTotal, Math.max(0, Number(amountPaid) || 0));
+  const remaining = Math.max(0, grandTotal - paid);
+
   // ── Submit ───────────────────────────────────────────────────────────────────
 
   const handleSubmit = async () => {
     setError("");
 
-    // Validation
     if (rows.length === 0) {
       setError("Add at least one item to issue.");
       return;
@@ -139,7 +144,6 @@ export default function BulkIssueStockModal({ customer, onClose }) {
       }
     }
 
-    // Check for duplicate items
     const selectedIds = rows.map((r) => r.itemId);
     if (new Set(selectedIds).size !== selectedIds.length) {
       setError(
@@ -169,6 +173,8 @@ export default function BulkIssueStockModal({ customer, onClose }) {
           totalValue: rowTotal,
           issuedTo: technicianName.trim() || null,
           subscriberName: subscriberName.trim() || null,
+          subscriberUsername: customer?.userName || null,
+          subscriberId: customer?.id ?? null,
           note: note.trim() || null,
           balanceAfter: newInHand,
           createdAt: new Date().toISOString(),
@@ -191,6 +197,7 @@ export default function BulkIssueStockModal({ customer, onClose }) {
           qty,
           rate,
           total: rowTotal,
+          purchaseCost: item.unitRate || 0,
         });
 
         issuedItems.push({
@@ -199,12 +206,18 @@ export default function BulkIssueStockModal({ customer, onClose }) {
           unit: item.unit,
           qty,
           unitRate: rate,
+          purchaseCost: item.unitRate || 0,
           totalValue: rowTotal,
         });
       }
 
-      // Save a connection job so the issue icon hides and Jobs Log records this
       const jobGrandTotal = issuedItems.reduce((s, i) => s + i.totalValue, 0);
+      const paidAmt = Math.min(
+        jobGrandTotal,
+        Math.max(0, Number(amountPaid) || 0),
+      );
+      const pendingAmt = Math.max(0, jobGrandTotal - paidAmt);
+
       await addJob({
         date,
         technicianName: technicianName.trim() || null,
@@ -214,8 +227,12 @@ export default function BulkIssueStockModal({ customer, onClose }) {
         note: note.trim() || null,
         items: issuedItems,
         totalValue: jobGrandTotal,
+        amountPaid: paidAmt,
+        amountPending: pendingAmt,
       });
 
+      setFinalPaid(paidAmt);
+      setFinalPending(pendingAmt);
       setIssuedSummary(summary);
       setDone(true);
     } catch (err) {
@@ -235,11 +252,13 @@ export default function BulkIssueStockModal({ customer, onClose }) {
         <div>
           <p className="text-base font-bold text-gray-900">Stock Issued!</p>
           <p className="text-sm text-gray-500 mt-1">
-            The following items were issued to{" "}
+            Items issued to{" "}
             <span className="font-semibold text-gray-800">
               {subscriberName || customer?.fullName}
             </span>
-            :
+            {customer?.userName && (
+              <span className="text-gray-400"> (@{customer.userName})</span>
+            )}
           </p>
         </div>
 
@@ -258,6 +277,11 @@ export default function BulkIssueStockModal({ customer, onClose }) {
                 <tr key={i} className="border-t border-gray-100">
                   <td className="px-4 py-2 font-medium text-gray-800">
                     {row.description}
+                    {row.rate !== row.purchaseCost && row.purchaseCost > 0 && (
+                      <span className="ml-1 text-[10px] text-blue-500 font-normal">
+                        (cost PKR {row.purchaseCost})
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-2 text-center text-gray-600">
                     {row.qty} {row.unit}
@@ -286,6 +310,32 @@ export default function BulkIssueStockModal({ customer, onClose }) {
                     .toLocaleString()}
                 </td>
               </tr>
+              {finalPaid > 0 && (
+                <tr className="border-t border-green-100 bg-green-50">
+                  <td
+                    colSpan={3}
+                    className="px-4 py-2 text-right text-xs font-bold text-green-600 uppercase"
+                  >
+                    Paid Now
+                  </td>
+                  <td className="px-4 py-2 text-right font-bold text-green-700">
+                    PKR {finalPaid.toLocaleString()}
+                  </td>
+                </tr>
+              )}
+              {finalPending > 0 && (
+                <tr className="border-t border-amber-100 bg-amber-50">
+                  <td
+                    colSpan={3}
+                    className="px-4 py-2 text-right text-xs font-bold text-amber-600 uppercase"
+                  >
+                    Still Pending
+                  </td>
+                  <td className="px-4 py-2 text-right font-bold text-amber-700">
+                    PKR {finalPending.toLocaleString()}
+                  </td>
+                </tr>
+              )}
             </tfoot>
           </table>
         </div>
@@ -300,7 +350,7 @@ export default function BulkIssueStockModal({ customer, onClose }) {
     );
   }
 
-  // ── Form State ───────────────────────────────────────────────────────────────
+  // ── No Stock Available ───────────────────────────────────────────────────────
 
   if (availableItems.length === 0) {
     return (
@@ -322,9 +372,11 @@ export default function BulkIssueStockModal({ customer, onClose }) {
     );
   }
 
+  // ── Form State ───────────────────────────────────────────────────────────────
+
   return (
     <div className="space-y-5">
-      {/* ── Date row ── */}
+      {/* ── Date + Technician ── */}
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="block text-xs font-bold text-gray-600 mb-1.5">
@@ -353,6 +405,26 @@ export default function BulkIssueStockModal({ customer, onClose }) {
           />
         </div>
       </div>
+
+      {/* ── Subscriber identity (read-only if from customer row) ── */}
+      {customer?.userName && (
+        <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2.5">
+          <div className="w-7 h-7 rounded-full bg-blue-100 flex items-center justify-center shrink-0">
+            <User size={13} className="text-blue-600" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-xs font-semibold text-gray-800 truncate">
+              {customer.fullName}
+            </div>
+            <div className="text-[11px] text-blue-600 font-mono font-medium">
+              @{customer.userName}
+            </div>
+          </div>
+          <div className="ml-auto text-[10px] text-gray-400 shrink-0">
+            Linked by username
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-3">
         <div>
@@ -424,6 +496,10 @@ export default function BulkIssueStockModal({ customer, onClose }) {
               const qty = Number(row.qty) || 0;
               const rowTotal = qty * rate;
               const isOverIssue = qty > inHand;
+              const hasProfit =
+                selectedItem &&
+                Number(row.customRate) > 0 &&
+                Number(row.customRate) !== selectedItem.unitRate;
 
               return (
                 <div
@@ -455,7 +531,7 @@ export default function BulkIssueStockModal({ customer, onClose }) {
                     </select>
                     {selectedItem && (
                       <p className="text-[10px] text-gray-400 mt-0.5 pl-0.5">
-                        In hand:{" "}
+                        Cost: PKR {selectedItem.unitRate}/unit · In hand:{" "}
                         <span
                           className={`font-semibold ${
                             inHand === 0 ? "text-red-500" : "text-green-600"
@@ -467,6 +543,16 @@ export default function BulkIssueStockModal({ customer, onClose }) {
                         {qty > 0 && rate > 0 && (
                           <span className="text-gray-500 ml-1">
                             · PKR {rowTotal.toLocaleString()}
+                          </span>
+                        )}
+                        {hasProfit && qty > 0 && (
+                          <span className="text-blue-500 ml-1 font-medium">
+                            (profit PKR{" "}
+                            {(
+                              (Number(row.customRate) - selectedItem.unitRate) *
+                              qty
+                            ).toLocaleString()}
+                            )
                           </span>
                         )}
                       </p>
@@ -548,6 +634,111 @@ export default function BulkIssueStockModal({ customer, onClose }) {
             <Plus size={14} /> Add Another Item
           </button>
         )}
+      </div>
+
+      {/* ── Payment Section ── always visible ── */}
+      <div
+        className={`border rounded-xl p-4 space-y-3 transition-all ${grandTotal > 0 ? "border-blue-200 bg-blue-50" : "border-gray-200 bg-gray-50 opacity-60"}`}
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <CreditCard
+              size={14}
+              className={grandTotal > 0 ? "text-blue-600" : "text-gray-400"}
+            />
+            <span
+              className={`text-xs font-bold uppercase tracking-wide ${grandTotal > 0 ? "text-blue-700" : "text-gray-400"}`}
+            >
+              Payment Received (for Inventory)
+            </span>
+          </div>
+          {grandTotal > 0 && (
+            <span className="text-xs font-semibold text-gray-600">
+              Total:{" "}
+              <span className="text-red-600 font-bold">
+                PKR {grandTotal.toLocaleString()}
+              </span>
+            </span>
+          )}
+          {grandTotal === 0 && (
+            <span className="text-[10px] text-gray-400">
+              Fill items above first
+            </span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 items-start">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">
+              Amount Paid by Subscriber
+            </label>
+            <div className="relative">
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-400 font-semibold pointer-events-none">
+                PKR
+              </span>
+              <input
+                type="number"
+                min="0"
+                max={grandTotal || undefined}
+                disabled={grandTotal === 0}
+                placeholder={
+                  grandTotal > 0 ? "0  (leave blank = not paid)" : "—"
+                }
+                className={`w-full border rounded-lg pl-10 pr-2 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all ${
+                  grandTotal === 0
+                    ? "bg-gray-100 border-gray-200 cursor-not-allowed text-gray-400"
+                    : "bg-white border-blue-200"
+                }`}
+                value={amountPaid}
+                onChange={(e) => setAmountPaid(e.target.value)}
+              />
+            </div>
+            <p className="text-[10px] text-gray-400 mt-1">
+              Enter 0 or leave blank if subscriber hasn't paid yet.
+            </p>
+          </div>
+
+          <div className="space-y-1.5 pt-6">
+            {grandTotal > 0 && paid === 0 && (
+              <div className="flex justify-between text-xs bg-amber-100 rounded-lg px-3 py-2">
+                <span className="text-amber-700 font-medium">
+                  ⏳ Not paid yet
+                </span>
+                <span className="font-bold text-amber-800">
+                  PKR {grandTotal.toLocaleString()} due
+                </span>
+              </div>
+            )}
+            {paid > 0 && remaining > 0 && (
+              <>
+                <div className="flex justify-between text-xs bg-green-100 rounded-lg px-3 py-2">
+                  <span className="text-green-700 font-medium">✓ Paid Now</span>
+                  <span className="font-bold text-green-800">
+                    PKR {paid.toLocaleString()}
+                  </span>
+                </div>
+                <div className="flex justify-between text-xs bg-amber-100 rounded-lg px-3 py-2">
+                  <span className="text-amber-700 font-medium">
+                    ⏳ Still Pending
+                  </span>
+                  <span className="font-bold text-amber-800">
+                    PKR {remaining.toLocaleString()}
+                  </span>
+                </div>
+              </>
+            )}
+            {remaining === 0 && grandTotal > 0 && paid > 0 && (
+              <div className="flex justify-between text-xs bg-green-100 rounded-lg px-3 py-2 border border-green-200">
+                <span className="text-green-700 font-medium">
+                  ✅ Fully Paid
+                </span>
+                <span className="font-bold text-green-800">
+                  PKR {grandTotal.toLocaleString()}
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* ── Error ── */}

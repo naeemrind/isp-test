@@ -206,6 +206,7 @@ import {
   DollarSign,
   User,
   FileText,
+  CreditCard,
 } from "lucide-react";
 import useInventoryStore from "../../store/useInventoryStore";
 import useConnectionJobStore from "../../store/useConnectionJobStore";
@@ -213,10 +214,11 @@ import { today } from "../../utils/dateUtils";
 
 /**
  * BulkIssueStockModal
- * Lets you issue multiple inventory items to a subscriber in one go.
+ * Issues multiple inventory items to a subscriber in one go.
+ * Now tracks amountPaid so inventory dues flow into the Dashboard.
  *
  * Props:
- *  customer  – the subscriber object (used for default subscriberName)
+ *  customer  – the subscriber object
  *  onClose   – callback to close the modal
  */
 export default function BulkIssueStockModal({ customer, onClose }) {
@@ -225,10 +227,8 @@ export default function BulkIssueStockModal({ customer, onClose }) {
   const addJob = useConnectionJobStore((s) => s.addJob);
   const nextId = useRef(2);
 
-  // Only items with stock available
   const availableItems = inventoryItems.filter((i) => (i.inHand ?? 0) > 0);
 
-  // Each row: { itemId, qty, customRate }
   const [rows, setRows] = useState(() => [
     {
       id: 1,
@@ -246,10 +246,13 @@ export default function BulkIssueStockModal({ customer, onClose }) {
   );
   const [note, setNote] = useState("");
   const [date, setDate] = useState(today());
+  const [amountPaid, setAmountPaid] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState(false);
   const [issuedSummary, setIssuedSummary] = useState([]);
+  const [finalPaid, setFinalPaid] = useState(0);
+  const [finalPending, setFinalPending] = useState(0);
 
   // ── Row helpers ──────────────────────────────────────────────────────────────
 
@@ -301,12 +304,14 @@ export default function BulkIssueStockModal({ customer, onClose }) {
     return sum + qty * rate;
   }, 0);
 
+  const paid = Math.min(grandTotal, Math.max(0, Number(amountPaid) || 0));
+  const remaining = Math.max(0, grandTotal - paid);
+
   // ── Submit ───────────────────────────────────────────────────────────────────
 
   const handleSubmit = async () => {
     setError("");
 
-    // Validation
     if (rows.length === 0) {
       setError("Add at least one item to issue.");
       return;
@@ -336,7 +341,6 @@ export default function BulkIssueStockModal({ customer, onClose }) {
       }
     }
 
-    // Check for duplicate items
     const selectedIds = rows.map((r) => r.itemId);
     if (new Set(selectedIds).size !== selectedIds.length) {
       setError(
@@ -366,6 +370,8 @@ export default function BulkIssueStockModal({ customer, onClose }) {
           totalValue: rowTotal,
           issuedTo: technicianName.trim() || null,
           subscriberName: subscriberName.trim() || null,
+          subscriberUsername: customer?.userName || null,
+          subscriberId: customer?.id ?? null,
           note: note.trim() || null,
           balanceAfter: newInHand,
           createdAt: new Date().toISOString(),
@@ -388,6 +394,7 @@ export default function BulkIssueStockModal({ customer, onClose }) {
           qty,
           rate,
           total: rowTotal,
+          purchaseCost: item.unitRate || 0,
         });
 
         issuedItems.push({
@@ -396,12 +403,18 @@ export default function BulkIssueStockModal({ customer, onClose }) {
           unit: item.unit,
           qty,
           unitRate: rate,
+          purchaseCost: item.unitRate || 0,
           totalValue: rowTotal,
         });
       }
 
-      // Save a connection job so the issue icon hides and Jobs Log records this
       const jobGrandTotal = issuedItems.reduce((s, i) => s + i.totalValue, 0);
+      const paidAmt = Math.min(
+        jobGrandTotal,
+        Math.max(0, Number(amountPaid) || 0),
+      );
+      const pendingAmt = Math.max(0, jobGrandTotal - paidAmt);
+
       await addJob({
         date,
         technicianName: technicianName.trim() || null,
@@ -411,8 +424,12 @@ export default function BulkIssueStockModal({ customer, onClose }) {
         note: note.trim() || null,
         items: issuedItems,
         totalValue: jobGrandTotal,
+        amountPaid: paidAmt,
+        amountPending: pendingAmt,
       });
 
+      setFinalPaid(paidAmt);
+      setFinalPending(pendingAmt);
       setIssuedSummary(summary);
       setDone(true);
     } catch (err) {
@@ -432,11 +449,13 @@ export default function BulkIssueStockModal({ customer, onClose }) {
         <div>
           <p className="text-base font-bold text-gray-900">Stock Issued!</p>
           <p className="text-sm text-gray-500 mt-1">
-            The following items were issued to{" "}
+            Items issued to{" "}
             <span className="font-semibold text-gray-800">
               {subscriberName || customer?.fullName}
             </span>
-            :
+            {customer?.userName && (
+              <span className="text-gray-400"> (@{customer.userName})</span>
+            )}
           </p>
         </div>
 
@@ -455,6 +474,11 @@ export default function BulkIssueStockModal({ customer, onClose }) {
                 <tr key={i} className="border-t border-gray-100">
                   <td className="px-4 py-2 font-medium text-gray-800">
                     {row.description}
+                    {row.rate !== row.purchaseCost && row.purchaseCost > 0 && (
+                      <span className="ml-1 text-[10px] text-blue-500 font-normal">
+                        (cost PKR {row.purchaseCost})
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-2 text-center text-gray-600">
                     {row.qty} {row.unit}
@@ -483,6 +507,32 @@ export default function BulkIssueStockModal({ customer, onClose }) {
                     .toLocaleString()}
                 </td>
               </tr>
+              {finalPaid > 0 && (
+                <tr className="border-t border-green-100 bg-green-50">
+                  <td
+                    colSpan={3}
+                    className="px-4 py-2 text-right text-xs font-bold text-green-600 uppercase"
+                  >
+                    Paid Now
+                  </td>
+                  <td className="px-4 py-2 text-right font-bold text-green-700">
+                    PKR {finalPaid.toLocaleString()}
+                  </td>
+                </tr>
+              )}
+              {finalPending > 0 && (
+                <tr className="border-t border-amber-100 bg-amber-50">
+                  <td
+                    colSpan={3}
+                    className="px-4 py-2 text-right text-xs font-bold text-amber-600 uppercase"
+                  >
+                    Still Pending
+                  </td>
+                  <td className="px-4 py-2 text-right font-bold text-amber-700">
+                    PKR {finalPending.toLocaleString()}
+                  </td>
+                </tr>
+              )}
             </tfoot>
           </table>
         </div>
@@ -497,7 +547,7 @@ export default function BulkIssueStockModal({ customer, onClose }) {
     );
   }
 
-  // ── Form State ───────────────────────────────────────────────────────────────
+  // ── No Stock Available ───────────────────────────────────────────────────────
 
   if (availableItems.length === 0) {
     return (
@@ -519,9 +569,11 @@ export default function BulkIssueStockModal({ customer, onClose }) {
     );
   }
 
+  // ── Form State ───────────────────────────────────────────────────────────────
+
   return (
     <div className="space-y-5">
-      {/* ── Date row ── */}
+      {/* ── Date + Technician ── */}
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="block text-xs font-bold text-gray-600 mb-1.5">
@@ -550,6 +602,26 @@ export default function BulkIssueStockModal({ customer, onClose }) {
           />
         </div>
       </div>
+
+      {/* ── Subscriber identity (read-only if from customer row) ── */}
+      {customer?.userName && (
+        <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2.5">
+          <div className="w-7 h-7 rounded-full bg-blue-100 flex items-center justify-center shrink-0">
+            <User size={13} className="text-blue-600" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-xs font-semibold text-gray-800 truncate">
+              {customer.fullName}
+            </div>
+            <div className="text-[11px] text-blue-600 font-mono font-medium">
+              @{customer.userName}
+            </div>
+          </div>
+          <div className="ml-auto text-[10px] text-gray-400 shrink-0">
+            Linked by username
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-3">
         <div>
@@ -621,6 +693,10 @@ export default function BulkIssueStockModal({ customer, onClose }) {
               const qty = Number(row.qty) || 0;
               const rowTotal = qty * rate;
               const isOverIssue = qty > inHand;
+              const hasProfit =
+                selectedItem &&
+                Number(row.customRate) > 0 &&
+                Number(row.customRate) !== selectedItem.unitRate;
 
               return (
                 <div
@@ -652,7 +728,7 @@ export default function BulkIssueStockModal({ customer, onClose }) {
                     </select>
                     {selectedItem && (
                       <p className="text-[10px] text-gray-400 mt-0.5 pl-0.5">
-                        In hand:{" "}
+                        Cost: PKR {selectedItem.unitRate}/unit · In hand:{" "}
                         <span
                           className={`font-semibold ${
                             inHand === 0 ? "text-red-500" : "text-green-600"
@@ -664,6 +740,16 @@ export default function BulkIssueStockModal({ customer, onClose }) {
                         {qty > 0 && rate > 0 && (
                           <span className="text-gray-500 ml-1">
                             · PKR {rowTotal.toLocaleString()}
+                          </span>
+                        )}
+                        {hasProfit && qty > 0 && (
+                          <span className="text-blue-500 ml-1 font-medium">
+                            (profit PKR{" "}
+                            {(
+                              (Number(row.customRate) - selectedItem.unitRate) *
+                              qty
+                            ).toLocaleString()}
+                            )
                           </span>
                         )}
                       </p>
@@ -745,6 +831,111 @@ export default function BulkIssueStockModal({ customer, onClose }) {
             <Plus size={14} /> Add Another Item
           </button>
         )}
+      </div>
+
+      {/* ── Payment Section ── always visible ── */}
+      <div
+        className={`border rounded-xl p-4 space-y-3 transition-all ${grandTotal > 0 ? "border-blue-200 bg-blue-50" : "border-gray-200 bg-gray-50 opacity-60"}`}
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <CreditCard
+              size={14}
+              className={grandTotal > 0 ? "text-blue-600" : "text-gray-400"}
+            />
+            <span
+              className={`text-xs font-bold uppercase tracking-wide ${grandTotal > 0 ? "text-blue-700" : "text-gray-400"}`}
+            >
+              Payment Received (for Inventory)
+            </span>
+          </div>
+          {grandTotal > 0 && (
+            <span className="text-xs font-semibold text-gray-600">
+              Total:{" "}
+              <span className="text-red-600 font-bold">
+                PKR {grandTotal.toLocaleString()}
+              </span>
+            </span>
+          )}
+          {grandTotal === 0 && (
+            <span className="text-[10px] text-gray-400">
+              Fill items above first
+            </span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 items-start">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">
+              Amount Paid by Subscriber
+            </label>
+            <div className="relative">
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-400 font-semibold pointer-events-none">
+                PKR
+              </span>
+              <input
+                type="number"
+                min="0"
+                max={grandTotal || undefined}
+                disabled={grandTotal === 0}
+                placeholder={
+                  grandTotal > 0 ? "0  (leave blank = not paid)" : "—"
+                }
+                className={`w-full border rounded-lg pl-10 pr-2 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all ${
+                  grandTotal === 0
+                    ? "bg-gray-100 border-gray-200 cursor-not-allowed text-gray-400"
+                    : "bg-white border-blue-200"
+                }`}
+                value={amountPaid}
+                onChange={(e) => setAmountPaid(e.target.value)}
+              />
+            </div>
+            <p className="text-[10px] text-gray-400 mt-1">
+              Enter 0 or leave blank if subscriber hasn't paid yet.
+            </p>
+          </div>
+
+          <div className="space-y-1.5 pt-6">
+            {grandTotal > 0 && paid === 0 && (
+              <div className="flex justify-between text-xs bg-amber-100 rounded-lg px-3 py-2">
+                <span className="text-amber-700 font-medium">
+                  ⏳ Not paid yet
+                </span>
+                <span className="font-bold text-amber-800">
+                  PKR {grandTotal.toLocaleString()} due
+                </span>
+              </div>
+            )}
+            {paid > 0 && remaining > 0 && (
+              <>
+                <div className="flex justify-between text-xs bg-green-100 rounded-lg px-3 py-2">
+                  <span className="text-green-700 font-medium">✓ Paid Now</span>
+                  <span className="font-bold text-green-800">
+                    PKR {paid.toLocaleString()}
+                  </span>
+                </div>
+                <div className="flex justify-between text-xs bg-amber-100 rounded-lg px-3 py-2">
+                  <span className="text-amber-700 font-medium">
+                    ⏳ Still Pending
+                  </span>
+                  <span className="font-bold text-amber-800">
+                    PKR {remaining.toLocaleString()}
+                  </span>
+                </div>
+              </>
+            )}
+            {remaining === 0 && grandTotal > 0 && paid > 0 && (
+              <div className="flex justify-between text-xs bg-green-100 rounded-lg px-3 py-2 border border-green-200">
+                <span className="text-green-700 font-medium">
+                  ✅ Fully Paid
+                </span>
+                <span className="font-bold text-green-800">
+                  PKR {grandTotal.toLocaleString()}
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* ── Error ── */}
@@ -2611,14 +2802,16 @@ import { readAll, writeAll } from "../db/database";
 //   id: number,
 //   date: "2026-03-01",
 //   technicianName: "Ali",
-//   subscriberName: "Ahmed Ali",         // free-text name OR username
-//   subscriberUsername: "ahmed.ali",     // optional - typed username for tracking
+//   subscriberName: "Ahmed Ali",
+//   subscriberUsername: "ahmed.ali",
+//   subscriberId: number | null,
 //   note: "New connection Gulshan B5",
 //   items: [
 //     { inventoryItemId: 3, description: "fiber", unit: "meter", qty: 50, unitRate: 25, totalValue: 1250 },
-//     { inventoryItemId: 1, description: "ONU",   unit: "piece", qty: 1,  unitRate: 150, totalValue: 150 },
 //   ],
 //   totalValue: 1400,
+//   amountPaid: 1000,       // ← NEW: how much subscriber paid for inventory at time of issue
+//   amountPending: 400,     // ← NEW: totalValue - amountPaid (inventory dues)
 //   createdAt: "ISO string",
 // }
 
@@ -2646,15 +2839,39 @@ const useConnectionJobStore = create((set) => ({
   addJob: async (jobData) => {
     const existing = await getJobs();
     const maxId = existing.reduce((m, j) => Math.max(m, Number(j.id) || 0), 0);
+    const totalValue = Number(jobData.totalValue) || 0;
+    const amountPaid = Number(jobData.amountPaid) || 0;
+    const amountPending = Math.max(0, totalValue - amountPaid);
     const newJob = {
       ...jobData,
       id: maxId + 1,
+      amountPaid,
+      amountPending,
       createdAt: new Date().toISOString(),
     };
     const updated = [...existing, newJob];
     await saveJobs(updated);
     set({ jobs: updated });
     return newJob;
+  },
+
+  /**
+   * recordInventoryPayment — add a payment toward a job's pending inventory balance.
+   */
+  recordInventoryPayment: async (jobId, amount) => {
+    const existing = await getJobs();
+    const job = existing.find((j) => j.id === jobId);
+    if (!job) return;
+    const paid = Math.min(
+      Number(job.totalValue) || 0,
+      (Number(job.amountPaid) || 0) + (Number(amount) || 0),
+    );
+    const pending = Math.max(0, (Number(job.totalValue) || 0) - paid);
+    const updated = existing.map((j) =>
+      j.id === jobId ? { ...j, amountPaid: paid, amountPending: pending } : j,
+    );
+    await saveJobs(updated);
+    set({ jobs: updated });
   },
 
   deleteJob: async (id) => {
@@ -10284,6 +10501,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Zap,
+  Package,
+  AlertTriangle,
+  CreditCard,
 } from "lucide-react";
 import Modal from "../../components/ui/Modal";
 import ConfirmDialog from "../../components/ui/ConfirmDialog";
@@ -10292,7 +10512,9 @@ import { getCycleFacts } from "../../utils/Statusutils";
 import CustomerForm from "./CustomerForm";
 import PaymentForm from "../Payments/PaymentForm";
 import NewConnectionForm from "./NewConnectionForm";
+import BulkIssueStockModal from "../../components/ui/BulkIssueStockModal";
 import useCustomerStore from "../../store/useCustomerStore";
+import useConnectionJobStore from "../../store/useConnectionJobStore";
 import usePaymentStore from "../../store/usePaymentStore";
 import { formatDate } from "../../utils/dateUtils";
 
@@ -10362,6 +10584,7 @@ export default function Customers({ initialFilter }) {
   );
   const getCyclesForCustomer = usePaymentStore((s) => s.getCyclesForCustomer);
   const getActiveCycle = usePaymentStore((s) => s.getActiveCycle);
+  const jobs = useConnectionJobStore((s) => s.jobs);
 
   const [view, setView] = useState("active");
   const [search, setSearch] = useState("");
@@ -10432,6 +10655,14 @@ export default function Customers({ initialFilter }) {
     if (filter === "balance-due") return unpaid;
     // pending = within cycle, unpaid, not suspended
     if (filter === "pending") return !isSuspended && !expired && unpaid;
+    // renewal-due = cycle ended, fully paid, not suspended
+    if (filter === "renewal-due") return !isSuspended && expired && !unpaid;
+    // inventory-dues = subscriber has unpaid inventory balance
+    if (filter === "inventory-dues") {
+      return jobs.some(
+        (j) => j.subscriberId === c.id && (j.amountPending || 0) > 0,
+      );
+    }
     return true;
   });
 
@@ -10504,6 +10735,14 @@ export default function Customers({ initialFilter }) {
       return unpaid;
     }).length,
     suspended: activeCustomers.filter((c) => c.status === "suspended").length,
+    "renewal-due": activeCustomers.filter((c) => {
+      const cy = getActiveCycle(c.id);
+      const { expired, unpaid } = getCycleFacts(cy);
+      return c.status !== "suspended" && expired && !unpaid;
+    }).length,
+    "inventory-dues": activeCustomers.filter((c) =>
+      jobs.some((j) => j.subscriberId === c.id && (j.amountPending || 0) > 0),
+    ).length,
   };
 
   // ── Filter tab definitions ─────────────────────────────────────────────────
@@ -10511,7 +10750,7 @@ export default function Customers({ initialFilter }) {
     { id: "all", label: "All", dot: null, activeDot: null },
     {
       id: "active",
-      label: "Good Standing",
+      label: "Active",
       dot: "bg-green-400",
       activeDot: "bg-green-300",
     },
@@ -10538,6 +10777,18 @@ export default function Customers({ initialFilter }) {
       label: "Suspended",
       dot: "bg-gray-400",
       activeDot: "bg-gray-300",
+    },
+    {
+      id: "renewal-due",
+      label: "Renewal Due",
+      dot: "bg-orange-400",
+      activeDot: "bg-orange-300",
+    },
+    {
+      id: "inventory-dues",
+      label: "Inventory Dues",
+      dot: "bg-purple-400",
+      activeDot: "bg-purple-300",
     },
   ];
 
@@ -10627,7 +10878,11 @@ export default function Customers({ initialFilter }) {
                                 ? "Anyone who owes money (pending + expired combined)"
                                 : f.id === "suspended"
                                   ? "Manually suspended subscribers"
-                                  : ""
+                                  : f.id === "renewal-due"
+                                    ? "Cycle ended, all dues cleared — ready for renewal"
+                                    : f.id === "inventory-dues"
+                                      ? "Subscribers with unpaid hardware/equipment dues"
+                                      : ""
                     }
                     className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
                       isActive
@@ -10682,8 +10937,17 @@ export default function Customers({ initialFilter }) {
         )}
       </div>
 
+      {/* ── INVENTORY DUES VIEW — special rich view when that filter is active ── */}
+      {view === "active" && filter === "inventory-dues" && (
+        <InventoryDuesView
+          customers={filteredActive}
+          jobs={jobs}
+          onPay={(c) => setPaySubscriber(c)}
+        />
+      )}
+
       {/* ── ACTIVE TABLE ── */}
-      {view === "active" && (
+      {view === "active" && filter !== "inventory-dues" && (
         <div className="space-y-2">
           <div className="bg-white border border-gray-200 rounded overflow-hidden">
             <CustomerTable
@@ -10949,1081 +11213,220 @@ export default function Customers({ initialFilter }) {
     </div>
   );
 }
-</file>
 
-<file path="src/pages/Dashboard.jsx">
-import { useState, useEffect, useRef } from "react";
-import {
-  Users,
-  TrendingUp,
-  Clock,
-  AlertTriangle,
-  CheckCircle,
-  XCircle,
-  Calendar,
-  CreditCard,
-  ChevronLeft,
-  ChevronRight,
-  Eye,
-  EyeOff,
-  Package,
-  RefreshCw,
-  Info,
-} from "lucide-react";
-import useCustomerStore from "../store/useCustomerStore";
-import usePaymentStore from "../store/usePaymentStore";
-import useExpenseStore from "../store/useExpenseStore";
-import useInventoryStore from "../store/useInventoryStore";
-import { daysUntil, formatDate, today } from "../utils/dateUtils";
-import Badge from "../components/ui/Badge";
-import Modal from "../components/ui/Modal";
-import PaymentForm from "./Payments/PaymentForm";
-import WhatsAppButton from "../components/shared/WhatsAppButton";
-import { MESSAGE_TEMPLATES } from "../config/messageTemplates";
+// ─── Inventory Dues View ───────────────────────────────────────────────────────
+// Rich card view shown when the "Inventory Dues" filter is active.
+// Shows each subscriber who has unpaid inventory jobs with full detail.
 
-const MONTH_NAMES = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-];
+function InventoryDuesView({ customers, jobs, onPay }) {
+  const [issueTarget, setIssueTarget] = useState(null);
 
-function getLatestCycle(cycles, customerId) {
-  return (
-    cycles
-      .filter((c) => c.customerId === customerId)
-      .sort(
-        (a, b) => new Date(b.cycleStartDate) - new Date(a.cycleStartDate),
-      )[0] || null
-  );
-}
-
-export default function Dashboard({ onNavigate }) {
-  const customers = useCustomerStore((s) => s.customers);
-  const cycles = usePaymentStore((s) => s.cycles);
-  const expenses = useExpenseStore((s) => s.expenses);
-  const inventoryItems = useInventoryStore((s) => s.items);
-
-  const [payCustomer, setPayCustomer] = useState(null);
-  const [mode, setMode] = useState("alltime"); // alltime | monthly | daily
-
-  const now = new Date();
-  const [selYear, setSelYear] = useState(now.getFullYear());
-  const [selMonth, setSelMonth] = useState(now.getMonth());
-  const [selDate, setSelDate] = useState(today());
-
-  const prevMonth = () => {
-    if (selMonth === 0) {
-      setSelMonth(11);
-      setSelYear((y) => y - 1);
-    } else setSelMonth((m) => m - 1);
-  };
-  const nextMonth = () => {
-    if (selYear === now.getFullYear() && selMonth === now.getMonth()) return;
-    if (selMonth === 11) {
-      setSelMonth(0);
-      setSelYear((y) => y + 1);
-    } else setSelMonth((m) => m + 1);
-  };
-  const isCurrentMonth =
-    selYear === now.getFullYear() && selMonth === now.getMonth();
-
-  // ── Stats ────────────────────────────────────────────────────────────────────
-  const activeCustomers = customers.filter((c) => !c.isArchived);
-
-  // 1. ALL TIME
-  let at_collected = 0,
-    at_pending = 0,
-    at_overdueMoney = 0,
-    at_overdueCount = 0;
-  let at_activeCount = 0,
-    at_suspendedCount = 0,
-    at_totalEver = 0;
-  let at_pendingStatusBalance = 0,
-    at_suspendedBalance = 0;
-
-  activeCustomers.forEach((c) => {
-    if (c.status === "active") at_activeCount++;
-    if (c.status === "suspended") at_suspendedCount++;
-    const cycle = getLatestCycle(cycles, c.id);
-    if (!cycle) return;
-    at_collected += cycle.amountPaid || 0;
-    at_pending += cycle.amountPending || 0;
-    const bal = cycle.amountPending || 0;
-    if (bal > 0) {
-      if (c.status === "suspended") at_suspendedBalance += bal;
-      else at_pendingStatusBalance += bal;
-    }
-    const days = daysUntil(cycle.cycleEndDate);
-    if (cycle.amountPending > 0 && days < 0) {
-      at_overdueCount++;
-      at_overdueMoney += cycle.amountPending;
-    }
+  // Build a map: customerId → list of pending jobs
+  const pendingJobsByCustomer = {};
+  jobs.forEach((job) => {
+    if ((job.amountPending || 0) <= 0) return;
+    if (!job.subscriberId) return;
+    if (!pendingJobsByCustomer[job.subscriberId])
+      pendingJobsByCustomer[job.subscriberId] = [];
+    pendingJobsByCustomer[job.subscriberId].push(job);
   });
 
-  cycles.forEach((cy) => {
-    (cy.installments || []).forEach((inst) => {
-      at_totalEver += inst.amountPaid || 0;
-    });
-  });
-
-  // Warehouse stock value = money you already spent buying materials still sitting in your store.
-  // This IS your cost. You paid PKR 19,000 for cable — that PKR 19,000 is gone from your pocket.
-  // As you issue cable and collect the cable money from subscribers (included in their payment),
-  // the warehouse stock decreases and Net Income naturally improves.
-  const at_inventoryValue = inventoryItems.reduce(
-    (s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0),
-    0,
-  );
-  const at_totalExpenses = expenses.reduce(
-    (s, e) => s + (Number(e.amount) || 0),
-    0,
+  const dueCustomers = customers.filter(
+    (c) => pendingJobsByCustomer[c.id]?.length > 0,
   );
 
-  const allTime = {
-    totalCustomers: activeCustomers.length,
-    activeCount: at_activeCount,
-    suspendedCount: at_suspendedCount,
-    collected: at_collected,
-    pending: at_pending,
-    overdueMoney: at_overdueMoney,
-    totalEverCollected: at_totalEver,
-    overdueCount: at_overdueCount,
-    pendingStatusBalance: at_pendingStatusBalance,
-    suspendedBalance: at_suspendedBalance,
-    totalExpenses: at_totalExpenses,
-    inventoryValue: at_inventoryValue,
-    // Net Income = Total ever received − Recorded expenses − Current warehouse stock value
-    // The warehouse stock IS a cost you have already paid. As subscribers pay you for
-    // materials (included in their connection fee), your "Ever Collected" goes up and
-    // the warehouse stock goes down — so Net Income grows naturally. Correct!
-    netIncome: at_totalEver - at_totalExpenses - at_inventoryValue,
-  };
+  if (dueCustomers.length === 0) {
+    return (
+      <div className="bg-white border border-gray-200 rounded-xl p-10 flex flex-col items-center justify-center gap-3 text-center">
+        <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center">
+          <Package size={22} className="text-green-600" />
+        </div>
+        <p className="text-sm font-semibold text-gray-700">
+          No pending inventory dues
+        </p>
+        <p className="text-xs text-gray-400">
+          All issued inventory items have been fully paid for.
+        </p>
+      </div>
+    );
+  }
 
-  // 2. MONTHLY
-  const monthStart = new Date(selYear, selMonth, 1);
-  const monthEnd = new Date(selYear, selMonth + 1, 0, 23, 59, 59);
-  let mo_collected = 0,
-    mo_pending = 0,
-    mo_overdueMoney = 0,
-    mo_newCustomers = 0;
-  let mo_clearedCount = 0,
-    mo_pendingCount = 0,
-    mo_overdueCount = 0;
-
-  activeCustomers.forEach((c) => {
-    if (c.createdAt) {
-      const d = new Date(c.createdAt);
-      if (d >= monthStart && d <= monthEnd) mo_newCustomers++;
-    }
-    const cycle = getLatestCycle(cycles, c.id);
-    if (!cycle) return;
-    const cycleStart = new Date(cycle.cycleStartDate);
-    const cycleEnd = new Date(cycle.cycleEndDate);
-    if (cycleStart > monthEnd || cycleEnd < monthStart) return;
-    mo_collected += cycle.amountPaid || 0;
-    mo_pending += cycle.amountPending || 0;
-    const days = daysUntil(cycle.cycleEndDate);
-    if (cycle.amountPending === 0) mo_clearedCount++;
-    else if (days < 0) {
-      mo_overdueCount++;
-      mo_overdueMoney += cycle.amountPending;
-    } else mo_pendingCount++;
-  });
-
-  const mo_expenses = expenses
-    .filter((e) => {
-      const d = new Date(e.date);
-      return d >= monthStart && d <= monthEnd;
-    })
-    .reduce((s, e) => s + (Number(e.amount) || 0), 0);
-
-  const mo_inventoryValue = inventoryItems
-    .filter((i) => {
-      const d = new Date(i.date);
-      return d >= monthStart && d <= monthEnd;
-    })
-    .reduce((s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0), 0);
-
-  let mo_totalCollected = 0;
-  cycles.forEach((cy) => {
-    (cy.installments || []).forEach((inst) => {
-      const d = new Date(inst.datePaid);
-      if (d >= monthStart && d <= monthEnd)
-        mo_totalCollected += inst.amountPaid || 0;
-    });
-  });
-
-  const monthly = {
-    collected: mo_collected,
-    totalCollected: mo_totalCollected,
-    pending: mo_pending,
-    overdueMoney: mo_overdueMoney,
-    newCustomers: mo_newCustomers,
-    clearedCount: mo_clearedCount,
-    pendingCount: mo_pendingCount,
-    overdueCount: mo_overdueCount,
-    totalExpenses: mo_expenses,
-    inventoryValue: mo_inventoryValue,
-    netIncome: mo_totalCollected - mo_expenses - mo_inventoryValue,
-    pendingStatusBalance: 0,
-    suspendedBalance: 0,
-  };
-
-  // 3. DAILY
-  let day_collected = 0,
-    day_newCustomers = 0;
-  cycles.forEach((cy) => {
-    (cy.installments || []).forEach((inst) => {
-      if (inst.datePaid === selDate) day_collected += inst.amountPaid || 0;
-    });
-  });
-  activeCustomers.forEach((c) => {
-    if (c.createdAt && c.createdAt.startsWith(selDate)) day_newCustomers++;
-  });
-  const day_expenses = expenses
-    .filter((e) => e.date === selDate)
-    .reduce((s, e) => s + (Number(e.amount) || 0), 0);
-  const day_inventoryValue = inventoryItems
-    .filter((i) => i.date === selDate)
-    .reduce((s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0), 0);
-
-  const daily = {
-    collected: day_collected,
-    newCustomers: day_newCustomers,
-    totalExpenses: day_expenses,
-    inventoryValue: day_inventoryValue,
-    netIncome: day_collected - day_expenses - day_inventoryValue,
-  };
-
-  // ── Alerts ───────────────────────────────────────────────────────────────────
-  const outOfStockInventory = inventoryItems.filter(
-    (i) => (i.inHand ?? 0) <= 0 && (i.quantity || 0) > 0,
-  );
-  const lowStockInventory = inventoryItems.filter((i) => {
-    if (!i.quantity) return false;
-    const ratio = (i.inHand ?? 0) / i.quantity;
-    return ratio <= 0.2 && (i.inHand ?? 0) > 0;
-  });
-
-  const urgentCustomers = activeCustomers
-    .map((c) => ({ customer: c, cycle: getLatestCycle(cycles, c.id) }))
-    .filter(({ cycle }) => {
-      if (!cycle) return true;
-      const days = daysUntil(cycle.cycleEndDate);
-      return days < 0 || days <= 5;
-    })
-    .sort((a, b) => {
-      const da = a.cycle ? daysUntil(a.cycle.cycleEndDate) : -999;
-      const db2 = b.cycle ? daysUntil(b.cycle.cycleEndDate) : -999;
-      return da - db2;
-    });
-
-  const displayStats = mode === "monthly" ? monthly : allTime;
-  const totalAttentionCount =
-    urgentCustomers.length +
-    outOfStockInventory.length +
-    lowStockInventory.length;
+  const grandTotal = dueCustomers.reduce((sum, c) => {
+    return (
+      sum +
+      (pendingJobsByCustomer[c.id] || []).reduce(
+        (s, j) => s + (j.amountPending || 0),
+        0,
+      )
+    );
+  }, 0);
 
   return (
-    <div className="p-5 space-y-5 max-w-7xl mx-auto">
-      {/* HEADER */}
-      <div className="flex items-center justify-between flex-wrap gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-sm text-gray-500 mt-0.5">{today()}</p>
+    <div className="space-y-3">
+      {/* Summary bar */}
+      <div className="bg-purple-50 border border-purple-200 rounded-xl px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <AlertTriangle size={15} className="text-purple-600" />
+          <span className="text-sm font-semibold text-purple-800">
+            {dueCustomers.length} subscriber
+            {dueCustomers.length !== 1 ? "s" : ""} with unpaid inventory
+          </span>
         </div>
-        <div className="flex items-center gap-1 bg-gray-200 rounded-lg p-1">
-          {["alltime", "monthly", "daily"].map((m) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === m ? "bg-white text-gray-900 shadow" : "text-gray-500 hover:text-gray-800"}`}
-            >
-              {m === "alltime"
-                ? "All Time"
-                : m === "monthly"
-                  ? "Monthly"
-                  : "Daily"}
-            </button>
-          ))}
-        </div>
+        <span className="text-sm font-bold text-purple-800">
+          Total: PKR {grandTotal.toLocaleString()}
+        </span>
       </div>
 
-      {/* FILTERS */}
-      {mode === "monthly" && (
-        <div className="flex items-center gap-3 bg-white border-2 border-gray-200 rounded-xl px-4 py-3 w-fit">
-          <button
-            onClick={prevMonth}
-            className="p-1 rounded-lg hover:bg-gray-100 text-gray-700"
-          >
-            <ChevronLeft size={20} />
-          </button>
-          <div className="flex items-center gap-2 min-w-43 justify-center">
-            <Calendar size={17} className="text-blue-600" />
-            <span className="font-bold text-gray-900 text-lg">
-              {MONTH_NAMES[selMonth]} {selYear}
-            </span>
-          </div>
-          <button
-            onClick={nextMonth}
-            disabled={isCurrentMonth}
-            className="p-1 rounded-lg hover:bg-gray-100 text-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            <ChevronRight size={20} />
-          </button>
-        </div>
-      )}
+      {/* Per-subscriber cards */}
+      {dueCustomers.map((customer) => {
+        const pendingJobs = pendingJobsByCustomer[customer.id] || [];
+        const totalPending = pendingJobs.reduce(
+          (s, j) => s + (j.amountPending || 0),
+          0,
+        );
+        const totalIssued = pendingJobs.reduce(
+          (s, j) => s + (j.totalValue || 0),
+          0,
+        );
+        const totalPaid = pendingJobs.reduce(
+          (s, j) => s + (j.amountPaid || 0),
+          0,
+        );
 
-      {mode === "daily" && (
-        <div className="flex items-center gap-3 bg-white border-2 border-gray-200 rounded-xl px-4 py-2 w-fit">
-          <Calendar size={18} className="text-blue-600" />
-          <input
-            type="date"
-            value={selDate}
-            max={today()}
-            onChange={(e) => setSelDate(e.target.value)}
-            className="font-bold text-gray-900 text-lg outline-none cursor-pointer"
-          />
-        </div>
-      )}
-
-      {/* CARDS */}
-      {mode !== "daily" ? (
-        <>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <BigCard
-              icon={<Users size={16} />}
-              label="Total Subscribers"
-              value={
-                mode === "monthly"
-                  ? monthly.newCustomers
-                  : allTime.totalCustomers
-              }
-              sub={
-                mode === "monthly"
-                  ? "Joined this month"
-                  : `${allTime.activeCount} active`
-              }
-              color="blue"
-            />
-            <BigCard
-              icon={<CheckCircle size={16} />}
-              label={
-                mode === "monthly" ? "Collected This Month" : "Ever Collected"
-              }
-              value={`PKR ${(mode === "monthly" ? monthly.totalCollected : allTime.totalEverCollected).toLocaleString()}`}
-              sub={
-                mode === "monthly"
-                  ? "Payments received this month"
-                  : "Sum of all payments ever received"
-              }
-              color="green"
-              isSensitive={true}
-              infoContent={
-                mode === "alltime"
-                  ? {
-                      type: "everCollected",
-                      totalCycles: cycles.length,
-                      totalSubscribers: activeCustomers.length,
-                      pendingBalance: allTime.pending,
-                    }
-                  : null
-              }
-            />
-            <BigCard
-              icon={<XCircle size={16} />}
-              label="Total Expenses"
-              value={`PKR ${((displayStats.totalExpenses || 0) + (displayStats.inventoryValue || 0)).toLocaleString()}`}
-              sub="Recorded expenses"
-              color="red"
-              inventoryValue={displayStats.inventoryValue || 0}
-              expensesValue={displayStats.totalExpenses || 0}
-            />
-            <BigCard
-              icon={<Clock size={16} />}
-              label="Total Balance Due"
-              value={`PKR ${displayStats.pending.toLocaleString()}`}
-              sub="Click to view all"
-              color="amber"
-              onClick={() => onNavigate("customers", "balance-due")}
-              isClickable
-              pendingStatusBalance={displayStats.pendingStatusBalance || 0}
-              suspendedBalance={displayStats.suspendedBalance || 0}
-            />
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <BigCard
-              icon={<Users size={16} />}
-              label="Expired Accounts"
-              value={displayStats.overdueCount}
-              sub="Cycle ended + unpaid balance"
-              color="red"
-              highlight={displayStats.overdueCount > 0}
-              onClick={() => onNavigate("customers", "expired")}
-              isClickable
-            />
-            <BigCard
-              icon={<AlertTriangle size={16} />}
-              label="Total Expired Balance"
-              value={`PKR ${displayStats.overdueMoney.toLocaleString()}`}
-              sub="Expired cycles with unpaid balance"
-              color="red"
-              highlight={displayStats.overdueMoney > 0}
-              onClick={() => onNavigate("customers", "expired")}
-              isClickable
-            />
-            <BigCard
-              icon={<TrendingUp size={16} />}
-              label="Net Income"
-              value={`PKR ${(mode === "monthly" ? monthly.netIncome : allTime.netIncome).toLocaleString()}`}
-              sub="Revenue after expenses & unsold stock"
-              color={
-                (mode === "monthly" ? monthly.netIncome : allTime.netIncome) >=
-                0
-                  ? "green"
-                  : "red"
-              }
-              isSensitive={true}
-              infoContent={{
-                type: "netIncome",
-                collected:
-                  mode === "monthly"
-                    ? monthly.totalCollected
-                    : allTime.totalEverCollected,
-                expenses:
-                  mode === "monthly"
-                    ? monthly.totalExpenses
-                    : allTime.totalExpenses,
-                warehouseStock:
-                  mode === "monthly"
-                    ? monthly.inventoryValue
-                    : allTime.inventoryValue,
-              }}
-            />
-          </div>
-        </>
-      ) : (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <BigCard
-            icon={<CreditCard size={16} />}
-            label="Collected Today"
-            value={`PKR ${daily.collected.toLocaleString()}`}
-            sub={`Payments received on ${formatDate(selDate)}`}
-            color="green"
-            isSensitive={true}
-          />
-          <BigCard
-            icon={<XCircle size={16} />}
-            label="Expenses Today"
-            value={`PKR ${(daily.totalExpenses + (daily.inventoryValue || 0)).toLocaleString()}`}
-            sub={`Expenses + new stock on ${formatDate(selDate)}`}
-            color="red"
-            inventoryValue={daily.inventoryValue || 0}
-            expensesValue={daily.totalExpenses || 0}
-          />
-          <BigCard
-            icon={<TrendingUp size={16} />}
-            label="Daily Net Income"
-            value={`PKR ${daily.netIncome.toLocaleString()}`}
-            sub="Collected − expenses − new stock"
-            color={daily.netIncome >= 0 ? "green" : "red"}
-            isSensitive={true}
-          />
-          <BigCard
-            icon={<Users size={16} />}
-            label="New Subscribers"
-            value={daily.newCustomers}
-            sub="Joined today"
-            color="blue"
-          />
-        </div>
-      )}
-
-      {/* NEEDS ATTENTION */}
-      <div>
-        <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2 mb-3">
-          <AlertTriangle size={18} className="text-red-500" />
-          Needs Attention
-          {totalAttentionCount > 0 && (
-            <span className="bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
-              {totalAttentionCount}
-            </span>
-          )}
-        </h2>
-
-        {outOfStockInventory.map((item) => (
+        return (
           <div
-            key={`oos-${item.id}`}
-            className="bg-red-50 border-2 border-red-200 rounded-xl px-5 py-3 flex items-center justify-between gap-3 mb-3"
+            key={customer.id}
+            className="bg-white border border-purple-100 rounded-xl overflow-hidden shadow-sm"
           >
-            <div className="flex items-center gap-3">
-              <Package size={18} className="text-red-500 shrink-0" />
-              <div>
-                <span className="font-bold text-red-700 text-sm">
-                  {item.description}
-                </span>
-                <span className="text-xs text-red-500 ml-2">
-                  — Out of Stock. 0 {item.unit} remaining. Restock required.
-                </span>
-              </div>
-            </div>
-            <button
-              onClick={() => onNavigate("inventory")}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors whitespace-nowrap"
-            >
-              <RefreshCw size={11} /> Restock Now
-            </button>
-          </div>
-        ))}
-
-        {lowStockInventory.map((item) => (
-          <div
-            key={`low-${item.id}`}
-            className="bg-amber-50 border-2 border-amber-200 rounded-xl px-5 py-3 flex items-center justify-between gap-3 mb-3"
-          >
-            <div className="flex items-center gap-3">
-              <Package size={18} className="text-amber-500 shrink-0" />
-              <div>
-                <span className="font-bold text-amber-700 text-sm">
-                  {item.description}
-                </span>
-                <span className="text-xs text-amber-600 ml-2">
-                  — Low Stock: {item.inHand} {item.unit} left (
-                  {Math.round(((item.inHand ?? 0) / item.quantity) * 100)}% of
-                  original)
-                </span>
-              </div>
-            </div>
-            <button
-              onClick={() => onNavigate("inventory")}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors whitespace-nowrap"
-            >
-              <RefreshCw size={11} /> Go to Inventory
-            </button>
-          </div>
-        ))}
-
-        {totalAttentionCount === 0 ? (
-          <div className="bg-green-50 border-2 border-green-200 rounded-xl px-5 py-4 flex items-center gap-3">
-            <CheckCircle size={22} className="text-green-600" />
-            <span className="text-green-800 font-semibold text-base">
-              All accounts are in good standing.
-            </span>
-          </div>
-        ) : urgentCustomers.length > 0 ? (
-          <div className="bg-white border-2 border-gray-200 rounded-xl overflow-hidden overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="bg-gray-900 text-white text-left">
-                  <th className="px-4 py-3 text-sm font-semibold">
-                    Subscriber
-                  </th>
-                  <th className="px-4 py-3 text-sm font-semibold">Area</th>
-                  <th className="px-4 py-3 text-sm font-semibold">Mobile</th>
-                  <th className="px-4 py-3 text-sm font-semibold">
-                    Cycle Ended
-                  </th>
-                  <th className="px-4 py-3 text-sm font-semibold">Days</th>
-                  <th className="px-4 py-3 text-sm font-semibold">
-                    Balance Due
-                  </th>
-                  <th className="px-4 py-3 text-sm font-semibold">Status</th>
-                  <th className="px-4 py-3 text-sm font-semibold">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {urgentCustomers.map(({ customer, cycle }) => {
-                  if (!cycle)
-                    return (
-                      <tr
-                        key={customer.id}
-                        className="border-t border-gray-200 bg-gray-50"
-                      >
-                        <td className="px-4 py-3 font-bold text-gray-900">
-                          {customer.fullName}
-                        </td>
-                        <td
-                          colSpan={6}
-                          className="px-4 py-3 text-sm text-gray-500"
-                        >
-                          No billing cycle — needs setup
-                        </td>
-                        <td className="px-4 py-3">
-                          <button
-                            onClick={() => setPayCustomer(customer)}
-                            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700"
-                          >
-                            Pay Now
-                          </button>
-                        </td>
-                      </tr>
-                    );
-
-                  const days = daysUntil(cycle.cycleEndDate);
-                  const isExpiredUnpaid = days < 0 && cycle.amountPending > 0;
-                  const isExpiredPaid = days < 0 && cycle.amountPending === 0;
-                  const isExpiringSoon = days >= 0 && days <= 5;
-
-                  let waMessage = "";
-                  if (isExpiredUnpaid)
-                    waMessage = MESSAGE_TEMPLATES.paymentOverdue(
-                      customer,
-                      cycle,
-                    );
-                  else if (cycle.amountPending > 0)
-                    waMessage = MESSAGE_TEMPLATES.paymentDue(customer, cycle);
-                  else
-                    waMessage = MESSAGE_TEMPLATES.expiryReminder(
-                      customer,
-                      cycle,
-                    );
-
-                  const showPayButton =
-                    cycle.amountPending > 0 || isExpiredPaid;
-                  const rowBg = isExpiredUnpaid
-                    ? "bg-red-50"
-                    : isExpiredPaid
-                      ? "bg-orange-50"
-                      : "bg-yellow-50";
-
-                  return (
-                    <tr
-                      key={customer.id}
-                      className={`border-t border-gray-200 ${rowBg}`}
-                    >
-                      <td className="px-4 py-3">
-                        <div className="font-bold text-gray-900 text-sm">
-                          {customer.fullName}
-                        </div>
-                        <div className="text-xs text-gray-500">
-                          {customer.userName}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-800">
-                        {customer.mainArea || "—"}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-800">
-                        {customer.mobileNo || "—"}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-800">
-                        {formatDate(cycle.cycleEndDate)}
-                      </td>
-                      <td className="px-4 py-3">
-                        {isExpiredUnpaid && (
-                          <span className="text-sm font-bold text-red-700">
-                            {-days}d overdue
-                          </span>
-                        )}
-                        {isExpiredPaid && (
-                          <span className="text-sm font-bold text-orange-700">
-                            {-days}d ago — needs renewal
-                          </span>
-                        )}
-                        {isExpiringSoon && (
-                          <span className="text-sm font-bold text-yellow-700">
-                            {days}d left
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        {cycle.amountPending > 0 ? (
-                          <span className="text-sm font-bold text-red-700">
-                            PKR {Number(cycle.amountPending).toLocaleString()}
-                          </span>
-                        ) : (
-                          <span className="text-sm font-semibold text-green-700">
-                            Paid ✓
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        {isExpiredUnpaid && <Badge status="expired" />}
-                        {isExpiredPaid && (
-                          <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
-                            Renewal Due
-                          </span>
-                        )}
-                        {isExpiringSoon && <Badge status="pending" />}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          {showPayButton && (
-                            <button
-                              onClick={() => setPayCustomer(customer)}
-                              className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700"
-                            >
-                              {isExpiredPaid ? "Renew" : "Pay Now"}
-                            </button>
-                          )}
-                          <WhatsAppButton
-                            mobileNo={customer.mobileNo}
-                            message={waMessage}
-                            label="WhatsApp"
-                          />
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
-      </div>
-
-      <Modal
-        isOpen={!!payCustomer}
-        onClose={() => setPayCustomer(null)}
-        title="Record Payment"
-        size="md"
-      >
-        {payCustomer && (
-          <PaymentForm
-            customer={payCustomer}
-            onClose={() => setPayCustomer(null)}
-          />
-        )}
-      </Modal>
-    </div>
-  );
-}
-
-// ── Color map ─────────────────────────────────────────────────────────────────
-const colorMap = {
-  blue: {
-    bg: "bg-blue-50 border border-blue-200",
-    iconBox: "bg-blue-100",
-    icon: "text-blue-600",
-  },
-  green: {
-    bg: "bg-green-50 border border-green-200",
-    iconBox: "bg-green-100",
-    icon: "text-green-600",
-  },
-  amber: {
-    bg: "bg-amber-50 border border-amber-200",
-    iconBox: "bg-amber-100",
-    icon: "text-amber-600",
-  },
-  red: {
-    bg: "bg-red-50 border border-red-200",
-    iconBox: "bg-red-100",
-    icon: "text-red-600",
-  },
-};
-
-// ── BigCard ───────────────────────────────────────────────────────────────────
-function BigCard({
-  icon,
-  label,
-  value,
-  sub,
-  color,
-  highlight = false,
-  isSensitive = false,
-  onClick,
-  isClickable = false,
-  inventoryValue,
-  expensesValue,
-  pendingStatusBalance,
-  suspendedBalance,
-  infoContent,
-}) {
-  const c = colorMap[color] || colorMap.blue;
-  const [revealed, setRevealed] = useState(false);
-  const [showInfo, setShowInfo] = useState(false);
-  const infoRef = useRef(null);
-
-  // Close tooltip when clicking anywhere outside
-  useEffect(() => {
-    if (!showInfo) return;
-    const handler = (e) => {
-      if (infoRef.current && !infoRef.current.contains(e.target)) {
-        setShowInfo(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [showInfo]);
-
-  const hasExpenseBreakdown =
-    inventoryValue !== undefined && expensesValue !== undefined;
-  const hasBalanceBreakdown =
-    pendingStatusBalance !== undefined && suspendedBalance !== undefined;
-
-  return (
-    <div
-      onClick={isClickable ? onClick : undefined}
-      className={`rounded-xl px-4 py-3 ${c.bg} flex flex-col justify-between ${highlight ? "ring-2 ring-offset-1 ring-red-300" : ""} ${isClickable ? "cursor-pointer hover:shadow-md transition-shadow active:scale-95" : ""}`}
-    >
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <div
-            className={`w-8 h-8 rounded-lg flex items-center justify-center ${c.iconBox} ${c.icon}`}
-          >
-            {icon}
-          </div>
-          <div className="flex items-center gap-1.5">
-            {/* Info tooltip */}
-            {infoContent && (
-              <div className="relative" ref={infoRef}>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setShowInfo((s) => !s);
-                  }}
-                  className="text-gray-400 hover:text-blue-500 transition-colors"
-                  title="More info"
-                >
-                  <Info size={14} />
-                </button>
-                {showInfo && (
-                  <div className="absolute right-0 top-6 z-50 bg-white border border-gray-200 rounded-xl shadow-xl p-3 w-68 text-xs">
-                    {infoContent.type === "everCollected" && (
-                      <>
-                        <p className="font-bold text-gray-800 mb-2 text-sm">
-                          📥 What is Ever Collected?
-                        </p>
-                        <p className="text-gray-600 leading-relaxed mb-2">
-                          The total of all actual cash payments ever received
-                          from subscribers — across every billing cycle since
-                          day one.
-                        </p>
-                        <div className="space-y-1 border-t border-gray-100 pt-2">
-                          <div className="flex justify-between">
-                            <span className="text-gray-500">
-                              Billing cycles total
-                            </span>
-                            <span className="font-semibold text-gray-700">
-                              {infoContent.totalCycles}
-                            </span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-gray-500">
-                              Active subscribers
-                            </span>
-                            <span className="font-semibold text-gray-700">
-                              {infoContent.totalSubscribers}
-                            </span>
-                          </div>
-                          {infoContent.pendingBalance > 0 && (
-                            <div className="flex justify-between text-amber-600">
-                              <span>Still pending (not included)</span>
-                              <span className="font-semibold">
-                                PKR{" "}
-                                {infoContent.pendingBalance.toLocaleString()}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                        <p className="text-gray-400 mt-2 italic">
-                          Inventory and expenses are NOT included here — they
-                          show in the Expenses card.
-                        </p>
-                      </>
-                    )}
-                    {infoContent.type === "netIncome" && (
-                      <>
-                        <p className="font-bold text-gray-800 mb-3 text-sm">
-                          📊 Net Income Breakdown
-                        </p>
-                        <div className="space-y-2">
-                          {/* Collected */}
-                          <div className="flex justify-between items-start">
-                            <div>
-                              <span className="font-semibold text-green-700 text-sm">
-                                ✅ Ever Collected
-                              </span>
-                              <p className="text-[10px] text-gray-400 mt-0.5 leading-relaxed">
-                                All subscriber payments received so far
-                              </p>
-                            </div>
-                            <span className="font-bold text-green-700 text-sm whitespace-nowrap ml-4">
-                              PKR {infoContent.collected.toLocaleString()}
-                            </span>
-                          </div>
-                          {/* Expenses */}
-                          <div className="flex justify-between items-start">
-                            <div>
-                              <span className="text-red-600 font-semibold text-sm">
-                                ➖ Recorded Expenses
-                              </span>
-                              <p className="text-[10px] text-gray-400 mt-0.5">
-                                Bills, salaries, tools, etc.
-                              </p>
-                            </div>
-                            <span className="font-semibold text-red-600 text-sm whitespace-nowrap ml-4">
-                              PKR {infoContent.expenses.toLocaleString()}
-                            </span>
-                          </div>
-                          {/* Warehouse stock */}
-                          <div className="flex justify-between items-start">
-                            <div>
-                              <span className="text-red-600 font-semibold text-sm">
-                                ➖ Stock in Warehouse
-                              </span>
-                              <p className="text-[10px] text-gray-400 mt-0.5 leading-relaxed max-w-44">
-                                Cash you already spent on materials still
-                                sitting unsold
-                              </p>
-                            </div>
-                            <span className="font-semibold text-red-600 text-sm whitespace-nowrap ml-4">
-                              PKR {infoContent.warehouseStock.toLocaleString()}
-                            </span>
-                          </div>
-                          {/* Divider + result */}
-                          <div className="border-t-2 border-gray-200 pt-2 flex justify-between font-bold text-gray-900">
-                            <span className="text-sm">= Net Income</span>
-                            <span
-                              className={`text-sm whitespace-nowrap ml-4 ${
-                                infoContent.collected -
-                                  infoContent.expenses -
-                                  infoContent.warehouseStock >=
-                                0
-                                  ? "text-green-700"
-                                  : "text-red-600"
-                              }`}
-                            >
-                              PKR{" "}
-                              {(
-                                infoContent.collected -
-                                infoContent.expenses -
-                                infoContent.warehouseStock
-                              ).toLocaleString()}
-                            </span>
-                          </div>
-                        </div>
-                        {/* Contextual explanation */}
-                        {infoContent.collected -
-                          infoContent.expenses -
-                          infoContent.warehouseStock <
-                          0 && (
-                          <div className="mt-3 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2.5 text-blue-700 leading-relaxed">
-                            <p className="font-semibold text-xs mb-1">
-                              Why is this negative?
-                            </p>
-                            <p className="text-xs">
-                              You have{" "}
-                              <strong>
-                                PKR{" "}
-                                {infoContent.warehouseStock.toLocaleString()} of
-                                stock
-                              </strong>{" "}
-                              sitting in your warehouse that you paid for but
-                              haven't yet recovered. As subscribers pay and you
-                              issue more stock, this number will improve
-                              automatically.
-                            </p>
-                          </div>
-                        )}
-                        {infoContent.collected -
-                          infoContent.expenses -
-                          infoContent.warehouseStock >=
-                          0 && (
-                          <div className="mt-3 bg-green-50 border border-green-100 rounded-lg px-3 py-2.5 text-green-700">
-                            <p className="text-xs font-semibold">
-                              ✅ You are in profit after all costs and remaining
-                              stock.
-                            </p>
-                          </div>
-                        )}
-                      </>
+            {/* Subscriber header */}
+            <div className="flex items-center justify-between px-4 py-3 bg-purple-50 border-b border-purple-100">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-purple-200 flex items-center justify-center shrink-0">
+                  <span className="text-xs font-bold text-purple-700">
+                    {customer.fullName?.charAt(0)?.toUpperCase() || "?"}
+                  </span>
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-gray-900">
+                      {customer.fullName}
+                    </span>
+                    <span className="text-xs font-mono text-blue-600 bg-blue-50 border border-blue-100 rounded px-1.5 py-0.5">
+                      @{customer.userName}
+                    </span>
+                    {customer.mobileNo && (
+                      <span className="text-xs text-gray-400">
+                        {customer.mobileNo}
+                      </span>
                     )}
                   </div>
-                )}
+                  <div className="text-[11px] text-gray-400 mt-0.5">
+                    {customer.mainArea || "—"} · {pendingJobs.length} pending
+                    job{pendingJobs.length !== 1 ? "s" : ""}
+                  </div>
+                </div>
               </div>
-            )}
-            {isSensitive && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setRevealed(!revealed);
-                }}
-                className="text-gray-400 hover:text-gray-600 transition-colors"
-                title={revealed ? "Hide Amount" : "Show Amount"}
-              >
-                {revealed ? <EyeOff size={15} /> : <Eye size={15} />}
-              </button>
-            )}
-          </div>
-        </div>
-        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-          {label}
-        </div>
-      </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="text-right">
+                  <div className="text-xs text-gray-400">Total Pending</div>
+                  <div className="text-base font-bold text-red-600">
+                    PKR {totalPending.toLocaleString()}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIssueTarget({ customer })}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+                  title="Issue more inventory to this subscriber"
+                >
+                  <Package size={12} /> Issue More
+                </button>
+              </div>
+            </div>
 
-      <div className="mt-1">
-        <div
-          className={`font-bold text-gray-900 leading-tight ${String(value).length > 12 ? "text-base" : "text-lg"}`}
+            {/* Job rows */}
+            <div className="divide-y divide-gray-50">
+              {pendingJobs.map((job) => (
+                <div key={job.id} className="px-4 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      {/* Items issued */}
+                      <div className="flex flex-wrap gap-1.5 mb-2">
+                        {(job.items || []).map((item, i) => (
+                          <span
+                            key={i}
+                            className="inline-flex items-center gap-1 text-[11px] bg-gray-100 text-gray-700 rounded px-2 py-0.5 font-medium"
+                          >
+                            {item.description}
+                            <span className="text-gray-400">
+                              ×{item.qty} {item.unit}
+                            </span>
+                          </span>
+                        ))}
+                      </div>
+                      {/* Date + note */}
+                      <div className="flex items-center gap-3 text-[11px] text-gray-400">
+                        <span>📅 {job.date || "—"}</span>
+                        {job.technicianName && (
+                          <span>🔧 {job.technicianName}</span>
+                        )}
+                        {job.note && (
+                          <span className="truncate">📝 {job.note}</span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Payment summary */}
+                    <div className="text-right shrink-0 space-y-0.5 min-w-32">
+                      <div className="text-[10px] text-gray-400 uppercase font-bold">
+                        Issued
+                      </div>
+                      <div className="text-sm font-bold text-gray-800">
+                        PKR {(job.totalValue || 0).toLocaleString()}
+                      </div>
+                      {(job.amountPaid || 0) > 0 && (
+                        <div className="text-[11px] text-green-600 font-medium">
+                          Paid: PKR {job.amountPaid.toLocaleString()}
+                        </div>
+                      )}
+                      <div className="text-[11px] font-bold text-red-600 bg-red-50 rounded px-1.5 py-0.5 inline-block">
+                        Due: PKR {(job.amountPending || 0).toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Footer summary for this subscriber */}
+            {pendingJobs.length > 1 && (
+              <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-t border-gray-100 text-xs">
+                <span className="text-gray-500">
+                  Issued: PKR {totalIssued.toLocaleString()} · Paid: PKR{" "}
+                  {totalPaid.toLocaleString()}
+                </span>
+                <span className="font-bold text-red-600">
+                  Outstanding: PKR {totalPending.toLocaleString()}
+                </span>
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* Issue More modal */}
+      {issueTarget && (
+        <Modal
+          isOpen={!!issueTarget}
+          onClose={() => setIssueTarget(null)}
+          title={`Issue Inventory — ${issueTarget.customer.fullName}`}
+          size="lg"
         >
-          {isSensitive && !revealed ? (
-            <span className="tracking-widest text-gray-400">••••••</span>
-          ) : (
-            value
-          )}
-        </div>
-        {hasExpenseBreakdown ? (
-          <div className="mt-1 space-y-0.5">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-gray-500 font-medium">
-                Recorded expenses
-              </span>
-              <span className="font-semibold text-gray-700">
-                PKR {expensesValue.toLocaleString()}
-              </span>
-            </div>
-            <div className="flex items-center justify-between text-xs">
-              <span className="flex items-center gap-1 text-blue-600 font-semibold">
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500"></span>
-                Inventory Stock
-              </span>
-              <span className="font-semibold text-blue-600">
-                PKR {inventoryValue.toLocaleString()}
-              </span>
-            </div>
-          </div>
-        ) : hasBalanceBreakdown ? (
-          <div className="mt-1 space-y-0.5">
-            {pendingStatusBalance > 0 && (
-              <div className="flex items-center justify-between text-xs">
-                <span className="flex items-center gap-1 text-amber-600 font-medium">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-                  Pending
-                </span>
-                <span className="font-semibold text-amber-700">
-                  PKR {pendingStatusBalance.toLocaleString()}
-                </span>
-              </div>
-            )}
-            {suspendedBalance > 0 && (
-              <div className="flex items-center justify-between text-xs">
-                <span className="flex items-center gap-1 text-orange-600 font-medium">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-orange-400"></span>
-                  Suspended
-                </span>
-                <span className="font-semibold text-orange-700">
-                  PKR {suspendedBalance.toLocaleString()}
-                </span>
-              </div>
-            )}
-            <div className="text-xs text-gray-400 mt-0.5">
-              Click to view all
-            </div>
-          </div>
-        ) : (
-          <div className="text-xs text-gray-500 mt-0.5 font-medium">{sub}</div>
-        )}
-      </div>
+          <BulkIssueStockModal
+            customer={issueTarget.customer}
+            onClose={() => setIssueTarget(null)}
+          />
+        </Modal>
+      )}
     </div>
   );
 }
@@ -12157,6 +11560,8 @@ export default function CustomerTable({
               const availableItems = inventoryItems.filter(
                 (i) => (i.inHand ?? 0) > 0,
               );
+              // Show icon if there are ANY inventory items defined (modal handles empty stock gracefully)
+              const hasAnyInventory = inventoryItems.length > 0;
 
               return (
                 <tr
@@ -12308,11 +11713,19 @@ export default function CustomerTable({
                       ) : (
                         <div className="w-7 h-7" />
                       )}
-                      {!hasInventoryIssued && availableItems.length > 0 && (
+                      {hasAnyInventory && (
                         <button
                           onClick={() => setIssueTarget({ customer })}
-                          className="flex items-center justify-center w-7 h-7 rounded border bg-white border-amber-200 text-amber-500 hover:bg-amber-50 hover:border-amber-400 hover:text-amber-700 transition-colors"
-                          title="Issue Inventory to Subscriber"
+                          className={
+                            hasInventoryIssued
+                              ? "flex items-center justify-center w-7 h-7 rounded border bg-white border-blue-200 text-blue-400 hover:bg-blue-50 hover:border-blue-400 hover:text-blue-600 transition-colors"
+                              : "flex items-center justify-center w-7 h-7 rounded border bg-white border-amber-200 text-amber-500 hover:bg-amber-50 hover:border-amber-400 hover:text-amber-700 transition-colors"
+                          }
+                          title={
+                            hasInventoryIssued
+                              ? "Issue More Inventory to Subscriber"
+                              : "Issue Inventory to Subscriber"
+                          }
                         >
                           <Package size={14} />
                         </button>
@@ -12784,6 +12197,1145 @@ function PaymentHistory({
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/pages/Dashboard.jsx">
+import { useState, useEffect, useRef } from "react";
+import {
+  Users,
+  TrendingUp,
+  Clock,
+  AlertTriangle,
+  CheckCircle,
+  XCircle,
+  Calendar,
+  CreditCard,
+  ChevronLeft,
+  ChevronRight,
+  Eye,
+  EyeOff,
+  Package,
+  RefreshCw,
+  Info,
+} from "lucide-react";
+import useCustomerStore from "../store/useCustomerStore";
+import usePaymentStore from "../store/usePaymentStore";
+import useExpenseStore from "../store/useExpenseStore";
+import useInventoryStore from "../store/useInventoryStore";
+import useConnectionJobStore from "../store/useConnectionJobStore";
+import { daysUntil, formatDate, today } from "../utils/dateUtils";
+import Badge from "../components/ui/Badge";
+import Modal from "../components/ui/Modal";
+import PaymentForm from "./Payments/PaymentForm";
+import WhatsAppButton from "../components/shared/WhatsAppButton";
+import { MESSAGE_TEMPLATES } from "../config/messageTemplates";
+
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+function getLatestCycle(cycles, customerId) {
+  return (
+    cycles
+      .filter((c) => c.customerId === customerId)
+      .sort(
+        (a, b) => new Date(b.cycleStartDate) - new Date(a.cycleStartDate),
+      )[0] || null
+  );
+}
+
+export default function Dashboard({ onNavigate }) {
+  const customers = useCustomerStore((s) => s.customers);
+  const cycles = usePaymentStore((s) => s.cycles);
+  const expenses = useExpenseStore((s) => s.expenses);
+  const inventoryItems = useInventoryStore((s) => s.items);
+  const jobs = useConnectionJobStore((s) => s.jobs);
+
+  const [payCustomer, setPayCustomer] = useState(null);
+  const [mode, setMode] = useState("alltime"); // alltime | monthly | daily
+
+  const now = new Date();
+  const [selYear, setSelYear] = useState(now.getFullYear());
+  const [selMonth, setSelMonth] = useState(now.getMonth());
+  const [selDate, setSelDate] = useState(today());
+
+  const prevMonth = () => {
+    if (selMonth === 0) {
+      setSelMonth(11);
+      setSelYear((y) => y - 1);
+    } else setSelMonth((m) => m - 1);
+  };
+  const nextMonth = () => {
+    if (selYear === now.getFullYear() && selMonth === now.getMonth()) return;
+    if (selMonth === 11) {
+      setSelMonth(0);
+      setSelYear((y) => y + 1);
+    } else setSelMonth((m) => m + 1);
+  };
+  const isCurrentMonth =
+    selYear === now.getFullYear() && selMonth === now.getMonth();
+
+  // ── Stats ────────────────────────────────────────────────────────────────────
+  const activeCustomers = customers.filter((c) => !c.isArchived);
+
+  // 1. ALL TIME
+  let at_collected = 0,
+    at_pending = 0,
+    at_overdueMoney = 0,
+    at_overdueCount = 0;
+  let at_activeCount = 0,
+    at_suspendedCount = 0,
+    at_totalEver = 0;
+  let at_pendingStatusBalance = 0,
+    at_suspendedBalance = 0;
+
+  activeCustomers.forEach((c) => {
+    if (c.status === "active") at_activeCount++;
+    if (c.status === "suspended") at_suspendedCount++;
+    const cycle = getLatestCycle(cycles, c.id);
+    if (!cycle) return;
+    at_collected += cycle.amountPaid || 0;
+    at_pending += cycle.amountPending || 0;
+    const bal = cycle.amountPending || 0;
+    if (bal > 0) {
+      if (c.status === "suspended") at_suspendedBalance += bal;
+      else at_pendingStatusBalance += bal;
+    }
+    const days = daysUntil(cycle.cycleEndDate);
+    if (cycle.amountPending > 0 && days < 0) {
+      at_overdueCount++;
+      at_overdueMoney += cycle.amountPending;
+    }
+  });
+
+  const at_renewalDueCount = activeCustomers.filter((c) => {
+    if (c.status === "suspended") return false;
+    const cycle = getLatestCycle(cycles, c.id);
+    if (!cycle) return false;
+    const days = daysUntil(cycle.cycleEndDate);
+    return days < 0 && (cycle.amountPending || 0) === 0;
+  }).length;
+
+  cycles.forEach((cy) => {
+    (cy.installments || []).forEach((inst) => {
+      at_totalEver += inst.amountPaid || 0;
+    });
+  });
+
+  // Inventory job payments — jobs where subscriber paid for hardware/equipment
+  let at_inventoryPaid = 0;
+  let at_inventoryPending = 0;
+  jobs.forEach((job) => {
+    at_inventoryPaid += Number(job.amountPaid) || 0;
+    at_inventoryPending += Number(job.amountPending) || 0;
+  });
+  at_totalEver += at_inventoryPaid;
+
+  // Warehouse stock value = money you already spent buying materials still sitting in your store.
+  // This IS your cost. You paid PKR 19,000 for cable — that PKR 19,000 is gone from your pocket.
+  // As you issue cable and collect the cable money from subscribers (included in their payment),
+  // the warehouse stock decreases and Net Income naturally improves.
+  const at_inventoryValue = inventoryItems.reduce(
+    (s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0),
+    0,
+  );
+  const at_totalExpenses = expenses.reduce(
+    (s, e) => s + (Number(e.amount) || 0),
+    0,
+  );
+
+  const allTime = {
+    totalCustomers: activeCustomers.length,
+    activeCount: at_activeCount,
+    suspendedCount: at_suspendedCount,
+    collected: at_collected,
+    pending: at_pending,
+    overdueMoney: at_overdueMoney,
+    totalEverCollected: at_totalEver,
+    overdueCount: at_overdueCount,
+    renewalDueCount: at_renewalDueCount,
+    pendingStatusBalance: at_pendingStatusBalance,
+    suspendedBalance: at_suspendedBalance,
+    totalExpenses: at_totalExpenses,
+    inventoryValue: at_inventoryValue,
+    // Net Income = Total ever received − Recorded expenses − Current warehouse stock value
+    // The warehouse stock IS a cost you have already paid. As subscribers pay you for
+    // materials (included in their connection fee), your "Ever Collected" goes up and
+    // the warehouse stock goes down — so Net Income grows naturally. Correct!
+    netIncome: at_totalEver - at_totalExpenses - at_inventoryValue,
+    inventoryPending: at_inventoryPending,
+    inventoryPaid: at_inventoryPaid,
+  };
+
+  // 2. MONTHLY
+  const monthStart = new Date(selYear, selMonth, 1);
+  const monthEnd = new Date(selYear, selMonth + 1, 0, 23, 59, 59);
+  let mo_collected = 0,
+    mo_pending = 0,
+    mo_overdueMoney = 0,
+    mo_newCustomers = 0;
+  let mo_clearedCount = 0,
+    mo_pendingCount = 0,
+    mo_overdueCount = 0;
+
+  activeCustomers.forEach((c) => {
+    if (c.createdAt) {
+      const d = new Date(c.createdAt);
+      if (d >= monthStart && d <= monthEnd) mo_newCustomers++;
+    }
+    const cycle = getLatestCycle(cycles, c.id);
+    if (!cycle) return;
+    const cycleStart = new Date(cycle.cycleStartDate);
+    const cycleEnd = new Date(cycle.cycleEndDate);
+    if (cycleStart > monthEnd || cycleEnd < monthStart) return;
+    mo_collected += cycle.amountPaid || 0;
+    mo_pending += cycle.amountPending || 0;
+    const days = daysUntil(cycle.cycleEndDate);
+    if (cycle.amountPending === 0) mo_clearedCount++;
+    else if (days < 0) {
+      mo_overdueCount++;
+      mo_overdueMoney += cycle.amountPending;
+    } else mo_pendingCount++;
+  });
+
+  const mo_expenses = expenses
+    .filter((e) => {
+      const d = new Date(e.date);
+      return d >= monthStart && d <= monthEnd;
+    })
+    .reduce((s, e) => s + (Number(e.amount) || 0), 0);
+
+  const mo_inventoryValue = inventoryItems
+    .filter((i) => {
+      const d = new Date(i.date);
+      return d >= monthStart && d <= monthEnd;
+    })
+    .reduce((s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0), 0);
+
+  let mo_totalCollected = 0;
+  cycles.forEach((cy) => {
+    (cy.installments || []).forEach((inst) => {
+      const d = new Date(inst.datePaid);
+      if (d >= monthStart && d <= monthEnd)
+        mo_totalCollected += inst.amountPaid || 0;
+    });
+  });
+
+  const monthly = {
+    collected: mo_collected,
+    totalCollected: mo_totalCollected,
+    pending: mo_pending,
+    overdueMoney: mo_overdueMoney,
+    newCustomers: mo_newCustomers,
+    clearedCount: mo_clearedCount,
+    pendingCount: mo_pendingCount,
+    overdueCount: mo_overdueCount,
+    totalExpenses: mo_expenses,
+    inventoryValue: mo_inventoryValue,
+    netIncome: mo_totalCollected - mo_expenses - mo_inventoryValue,
+    pendingStatusBalance: 0,
+    suspendedBalance: 0,
+  };
+
+  // 3. DAILY
+  let day_collected = 0,
+    day_newCustomers = 0;
+  cycles.forEach((cy) => {
+    (cy.installments || []).forEach((inst) => {
+      if (inst.datePaid === selDate) day_collected += inst.amountPaid || 0;
+    });
+  });
+  activeCustomers.forEach((c) => {
+    if (c.createdAt && c.createdAt.startsWith(selDate)) day_newCustomers++;
+  });
+  const day_expenses = expenses
+    .filter((e) => e.date === selDate)
+    .reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const day_inventoryValue = inventoryItems
+    .filter((i) => i.date === selDate)
+    .reduce((s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0), 0);
+
+  const daily = {
+    collected: day_collected,
+    newCustomers: day_newCustomers,
+    totalExpenses: day_expenses,
+    inventoryValue: day_inventoryValue,
+    netIncome: day_collected - day_expenses - day_inventoryValue,
+  };
+
+  // ── Alerts ───────────────────────────────────────────────────────────────────
+  const outOfStockInventory = inventoryItems.filter(
+    (i) => (i.inHand ?? 0) <= 0 && (i.quantity || 0) > 0,
+  );
+  const lowStockInventory = inventoryItems.filter((i) => {
+    if (!i.quantity) return false;
+    const ratio = (i.inHand ?? 0) / i.quantity;
+    return ratio <= 0.2 && (i.inHand ?? 0) > 0;
+  });
+
+  const urgentCustomers = activeCustomers
+    .map((c) => ({ customer: c, cycle: getLatestCycle(cycles, c.id) }))
+    .filter(({ cycle }) => {
+      if (!cycle) return true;
+      const days = daysUntil(cycle.cycleEndDate);
+      return days < 0 || days <= 5;
+    })
+    .sort((a, b) => {
+      const da = a.cycle ? daysUntil(a.cycle.cycleEndDate) : -999;
+      const db2 = b.cycle ? daysUntil(b.cycle.cycleEndDate) : -999;
+      return da - db2;
+    });
+
+  const displayStats = mode === "monthly" ? monthly : allTime;
+  const totalAttentionCount =
+    urgentCustomers.length +
+    outOfStockInventory.length +
+    lowStockInventory.length;
+
+  return (
+    <div className="p-5 space-y-5 max-w-7xl mx-auto">
+      {/* HEADER */}
+      <div className="flex items-center justify-between flex-wrap gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+          <p className="text-sm text-gray-500 mt-0.5">{today()}</p>
+        </div>
+        <div className="flex items-center gap-1 bg-gray-200 rounded-lg p-1">
+          {["alltime", "monthly", "daily"].map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={`px-4 py-1.5 rounded-md text-sm font-semibold ${mode === m ? "bg-white text-gray-900 shadow" : "text-gray-500 hover:text-gray-800"}`}
+            >
+              {m === "alltime"
+                ? "All Time"
+                : m === "monthly"
+                  ? "Monthly"
+                  : "Daily"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* FILTERS */}
+      {mode === "monthly" && (
+        <div className="flex items-center gap-3 bg-white border-2 border-gray-200 rounded-xl px-4 py-3 w-fit">
+          <button
+            onClick={prevMonth}
+            className="p-1 rounded-lg hover:bg-gray-100 text-gray-700"
+          >
+            <ChevronLeft size={20} />
+          </button>
+          <div className="flex items-center gap-2 min-w-43 justify-center">
+            <Calendar size={17} className="text-blue-600" />
+            <span className="font-bold text-gray-900 text-lg">
+              {MONTH_NAMES[selMonth]} {selYear}
+            </span>
+          </div>
+          <button
+            onClick={nextMonth}
+            disabled={isCurrentMonth}
+            className="p-1 rounded-lg hover:bg-gray-100 text-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            <ChevronRight size={20} />
+          </button>
+        </div>
+      )}
+
+      {mode === "daily" && (
+        <div className="flex items-center gap-3 bg-white border-2 border-gray-200 rounded-xl px-4 py-2 w-fit">
+          <Calendar size={18} className="text-blue-600" />
+          <input
+            type="date"
+            value={selDate}
+            max={today()}
+            onChange={(e) => setSelDate(e.target.value)}
+            className="font-bold text-gray-900 text-lg outline-none cursor-pointer"
+          />
+        </div>
+      )}
+
+      {/* CARDS */}
+      {mode !== "daily" ? (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <BigCard
+              icon={<Users size={16} />}
+              label="Total Subscribers"
+              value={
+                mode === "monthly"
+                  ? monthly.newCustomers
+                  : allTime.totalCustomers
+              }
+              sub={
+                mode === "monthly"
+                  ? "Joined this month"
+                  : `${allTime.activeCount} active`
+              }
+              color="blue"
+            />
+            <BigCard
+              icon={<CheckCircle size={16} />}
+              label={
+                mode === "monthly" ? "Collected This Month" : "Ever Collected"
+              }
+              value={`PKR ${(mode === "monthly" ? monthly.totalCollected : allTime.totalEverCollected).toLocaleString()}`}
+              sub={
+                mode === "monthly"
+                  ? "Payments received this month"
+                  : "Sum of all payments ever received"
+              }
+              color="green"
+              isSensitive={true}
+              infoContent={
+                mode === "alltime"
+                  ? {
+                      type: "everCollected",
+                      totalCycles: cycles.length,
+                      totalSubscribers: activeCustomers.length,
+                      pendingBalance: allTime.pending,
+                    }
+                  : null
+              }
+            />
+            <BigCard
+              icon={<XCircle size={16} />}
+              label="Total Expenses"
+              value={`PKR ${((displayStats.totalExpenses || 0) + (displayStats.inventoryValue || 0)).toLocaleString()}`}
+              sub="Recorded expenses"
+              color="red"
+              inventoryValue={displayStats.inventoryValue || 0}
+              expensesValue={displayStats.totalExpenses || 0}
+            />
+            <BigCard
+              icon={<Clock size={16} />}
+              label="Total Balance Due"
+              value={`PKR ${((displayStats.pending || 0) + (allTime.inventoryPending || 0)).toLocaleString()}`}
+              sub="Click to view all"
+              color="amber"
+              onClick={() => onNavigate("customers", "balance-due")}
+              isClickable
+              pendingStatusBalance={displayStats.pendingStatusBalance || 0}
+              suspendedBalance={displayStats.suspendedBalance || 0}
+              inventoryPending={allTime.inventoryPending || 0}
+              onInventoryPendingClick={() =>
+                onNavigate("customers", "inventory-dues")
+              }
+            />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <BigCard
+              icon={<RefreshCw size={16} />}
+              label="Renewal Due Accounts"
+              value={allTime.renewalDueCount}
+              sub="Cycle ended + all dues clear"
+              color="amber"
+              highlight={allTime.renewalDueCount > 0}
+              onClick={() => onNavigate("customers", "renewal-due")}
+              isClickable
+            />
+            <BigCard
+              icon={<Users size={16} />}
+              label="Expired Accounts"
+              value={displayStats.overdueCount}
+              sub="Cycle ended + unpaid balance"
+              color="red"
+              highlight={displayStats.overdueCount > 0}
+              onClick={() => onNavigate("customers", "expired")}
+              isClickable
+            />
+            <BigCard
+              icon={<AlertTriangle size={16} />}
+              label="Total Expired Balance"
+              value={`PKR ${displayStats.overdueMoney.toLocaleString()}`}
+              sub="Expired cycles with unpaid balance"
+              color="red"
+              highlight={displayStats.overdueMoney > 0}
+              onClick={() => onNavigate("customers", "expired")}
+              isClickable
+            />
+            <BigCard
+              icon={<TrendingUp size={16} />}
+              label="Net Income"
+              value={`PKR ${(mode === "monthly" ? monthly.netIncome : allTime.netIncome).toLocaleString()}`}
+              sub="Revenue after expenses & unsold stock"
+              color={
+                (mode === "monthly" ? monthly.netIncome : allTime.netIncome) >=
+                0
+                  ? "green"
+                  : "red"
+              }
+              isSensitive={true}
+              infoContent={{
+                type: "netIncome",
+                collected:
+                  mode === "monthly"
+                    ? monthly.totalCollected
+                    : allTime.totalEverCollected,
+                expenses:
+                  mode === "monthly"
+                    ? monthly.totalExpenses
+                    : allTime.totalExpenses,
+                warehouseStock:
+                  mode === "monthly"
+                    ? monthly.inventoryValue
+                    : allTime.inventoryValue,
+              }}
+            />
+          </div>
+        </>
+      ) : (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <BigCard
+            icon={<CreditCard size={16} />}
+            label="Collected Today"
+            value={`PKR ${daily.collected.toLocaleString()}`}
+            sub={`Payments received on ${formatDate(selDate)}`}
+            color="green"
+            isSensitive={true}
+          />
+          <BigCard
+            icon={<XCircle size={16} />}
+            label="Expenses Today"
+            value={`PKR ${(daily.totalExpenses + (daily.inventoryValue || 0)).toLocaleString()}`}
+            sub={`Expenses + new stock on ${formatDate(selDate)}`}
+            color="red"
+            inventoryValue={daily.inventoryValue || 0}
+            expensesValue={daily.totalExpenses || 0}
+          />
+          <BigCard
+            icon={<TrendingUp size={16} />}
+            label="Daily Net Income"
+            value={`PKR ${daily.netIncome.toLocaleString()}`}
+            sub="Collected − expenses − new stock"
+            color={daily.netIncome >= 0 ? "green" : "red"}
+            isSensitive={true}
+          />
+          <BigCard
+            icon={<Users size={16} />}
+            label="New Subscribers"
+            value={daily.newCustomers}
+            sub="Joined today"
+            color="blue"
+          />
+        </div>
+      )}
+
+      {/* NEEDS ATTENTION */}
+      <div>
+        <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2 mb-3">
+          <AlertTriangle size={18} className="text-red-500" />
+          Needs Attention
+          {totalAttentionCount > 0 && (
+            <span className="bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
+              {totalAttentionCount}
+            </span>
+          )}
+        </h2>
+
+        {outOfStockInventory.map((item) => (
+          <div
+            key={`oos-${item.id}`}
+            className="bg-red-50 border-2 border-red-200 rounded-xl px-5 py-3 flex items-center justify-between gap-3 mb-3"
+          >
+            <div className="flex items-center gap-3">
+              <Package size={18} className="text-red-500 shrink-0" />
+              <div>
+                <span className="font-bold text-red-700 text-sm">
+                  {item.description}
+                </span>
+                <span className="text-xs text-red-500 ml-2">
+                  — Out of Stock. 0 {item.unit} remaining. Restock required.
+                </span>
+              </div>
+            </div>
+            <button
+              onClick={() => onNavigate("inventory")}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors whitespace-nowrap"
+            >
+              <RefreshCw size={11} /> Restock Now
+            </button>
+          </div>
+        ))}
+
+        {lowStockInventory.map((item) => (
+          <div
+            key={`low-${item.id}`}
+            className="bg-amber-50 border-2 border-amber-200 rounded-xl px-5 py-3 flex items-center justify-between gap-3 mb-3"
+          >
+            <div className="flex items-center gap-3">
+              <Package size={18} className="text-amber-500 shrink-0" />
+              <div>
+                <span className="font-bold text-amber-700 text-sm">
+                  {item.description}
+                </span>
+                <span className="text-xs text-amber-600 ml-2">
+                  — Low Stock: {item.inHand} {item.unit} left (
+                  {Math.round(((item.inHand ?? 0) / item.quantity) * 100)}% of
+                  original)
+                </span>
+              </div>
+            </div>
+            <button
+              onClick={() => onNavigate("inventory")}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors whitespace-nowrap"
+            >
+              <RefreshCw size={11} /> Go to Inventory
+            </button>
+          </div>
+        ))}
+
+        {totalAttentionCount === 0 ? (
+          <div className="bg-green-50 border-2 border-green-200 rounded-xl px-5 py-4 flex items-center gap-3">
+            <CheckCircle size={22} className="text-green-600" />
+            <span className="text-green-800 font-semibold text-base">
+              All accounts are in good standing.
+            </span>
+          </div>
+        ) : urgentCustomers.length > 0 ? (
+          <div className="bg-white border-2 border-gray-200 rounded-xl overflow-hidden overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-gray-900 text-white text-left">
+                  <th className="px-4 py-3 text-sm font-semibold">
+                    Subscriber
+                  </th>
+                  <th className="px-4 py-3 text-sm font-semibold">Area</th>
+                  <th className="px-4 py-3 text-sm font-semibold">Mobile</th>
+                  <th className="px-4 py-3 text-sm font-semibold">
+                    Cycle Ended
+                  </th>
+                  <th className="px-4 py-3 text-sm font-semibold">Days</th>
+                  <th className="px-4 py-3 text-sm font-semibold">
+                    Balance Due
+                  </th>
+                  <th className="px-4 py-3 text-sm font-semibold">Status</th>
+                  <th className="px-4 py-3 text-sm font-semibold">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {urgentCustomers.map(({ customer, cycle }) => {
+                  if (!cycle)
+                    return (
+                      <tr
+                        key={customer.id}
+                        className="border-t border-gray-200 bg-gray-50"
+                      >
+                        <td className="px-4 py-3 font-bold text-gray-900">
+                          {customer.fullName}
+                        </td>
+                        <td
+                          colSpan={6}
+                          className="px-4 py-3 text-sm text-gray-500"
+                        >
+                          No billing cycle — needs setup
+                        </td>
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() => setPayCustomer(customer)}
+                            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700"
+                          >
+                            Pay Now
+                          </button>
+                        </td>
+                      </tr>
+                    );
+
+                  const days = daysUntil(cycle.cycleEndDate);
+                  const isExpiredUnpaid = days < 0 && cycle.amountPending > 0;
+                  const isExpiredPaid = days < 0 && cycle.amountPending === 0;
+                  const isExpiringSoon = days >= 0 && days <= 5;
+
+                  let waMessage = "";
+                  if (isExpiredUnpaid)
+                    waMessage = MESSAGE_TEMPLATES.paymentOverdue(
+                      customer,
+                      cycle,
+                    );
+                  else if (cycle.amountPending > 0)
+                    waMessage = MESSAGE_TEMPLATES.paymentDue(customer, cycle);
+                  else
+                    waMessage = MESSAGE_TEMPLATES.expiryReminder(
+                      customer,
+                      cycle,
+                    );
+
+                  const showPayButton =
+                    cycle.amountPending > 0 || isExpiredPaid;
+                  const rowBg = isExpiredUnpaid
+                    ? "bg-red-50"
+                    : isExpiredPaid
+                      ? "bg-orange-50"
+                      : "bg-yellow-50";
+
+                  return (
+                    <tr
+                      key={customer.id}
+                      className={`border-t border-gray-200 ${rowBg}`}
+                    >
+                      <td className="px-4 py-3">
+                        <div className="font-bold text-gray-900 text-sm">
+                          {customer.fullName}
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          {customer.userName}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-800">
+                        {customer.mainArea || "—"}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-800">
+                        {customer.mobileNo || "—"}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-800">
+                        {formatDate(cycle.cycleEndDate)}
+                      </td>
+                      <td className="px-4 py-3">
+                        {isExpiredUnpaid && (
+                          <span className="text-sm font-bold text-red-700">
+                            {-days}d overdue
+                          </span>
+                        )}
+                        {isExpiredPaid && (
+                          <span className="text-sm font-bold text-orange-700">
+                            {-days}d ago — needs renewal
+                          </span>
+                        )}
+                        {isExpiringSoon && (
+                          <span className="text-sm font-bold text-yellow-700">
+                            {days}d left
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {cycle.amountPending > 0 ? (
+                          <span className="text-sm font-bold text-red-700">
+                            PKR {Number(cycle.amountPending).toLocaleString()}
+                          </span>
+                        ) : (
+                          <span className="text-sm font-semibold text-green-700">
+                            Paid ✓
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {isExpiredUnpaid && <Badge status="expired" />}
+                        {isExpiredPaid && (
+                          <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
+                            Renewal Due
+                          </span>
+                        )}
+                        {isExpiringSoon && <Badge status="pending" />}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          {showPayButton && (
+                            <button
+                              onClick={() => setPayCustomer(customer)}
+                              className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700"
+                            >
+                              {isExpiredPaid ? "Renew" : "Pay Now"}
+                            </button>
+                          )}
+                          <WhatsAppButton
+                            mobileNo={customer.mobileNo}
+                            message={waMessage}
+                            label="WhatsApp"
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </div>
+
+      <Modal
+        isOpen={!!payCustomer}
+        onClose={() => setPayCustomer(null)}
+        title="Record Payment"
+        size="md"
+      >
+        {payCustomer && (
+          <PaymentForm
+            customer={payCustomer}
+            onClose={() => setPayCustomer(null)}
+          />
+        )}
+      </Modal>
+    </div>
+  );
+}
+
+// ── Color map ─────────────────────────────────────────────────────────────────
+const colorMap = {
+  blue: {
+    bg: "bg-blue-50 border border-blue-200",
+    iconBox: "bg-blue-100",
+    icon: "text-blue-600",
+  },
+  green: {
+    bg: "bg-green-50 border border-green-200",
+    iconBox: "bg-green-100",
+    icon: "text-green-600",
+  },
+  amber: {
+    bg: "bg-amber-50 border border-amber-200",
+    iconBox: "bg-amber-100",
+    icon: "text-amber-600",
+  },
+  red: {
+    bg: "bg-red-50 border border-red-200",
+    iconBox: "bg-red-100",
+    icon: "text-red-600",
+  },
+};
+
+// ── BigCard ───────────────────────────────────────────────────────────────────
+function BigCard({
+  icon,
+  label,
+  value,
+  sub,
+  color,
+  highlight = false,
+  isSensitive = false,
+  onClick,
+  isClickable = false,
+  inventoryValue,
+  expensesValue,
+  pendingStatusBalance,
+  suspendedBalance,
+  inventoryPending,
+  onInventoryPendingClick,
+  infoContent,
+}) {
+  const c = colorMap[color] || colorMap.blue;
+  const [revealed, setRevealed] = useState(false);
+  const [showInfo, setShowInfo] = useState(false);
+  const infoRef = useRef(null);
+
+  // Close tooltip when clicking anywhere outside
+  useEffect(() => {
+    if (!showInfo) return;
+    const handler = (e) => {
+      if (infoRef.current && !infoRef.current.contains(e.target)) {
+        setShowInfo(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showInfo]);
+
+  const hasExpenseBreakdown =
+    inventoryValue !== undefined && expensesValue !== undefined;
+  const hasInventoryPending =
+    inventoryPending !== undefined && inventoryPending > 0;
+  const hasBalanceBreakdown =
+    (pendingStatusBalance !== undefined && suspendedBalance !== undefined) ||
+    hasInventoryPending;
+
+  return (
+    <div
+      onClick={isClickable ? onClick : undefined}
+      className={`rounded-xl px-4 py-3 ${c.bg} flex flex-col justify-between ${highlight ? "ring-2 ring-offset-1 ring-red-300" : ""} ${isClickable ? "cursor-pointer hover:shadow-md transition-shadow active:scale-95" : ""}`}
+    >
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <div
+            className={`w-8 h-8 rounded-lg flex items-center justify-center ${c.iconBox} ${c.icon}`}
+          >
+            {icon}
+          </div>
+          <div className="flex items-center gap-1.5">
+            {/* Info tooltip */}
+            {infoContent && (
+              <div className="relative" ref={infoRef}>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowInfo((s) => !s);
+                  }}
+                  className="text-gray-400 hover:text-blue-500 transition-colors"
+                  title="More info"
+                >
+                  <Info size={14} />
+                </button>
+                {showInfo && (
+                  <div className="absolute right-0 top-6 z-50 bg-white border border-gray-200 rounded-xl shadow-xl p-3 w-68 text-xs">
+                    {infoContent.type === "everCollected" && (
+                      <>
+                        <p className="font-bold text-gray-800 mb-2 text-sm">
+                          📥 What is Ever Collected?
+                        </p>
+                        <p className="text-gray-600 leading-relaxed mb-2">
+                          The total of all actual cash payments ever received
+                          from subscribers — across every billing cycle since
+                          day one.
+                        </p>
+                        <div className="space-y-1 border-t border-gray-100 pt-2">
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">
+                              Billing cycles total
+                            </span>
+                            <span className="font-semibold text-gray-700">
+                              {infoContent.totalCycles}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">
+                              Active subscribers
+                            </span>
+                            <span className="font-semibold text-gray-700">
+                              {infoContent.totalSubscribers}
+                            </span>
+                          </div>
+                          {infoContent.pendingBalance > 0 && (
+                            <div className="flex justify-between text-amber-600">
+                              <span>Still pending (not included)</span>
+                              <span className="font-semibold">
+                                PKR{" "}
+                                {infoContent.pendingBalance.toLocaleString()}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                        <p className="text-gray-400 mt-2 italic">
+                          Inventory and expenses are NOT included here — they
+                          show in the Expenses card.
+                        </p>
+                      </>
+                    )}
+                    {infoContent.type === "netIncome" && (
+                      <>
+                        <p className="font-bold text-gray-800 mb-3 text-sm">
+                          📊 Net Income Breakdown
+                        </p>
+                        <div className="space-y-2">
+                          {/* Collected */}
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <span className="font-semibold text-green-700 text-sm">
+                                ✅ Ever Collected
+                              </span>
+                              <p className="text-[10px] text-gray-400 mt-0.5 leading-relaxed">
+                                All subscriber payments received so far
+                              </p>
+                            </div>
+                            <span className="font-bold text-green-700 text-sm whitespace-nowrap ml-4">
+                              PKR {infoContent.collected.toLocaleString()}
+                            </span>
+                          </div>
+                          {/* Expenses */}
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <span className="text-red-600 font-semibold text-sm">
+                                ➖ Recorded Expenses
+                              </span>
+                              <p className="text-[10px] text-gray-400 mt-0.5">
+                                Bills, salaries, tools, etc.
+                              </p>
+                            </div>
+                            <span className="font-semibold text-red-600 text-sm whitespace-nowrap ml-4">
+                              PKR {infoContent.expenses.toLocaleString()}
+                            </span>
+                          </div>
+                          {/* Warehouse stock */}
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <span className="text-red-600 font-semibold text-sm">
+                                ➖ Stock in Warehouse
+                              </span>
+                              <p className="text-[10px] text-gray-400 mt-0.5 leading-relaxed max-w-44">
+                                Cash you already spent on materials still
+                                sitting unsold
+                              </p>
+                            </div>
+                            <span className="font-semibold text-red-600 text-sm whitespace-nowrap ml-4">
+                              PKR {infoContent.warehouseStock.toLocaleString()}
+                            </span>
+                          </div>
+                          {/* Divider + result */}
+                          <div className="border-t-2 border-gray-200 pt-2 flex justify-between font-bold text-gray-900">
+                            <span className="text-sm">= Net Income</span>
+                            <span
+                              className={`text-sm whitespace-nowrap ml-4 ${
+                                infoContent.collected -
+                                  infoContent.expenses -
+                                  infoContent.warehouseStock >=
+                                0
+                                  ? "text-green-700"
+                                  : "text-red-600"
+                              }`}
+                            >
+                              PKR{" "}
+                              {(
+                                infoContent.collected -
+                                infoContent.expenses -
+                                infoContent.warehouseStock
+                              ).toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
+                        {/* Contextual explanation */}
+                        {infoContent.collected -
+                          infoContent.expenses -
+                          infoContent.warehouseStock <
+                          0 && (
+                          <div className="mt-3 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2.5 text-blue-700 leading-relaxed">
+                            <p className="font-semibold text-xs mb-1">
+                              Why is this negative?
+                            </p>
+                            <p className="text-xs">
+                              You have{" "}
+                              <strong>
+                                PKR{" "}
+                                {infoContent.warehouseStock.toLocaleString()} of
+                                stock
+                              </strong>{" "}
+                              sitting in your warehouse that you paid for but
+                              haven't yet recovered. As subscribers pay and you
+                              issue more stock, this number will improve
+                              automatically.
+                            </p>
+                          </div>
+                        )}
+                        {infoContent.collected -
+                          infoContent.expenses -
+                          infoContent.warehouseStock >=
+                          0 && (
+                          <div className="mt-3 bg-green-50 border border-green-100 rounded-lg px-3 py-2.5 text-green-700">
+                            <p className="text-xs font-semibold">
+                              ✅ You are in profit after all costs and remaining
+                              stock.
+                            </p>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            {isSensitive && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setRevealed(!revealed);
+                }}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+                title={revealed ? "Hide Amount" : "Show Amount"}
+              >
+                {revealed ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+          {label}
+        </div>
+      </div>
+
+      <div className="mt-1">
+        <div
+          className={`font-bold text-gray-900 leading-tight ${String(value).length > 12 ? "text-base" : "text-lg"}`}
+        >
+          {isSensitive && !revealed ? (
+            <span className="tracking-widest text-gray-400">••••••</span>
+          ) : (
+            value
+          )}
+        </div>
+        {hasExpenseBreakdown ? (
+          <div className="mt-1 space-y-0.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-gray-500 font-medium">
+                Recorded expenses
+              </span>
+              <span className="font-semibold text-gray-700">
+                PKR {expensesValue.toLocaleString()}
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="flex items-center gap-1 text-blue-600 font-semibold">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500"></span>
+                Inventory Stock
+              </span>
+              <span className="font-semibold text-blue-600">
+                PKR {inventoryValue.toLocaleString()}
+              </span>
+            </div>
+          </div>
+        ) : hasBalanceBreakdown ? (
+          <div className="mt-1 space-y-0.5">
+            {pendingStatusBalance > 0 && (
+              <div className="flex items-center justify-between text-xs">
+                <span className="flex items-center gap-1 text-amber-600 font-medium">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                  Pending
+                </span>
+                <span className="font-semibold text-amber-700">
+                  PKR {pendingStatusBalance.toLocaleString()}
+                </span>
+              </div>
+            )}
+            {suspendedBalance > 0 && (
+              <div className="flex items-center justify-between text-xs">
+                <span className="flex items-center gap-1 text-orange-600 font-medium">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-orange-400"></span>
+                  Suspended
+                </span>
+                <span className="font-semibold text-orange-700">
+                  PKR {suspendedBalance.toLocaleString()}
+                </span>
+              </div>
+            )}
+            {hasInventoryPending && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (onInventoryPendingClick) onInventoryPendingClick();
+                }}
+                className="w-full flex items-center justify-between text-xs hover:bg-purple-50 rounded px-1 py-0.5 -mx-1 transition-colors group"
+              >
+                <span className="flex items-center gap-1 text-purple-600 font-medium">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-purple-400"></span>
+                  Inventory Dues
+                  <span className="text-purple-400 group-hover:text-purple-600">
+                    ↗
+                  </span>
+                </span>
+                <span className="font-semibold text-purple-700">
+                  PKR {inventoryPending.toLocaleString()}
+                </span>
+              </button>
+            )}
+            <div className="text-xs text-gray-400 mt-0.5">
+              Click to view all
+            </div>
+          </div>
+        ) : (
+          <div className="text-xs text-gray-500 mt-0.5 font-medium">{sub}</div>
+        )}
       </div>
     </div>
   );
