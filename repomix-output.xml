@@ -1,4 +1,4 @@
-This file is a merged representation of a subset of the codebase, containing specifically included files, combined into a single document by Repomix.
+This file is a merged representation of a subset of the codebase, containing specifically included files and files not matching ignore patterns, combined into a single document by Repomix.
 
 <file_summary>
 This section contains a summary of this file.
@@ -33,6 +33,7 @@ The content is organized as follows:
 - Some files may have been excluded based on .gitignore rules and Repomix's configuration
 - Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
 - Only files matching these patterns are included: **/*.{js,jsx}
+- Files matching these patterns are excluded: src/utils/devTools.js
 - Files matching patterns in .gitignore are excluded
 - Files matching default ignore patterns are excluded
 - Files are sorted by Git change count (files with more changes are at the bottom)
@@ -80,7 +81,6 @@ src/store/usePackageStore.js
 src/store/usePaymentStore.js
 src/utils/backup.js
 src/utils/dateUtils.js
-src/utils/devTools.js
 src/utils/duplicateCheck.js
 src/utils/Statusutils.js
 vite.config.js
@@ -975,289 +975,6 @@ export default function ConfirmDialog({
         </div>
       </div>
     </Modal>
-  );
-}
-</file>
-
-<file path="src/components/ui/ConnectionJobsLog.jsx">
-import { useState } from "react";
-import {
-  Search,
-  X,
-  User,
-  Wrench,
-  Package,
-  Calendar,
-  Trash2,
-  ChevronDown,
-  ChevronRight,
-  FileText,
-} from "lucide-react";
-import useConnectionJobStore from "../../store/useConnectionJobStore";
-import { formatDate } from "../../utils/dateUtils";
-
-/**
- * ConnectionJobsLog
- * Shows all past connection jobs with filtering by subscriber / technician.
- * Expandable rows show line-by-line item details.
- */
-export default function ConnectionJobsLog({ onClose }) {
-  const jobs = useConnectionJobStore((s) => s.jobs);
-  const deleteJob = useConnectionJobStore((s) => s.deleteJob);
-  const [search, setSearch] = useState("");
-  const [expanded, setExpanded] = useState(new Set());
-  const [confirmDelete, setConfirmDelete] = useState(null);
-
-  const filtered = [...jobs]
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    .filter((j) => {
-      if (!search.trim()) return true;
-      const q = search.toLowerCase();
-      return (
-        j.subscriberName?.toLowerCase().includes(q) ||
-        j.subscriberUsername?.toLowerCase().includes(q) ||
-        j.technicianName?.toLowerCase().includes(q) ||
-        j.note?.toLowerCase().includes(q) ||
-        j.items?.some((i) => i.description?.toLowerCase().includes(q))
-      );
-    });
-
-  const toggleExpand = (id) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const handleDelete = async (job) => {
-    await deleteJob(job.id);
-    setConfirmDelete(null);
-  };
-
-  const totalValue = filtered.reduce((s, j) => s + (j.totalValue || 0), 0);
-
-  return (
-    <div className="space-y-4">
-      {/* Summary bar */}
-      <div className="grid grid-cols-3 gap-3">
-        <div className="bg-blue-50 border border-blue-100 rounded-xl px-3 py-2.5 text-center">
-          <p className="text-xs text-blue-600 font-semibold uppercase tracking-wide">
-            Jobs
-          </p>
-          <p className="text-xl font-black text-blue-700">{filtered.length}</p>
-        </div>
-        <div className="bg-green-50 border border-green-100 rounded-xl px-3 py-2.5 text-center">
-          <p className="text-xs text-green-600 font-semibold uppercase tracking-wide">
-            Total Value
-          </p>
-          <p className="text-lg font-black text-green-700">
-            PKR {totalValue.toLocaleString()}
-          </p>
-        </div>
-        <div className="bg-purple-50 border border-purple-100 rounded-xl px-3 py-2.5 text-center">
-          <p className="text-xs text-purple-600 font-semibold uppercase tracking-wide">
-            Items Issued
-          </p>
-          <p className="text-xl font-black text-purple-700">
-            {filtered.reduce((s, j) => s + (j.items?.length || 0), 0)}
-          </p>
-        </div>
-      </div>
-
-      {/* Search */}
-      <div className="relative">
-        <Search
-          size={14}
-          className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
-        />
-        <input
-          type="text"
-          placeholder="Search by subscriber, technician, item…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="w-full pl-9 pr-8 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-        {search && (
-          <button
-            onClick={() => setSearch("")}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-          >
-            <X size={14} />
-          </button>
-        )}
-      </div>
-
-      {/* Jobs list */}
-      <div className="space-y-2 max-h-[58vh] overflow-y-auto pr-1">
-        {filtered.length === 0 && (
-          <div className="text-center py-12 text-gray-400">
-            <Package size={32} className="mx-auto mb-3 opacity-30" />
-            <p className="font-medium text-gray-500">
-              No connection jobs found
-            </p>
-            <p className="text-xs mt-1">
-              Use "New Connection Job" to issue items for a subscriber
-            </p>
-          </div>
-        )}
-
-        {filtered.map((job) => {
-          const isOpen = expanded.has(job.id);
-          return (
-            <div
-              key={job.id}
-              className="border border-gray-200 rounded-xl overflow-hidden bg-white"
-            >
-              {/* Header row */}
-              <div
-                className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50 transition-colors"
-                onClick={() => toggleExpand(job.id)}
-              >
-                <div className="text-gray-400">
-                  {isOpen ? (
-                    <ChevronDown size={16} />
-                  ) : (
-                    <ChevronRight size={16} />
-                  )}
-                </div>
-
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {job.subscriberName ? (
-                      <span className="font-bold text-gray-900 text-sm">
-                        {job.subscriberName}
-                      </span>
-                    ) : (
-                      <span className="text-gray-400 text-sm italic">
-                        No subscriber recorded
-                      </span>
-                    )}
-                    {job.subscriberUsername && (
-                      <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">
-                        @{job.subscriberUsername}
-                      </span>
-                    )}
-                    {job.technicianName && (
-                      <span className="flex items-center gap-1 text-xs text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full">
-                        <Wrench size={10} /> {job.technicianName}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-3 mt-0.5">
-                    <span className="flex items-center gap-1 text-xs text-gray-400">
-                      <Calendar size={11} /> {formatDate(job.date)}
-                    </span>
-                    <span className="text-xs text-gray-400">
-                      {job.items?.length || 0} item
-                      {job.items?.length !== 1 ? "s" : ""}
-                    </span>
-                    {job.note && (
-                      <span className="flex items-center gap-1 text-xs text-gray-400 truncate max-w-36">
-                        <FileText size={11} /> {job.note}
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                <div className="text-right shrink-0">
-                  <p className="font-bold text-gray-900 text-sm">
-                    PKR {(job.totalValue || 0).toLocaleString()}
-                  </p>
-                </div>
-
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setConfirmDelete(job);
-                  }}
-                  className="p-1.5 text-gray-300 hover:text-red-500 transition-colors shrink-0"
-                  title="Delete job"
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-
-              {/* Expanded detail */}
-              {isOpen && (
-                <div className="border-t border-gray-100 bg-gray-50 px-4 py-3 space-y-1.5">
-                  {(job.items || []).map((item, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-center justify-between text-sm"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Package size={13} className="text-gray-400 shrink-0" />
-                        <span className="font-medium text-gray-800">
-                          {item.description}
-                        </span>
-                        <span className="text-gray-400">
-                          × {item.qty} {item.unit}
-                        </span>
-                        <span className="text-xs text-gray-400">
-                          @ PKR {item.unitRate}/{item.unit}
-                        </span>
-                      </div>
-                      <span className="font-semibold text-gray-700">
-                        PKR {item.totalValue.toLocaleString()}
-                      </span>
-                    </div>
-                  ))}
-                  <div className="border-t border-gray-200 pt-2 flex justify-between font-bold text-sm">
-                    <span className="text-gray-700">Total Material Value</span>
-                    <span className="text-green-700">
-                      PKR {(job.totalValue || 0).toLocaleString()}
-                    </span>
-                  </div>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Delete confirm */}
-      {confirmDelete && (
-        <div className="fixed inset-0 z-[999] bg-black/40 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm space-y-4">
-            <p className="font-bold text-gray-900">Delete this job?</p>
-            <p className="text-sm text-gray-500">
-              Job for{" "}
-              <strong>
-                {confirmDelete.subscriberName || "Unknown subscriber"}
-              </strong>{" "}
-              on {formatDate(confirmDelete.date)} will be removed from history.
-              <br />
-              <span className="text-amber-600 font-medium">
-                Note: Inventory changes are NOT reversed.
-              </span>
-            </p>
-            <div className="flex gap-3">
-              <button
-                onClick={() => setConfirmDelete(null)}
-                className="flex-1 py-2 border border-gray-300 rounded-lg text-sm font-semibold text-gray-700 hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => handleDelete(confirmDelete)}
-                className="flex-1 py-2 bg-red-600 text-white rounded-lg text-sm font-semibold hover:bg-red-700"
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <button
-        onClick={onClose}
-        className="w-full py-2.5 border border-gray-300 rounded-lg text-sm font-semibold text-gray-700 hover:bg-gray-50"
-      >
-        Close
-      </button>
-    </div>
   );
 }
 </file>
@@ -3559,6 +3276,790 @@ export default function Badge({ status }) {
 }
 </file>
 
+<file path="src/components/ui/ConnectionJobsLog.jsx">
+import { useState, useMemo } from "react";
+import {
+  Search,
+  X,
+  User,
+  Wrench,
+  Package,
+  Calendar,
+  Trash2,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  ChevronLeft,
+  ChevronsLeft,
+  ChevronsRight,
+  Link2,
+  Hammer,
+  Receipt,
+} from "lucide-react";
+import useConnectionJobStore from "../../store/useConnectionJobStore";
+import useInventoryStore from "../../store/useInventoryStore";
+import { formatDate } from "../../utils/dateUtils";
+
+const ITEMS_PER_PAGE = 10;
+
+// ─── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Build a unified dispatch list from:
+ * 1. Connection Jobs (from useConnectionJobStore) — type "connection"
+ * 2. Ad-hoc issueLog entries from inventory items   — type "adhoc"
+ *
+ * Both types get the same shape so the list can be rendered uniformly.
+ */
+function buildAllDispatches(jobs, inventoryItems) {
+  const list = [];
+
+  // Path B: Connection Jobs
+  for (const job of jobs) {
+    list.push({
+      id: `job-${job.id}`,
+      _jobId: job.id,
+      type: "connection",
+      date: job.date || job.createdAt,
+      createdAt: job.createdAt,
+      subscriberName: job.subscriberName || null,
+      subscriberUsername: job.subscriberUsername || null,
+      technicianName: job.technicianName || null,
+      note: job.note || null,
+      items: job.items || [],
+      totalValue: job.totalValue || 0,
+    });
+  }
+
+  // Path A: Ad-hoc issueLog entries (those NOT tagged as connection)
+  for (const item of inventoryItems) {
+    const log = Array.isArray(item.issueLog) ? item.issueLog : [];
+    for (const entry of log) {
+      const isConnection =
+        entry.jobRef === true || entry.dispatchType === "connection";
+      if (isConnection) continue; // already covered by connection jobs above
+
+      list.push({
+        id: `adhoc-${item.id}-${entry.createdAt || entry.date}`,
+        type: "adhoc",
+        date: entry.date,
+        createdAt: entry.createdAt || entry.date,
+        subscriberName: entry.subscriberName || null,
+        technicianName: entry.issuedTo || null,
+        note: entry.note || null,
+        items: [
+          {
+            description: item.description,
+            unit: item.unit,
+            qty: entry.qty,
+            unitRate: entry.unitRate || item.unitRate,
+            totalValue:
+              entry.totalValue ||
+              (entry.qty || 0) * (entry.unitRate || item.unitRate || 0),
+          },
+        ],
+        totalValue:
+          entry.totalValue ||
+          (entry.qty || 0) * (entry.unitRate || item.unitRate || 0),
+        _inventoryItem: item,
+        _logEntry: entry,
+      });
+    }
+  }
+
+  // Sort newest first
+  return list.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+}
+
+// ─── Main Component ────────────────────────────────────────────────────────────
+export default function ConnectionJobsLog() {
+  const jobs = useConnectionJobStore((s) => s.jobs);
+  const deleteJob = useConnectionJobStore((s) => s.deleteJob);
+  const inventoryItems = useInventoryStore((s) => s.items);
+
+  const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState("all"); // "all" | "connection" | "adhoc"
+  const [expanded, setExpanded] = useState(new Set());
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [page, setPage] = useState(1);
+
+  // ── Build unified list ─────────────────────────────────────────────────────
+  const allDispatches = useMemo(
+    () => buildAllDispatches(jobs, inventoryItems),
+    [jobs, inventoryItems],
+  );
+
+  // ── Filter ─────────────────────────────────────────────────────────────────
+  const filtered = useMemo(() => {
+    let list = allDispatches;
+    if (typeFilter !== "all") {
+      list = list.filter((d) => d.type === typeFilter);
+    }
+    const q = search.trim().toLowerCase();
+    if (q) {
+      list = list.filter(
+        (d) =>
+          d.subscriberName?.toLowerCase().includes(q) ||
+          d.subscriberUsername?.toLowerCase().includes(q) ||
+          d.technicianName?.toLowerCase().includes(q) ||
+          d.note?.toLowerCase().includes(q) ||
+          d.items?.some((i) => i.description?.toLowerCase().includes(q)),
+      );
+    }
+    return list;
+  }, [allDispatches, typeFilter, search]);
+
+  const handleSearch = (val) => {
+    setSearch(val);
+    setPage(1);
+  };
+  const handleTypeFilter = (val) => {
+    setTypeFilter(val);
+    setPage(1);
+  };
+
+  // ── Pagination ─────────────────────────────────────────────────────────────
+  const totalPages = Math.max(1, Math.ceil(filtered.length / ITEMS_PER_PAGE));
+  const safePage = Math.min(page, totalPages);
+  const pageStart = (safePage - 1) * ITEMS_PER_PAGE;
+  const pageItems = filtered.slice(pageStart, pageStart + ITEMS_PER_PAGE);
+
+  // ── Aggregate totals ───────────────────────────────────────────────────────
+  const connectionDispatches = allDispatches.filter(
+    (d) => d.type === "connection",
+  );
+  const adhocDispatches = allDispatches.filter((d) => d.type === "adhoc");
+  const connectionTotal = connectionDispatches.reduce(
+    (s, d) => s + d.totalValue,
+    0,
+  );
+  const adhocTotal = adhocDispatches.reduce((s, d) => s + d.totalValue, 0);
+  const grandTotal = connectionTotal + adhocTotal;
+  const filteredTotal = filtered.reduce((s, d) => s + d.totalValue, 0);
+
+  const toggleExpand = (id) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const handleDelete = async (dispatch) => {
+    if (dispatch.type === "connection" && dispatch._jobId) {
+      await deleteJob(dispatch._jobId);
+    }
+    // Ad-hoc entries cannot be deleted from here (they live inside inventory item)
+    setConfirmDelete(null);
+    const newPages = Math.max(
+      1,
+      Math.ceil((filtered.length - 1) / ITEMS_PER_PAGE),
+    );
+    if (safePage > newPages) setPage(newPages);
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* ── Summary Cards ───────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-3 gap-3">
+        <StatCard
+          color="gray"
+          label="All Dispatches"
+          value={allDispatches.length}
+          sub={`PKR ${grandTotal.toLocaleString()} total`}
+        />
+        <StatCard
+          color="blue"
+          label="Connections"
+          value={connectionDispatches.length}
+          sub={`PKR ${connectionTotal.toLocaleString()}`}
+        />
+        <StatCard
+          color="amber"
+          label="Ad-hoc"
+          value={adhocDispatches.length}
+          sub={`PKR ${adhocTotal.toLocaleString()}`}
+        />
+      </div>
+
+      {/* ── Type filter tabs ─────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-2">
+        {[
+          { key: "all", label: "All", count: allDispatches.length },
+          {
+            key: "connection",
+            label: "🔗 Connections",
+            count: connectionDispatches.length,
+          },
+          { key: "adhoc", label: "🔧 Ad-hoc", count: adhocDispatches.length },
+        ].map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => handleTypeFilter(tab.key)}
+            className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all border ${
+              typeFilter === tab.key
+                ? tab.key === "connection"
+                  ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                  : tab.key === "adhoc"
+                    ? "bg-amber-500 text-white border-amber-500 shadow-sm"
+                    : "bg-gray-800 text-white border-gray-800 shadow-sm"
+                : "bg-white text-gray-600 border-gray-200 hover:border-gray-300 hover:bg-gray-50"
+            }`}
+          >
+            {tab.label}{" "}
+            <span
+              className={`ml-0.5 ${typeFilter === tab.key ? "opacity-80" : "text-gray-400"}`}
+            >
+              ({tab.count})
+            </span>
+          </button>
+        ))}
+      </div>
+
+      {/* ── Search ────────────────────────────────────────────────────────────── */}
+      <div className="relative">
+        <Search
+          size={14}
+          className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+        />
+        <input
+          type="text"
+          placeholder="Search by subscriber, technician, or item description…"
+          value={search}
+          onChange={(e) => handleSearch(e.target.value)}
+          className="w-full pl-9 pr-9 py-2.5 text-sm border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+        />
+        {search && (
+          <button
+            onClick={() => handleSearch("")}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+          >
+            <X size={14} />
+          </button>
+        )}
+      </div>
+
+      {/* Search result banner */}
+      {(search.trim() || typeFilter !== "all") && (
+        <div className="flex items-center justify-between px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-xs">
+          <span className="text-blue-700 font-medium">
+            {filtered.length} dispatch{filtered.length !== 1 ? "es" : ""} shown
+            {search.trim() && ` for "${search}"`}
+          </span>
+          {filtered.length > 0 && (
+            <span className="font-bold text-blue-800">
+              PKR {filteredTotal.toLocaleString()}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* ── Dispatch Cards ────────────────────────────────────────────────────── */}
+      <div className="space-y-2.5 min-h-20">
+        {pageItems.length === 0 ? (
+          <EmptyState hasSearch={!!search.trim() || typeFilter !== "all"} />
+        ) : (
+          pageItems.map((dispatch, idx) => {
+            const globalNum = filtered.length - (pageStart + idx);
+            const isOpen = expanded.has(dispatch.id);
+            const items = dispatch.items || [];
+            const total = dispatch.totalValue || 0;
+            const isConnection = dispatch.type === "connection";
+
+            return (
+              <div
+                key={dispatch.id}
+                className={`rounded-2xl border-2 bg-white overflow-hidden shadow-sm hover:shadow-md transition-shadow ${
+                  isConnection ? "border-blue-100" : "border-amber-100"
+                }`}
+              >
+                {/* Header row */}
+                <div
+                  className={`flex items-center gap-3 px-4 py-3 cursor-pointer select-none group ${
+                    isConnection
+                      ? "hover:bg-blue-50/40"
+                      : "hover:bg-amber-50/40"
+                  } transition-colors`}
+                  onClick={() => toggleExpand(dispatch.id)}
+                >
+                  {/* Expand arrow */}
+                  <span className="text-gray-400 group-hover:text-gray-600 transition-colors shrink-0">
+                    {isOpen ? (
+                      <ChevronDown size={15} />
+                    ) : (
+                      <ChevronRight size={15} />
+                    )}
+                  </span>
+
+                  {/* Number badge */}
+                  <div
+                    className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-sm ${
+                      isConnection
+                        ? "bg-linear-to-br from-blue-500 to-indigo-600"
+                        : "bg-linear-to-br from-amber-400 to-amber-600"
+                    }`}
+                  >
+                    <span className="text-[11px] font-black text-white">
+                      #{globalNum}
+                    </span>
+                  </div>
+
+                  {/* Main info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {/* Type tag — Fix 4 */}
+                      <span
+                        className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                          isConnection
+                            ? "bg-blue-100 border-blue-200 text-blue-700"
+                            : "bg-amber-100 border-amber-200 text-amber-700"
+                        }`}
+                      >
+                        {isConnection ? (
+                          <>
+                            <Link2 size={9} /> Subscriber Connection
+                          </>
+                        ) : (
+                          <>
+                            <Hammer size={9} /> Ad-hoc Dispatch
+                          </>
+                        )}
+                      </span>
+                      {dispatch.subscriberName ? (
+                        <span className="flex items-center gap-1 text-sm font-bold text-gray-900">
+                          <User size={11} className="text-blue-500 shrink-0" />
+                          {dispatch.subscriberName}
+                        </span>
+                      ) : (
+                        <span className="text-sm font-semibold text-gray-400 italic">
+                          No subscriber
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+                      <span className="flex items-center gap-1 text-xs text-gray-500">
+                        <Calendar size={10} className="shrink-0" />
+                        {formatDate(dispatch.date || dispatch.createdAt)}
+                      </span>
+                      {dispatch.technicianName && (
+                        <span className="flex items-center gap-1 text-xs text-gray-500">
+                          <Wrench size={10} className="shrink-0" />
+                          {dispatch.technicianName}
+                        </span>
+                      )}
+                      <span className="flex items-center gap-1 text-xs text-gray-400">
+                        <Package size={10} className="shrink-0" />
+                        {items.length} item{items.length !== 1 ? "s" : ""}
+                        {!isOpen && (
+                          <span className="text-gray-300 ml-0.5">
+                            · tap to expand
+                          </span>
+                        )}
+                      </span>
+                      {dispatch.note && (
+                        <span className="flex items-center gap-1 text-xs text-gray-400 italic max-w-44 truncate">
+                          <FileText size={10} className="shrink-0" />
+                          {dispatch.note}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Total */}
+                  <div className="text-right shrink-0 mr-2">
+                    <p
+                      className={`text-base font-black leading-tight ${
+                        isConnection ? "text-blue-700" : "text-amber-700"
+                      }`}
+                    >
+                      PKR {total.toLocaleString()}
+                    </p>
+                    <p className="text-[10px] text-gray-400">total value</p>
+                  </div>
+
+                  {/* Delete — only for connection jobs */}
+                  {isConnection ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDelete(dispatch);
+                      }}
+                      className="p-2 rounded-xl text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors shrink-0"
+                      title="Delete connection job record"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  ) : (
+                    <div
+                      className="w-8 shrink-0"
+                      title="Ad-hoc dispatches are managed in Inventory tab"
+                    >
+                      {/* spacer — ad-hoc entries are deleted from inventory tab */}
+                    </div>
+                  )}
+                </div>
+
+                {/* Expanded breakdown */}
+                {isOpen && (
+                  <div className="border-t border-gray-100">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr
+                            className={`border-b text-gray-500 ${
+                              isConnection ? "bg-blue-50/60" : "bg-amber-50/60"
+                            }`}
+                          >
+                            <th className="px-5 py-2 text-left font-bold uppercase tracking-wider">
+                              Item / Material
+                            </th>
+                            <th className="px-4 py-2 text-center font-bold uppercase tracking-wider whitespace-nowrap">
+                              Qty &amp; Unit
+                            </th>
+                            <th className="px-4 py-2 text-right font-bold uppercase tracking-wider whitespace-nowrap">
+                              Rate Charged
+                            </th>
+                            <th className="px-4 py-2 pr-5 text-right font-bold uppercase tracking-wider">
+                              Line Total
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {items.map((item, i) => (
+                            <tr
+                              key={i}
+                              className="bg-white hover:bg-gray-50 transition-colors"
+                            >
+                              <td className="px-5 py-2.5">
+                                <div className="flex items-center gap-2">
+                                  <div
+                                    className={`w-5 h-5 rounded-lg flex items-center justify-center shrink-0 ${
+                                      isConnection
+                                        ? "bg-blue-100"
+                                        : "bg-amber-100"
+                                    }`}
+                                  >
+                                    <Package
+                                      size={10}
+                                      className={
+                                        isConnection
+                                          ? "text-blue-600"
+                                          : "text-amber-600"
+                                      }
+                                    />
+                                  </div>
+                                  <span className="font-semibold text-gray-800">
+                                    {item.description}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="px-4 py-2.5 text-center">
+                                <span className="inline-flex items-center gap-1 font-bold text-gray-800 bg-gray-100 px-2.5 py-0.5 rounded-full">
+                                  {item.qty}
+                                  <span className="font-normal text-gray-500 text-[10px]">
+                                    {item.unit}
+                                  </span>
+                                </span>
+                              </td>
+                              <td className="px-4 py-2.5 text-right">
+                                <span className="font-semibold text-gray-700">
+                                  PKR {(item.unitRate || 0).toLocaleString()}
+                                </span>
+                                <span className="text-gray-400 ml-0.5">
+                                  /{item.unit}
+                                </span>
+                              </td>
+                              <td className="px-4 py-2.5 pr-5 text-right font-bold text-gray-900">
+                                PKR {(item.totalValue || 0).toLocaleString()}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr
+                            className={`border-t-2 ${isConnection ? "bg-blue-50 border-blue-200" : "bg-amber-50 border-amber-200"}`}
+                          >
+                            <td colSpan={2} className="px-5 py-2.5">
+                              <div className="flex items-center gap-4 text-xs text-gray-500 flex-wrap">
+                                {dispatch.technicianName && (
+                                  <span className="flex items-center gap-1.5">
+                                    <Wrench
+                                      size={11}
+                                      className="text-gray-400"
+                                    />
+                                    Technician:{" "}
+                                    <strong className="text-gray-700">
+                                      {dispatch.technicianName}
+                                    </strong>
+                                  </span>
+                                )}
+                                {dispatch.note && (
+                                  <span className="flex items-center gap-1.5">
+                                    <FileText
+                                      size={11}
+                                      className="text-gray-400"
+                                    />
+                                    <em className="text-gray-600">
+                                      {dispatch.note}
+                                    </em>
+                                  </span>
+                                )}
+                                {!isConnection && (
+                                  <span className="text-[10px] text-amber-600 italic">
+                                    ℹ️ Manage ad-hoc entries in the Inventory
+                                    tab
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td
+                              className={`px-4 py-2.5 text-right font-bold uppercase tracking-wide text-xs ${
+                                isConnection
+                                  ? "text-blue-700"
+                                  : "text-amber-700"
+                              }`}
+                            >
+                              Total Value
+                            </td>
+                            <td
+                              className={`px-4 py-2.5 pr-5 text-right font-black text-sm ${
+                                isConnection
+                                  ? "text-blue-700"
+                                  : "text-amber-700"
+                              }`}
+                            >
+                              PKR {total.toLocaleString()}
+                            </td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {/* ── Pagination ───────────────────────────────────────────────────────── */}
+      {filtered.length > ITEMS_PER_PAGE && (
+        <div className="flex items-center justify-between pt-2 border-t border-gray-200">
+          <p className="text-xs text-gray-500">
+            Showing{" "}
+            <span className="font-semibold text-gray-800">
+              {pageStart + 1}–
+              {Math.min(pageStart + ITEMS_PER_PAGE, filtered.length)}
+            </span>{" "}
+            of{" "}
+            <span className="font-semibold text-gray-800">
+              {filtered.length}
+            </span>
+          </p>
+          <div className="flex items-center gap-1">
+            <PagBtn onClick={() => setPage(1)} disabled={safePage === 1}>
+              <ChevronsLeft size={14} />
+            </PagBtn>
+            <PagBtn
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={safePage === 1}
+            >
+              <ChevronLeft size={14} />
+            </PagBtn>
+            {buildPageNumbers(safePage, totalPages).map((p, i) =>
+              p === "…" ? (
+                <span
+                  key={`e${i}`}
+                  className="w-6 text-center text-xs text-gray-400"
+                >
+                  …
+                </span>
+              ) : (
+                <button
+                  key={p}
+                  onClick={() => setPage(p)}
+                  className={`w-8 h-8 rounded-lg text-xs font-bold transition-all ${
+                    p === safePage
+                      ? "bg-blue-600 text-white shadow-md scale-105"
+                      : "text-gray-600 hover:bg-gray-100"
+                  }`}
+                >
+                  {p}
+                </button>
+              ),
+            )}
+            <PagBtn
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={safePage === totalPages}
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </PagBtn>
+            <PagBtn
+              onClick={() => setPage(totalPages)}
+              disabled={safePage === totalPages}
+            >
+              <ChevronsRight size={14} />
+            </PagBtn>
+          </div>
+        </div>
+      )}
+
+      {filtered.length > 0 && filtered.length <= ITEMS_PER_PAGE && (
+        <p className="text-xs text-gray-400 text-center border-t border-gray-100 pt-2">
+          {filtered.length} dispatch{filtered.length !== 1 ? "es" : ""} total
+        </p>
+      )}
+
+      {/* ── Delete Confirm ─────────────────────────────────────────────────────── */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm border border-gray-200">
+            <div className="flex items-start gap-3 mb-4">
+              <div className="w-11 h-11 rounded-2xl bg-red-100 flex items-center justify-center shrink-0">
+                <Trash2 size={20} className="text-red-600" />
+              </div>
+              <div>
+                <p className="font-bold text-gray-900">
+                  Delete connection job?
+                </p>
+                <p className="text-sm text-gray-600 mt-1">
+                  Subscriber:{" "}
+                  <span className="font-semibold text-gray-800">
+                    {confirmDelete.subscriberName || "Unknown"}
+                  </span>
+                </p>
+                <p className="text-sm text-gray-600">
+                  Total:{" "}
+                  <span className="font-bold text-red-600">
+                    PKR {(confirmDelete.totalValue || 0).toLocaleString()}
+                  </span>
+                </p>
+              </div>
+            </div>
+            <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-800 mb-5 leading-relaxed">
+              ⚠️ <strong>Important:</strong> This only removes the job log
+              entry. Inventory stock quantities are{" "}
+              <strong>not restored</strong>. Use <strong>Restock</strong> in
+              Inventory tab if you need to add stock back.
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirmDelete(null)}
+                className="flex-1 px-4 py-2.5 text-sm font-semibold border-2 border-gray-200 rounded-xl text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleDelete(confirmDelete)}
+                className="flex-1 px-4 py-2.5 text-sm font-bold bg-red-600 text-white rounded-xl hover:bg-red-700 shadow-sm"
+              >
+                Yes, Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Empty state ──────────────────────────────────────────────────────────────
+function EmptyState({ hasSearch }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-14 gap-3 text-center">
+      <div className="w-16 h-16 rounded-2xl bg-gray-100 flex items-center justify-center">
+        <Receipt size={28} className="text-gray-300" />
+      </div>
+      <p className="font-bold text-gray-400 text-base">
+        {hasSearch
+          ? "No dispatches match your filter"
+          : "No dispatches recorded yet"}
+      </p>
+      <p className="text-xs text-gray-400 max-w-xs leading-relaxed">
+        {hasSearch
+          ? "Try changing the type filter or search terms"
+          : "Dispatch stock via the Inventory tab or create a New Connection in the Subscribers tab"}
+      </p>
+    </div>
+  );
+}
+
+// ─── Stat card ────────────────────────────────────────────────────────────────
+function StatCard({ color, label, value, sub }) {
+  const s =
+    {
+      gray: {
+        wrap: "bg-gray-50 border-gray-200",
+        lbl: "text-gray-500",
+        val: "text-gray-800",
+        sub: "text-gray-400",
+      },
+      blue: {
+        wrap: "bg-blue-50 border-blue-200",
+        lbl: "text-blue-600",
+        val: "text-blue-800",
+        sub: "text-blue-400",
+      },
+      amber: {
+        wrap: "bg-amber-50 border-amber-200",
+        lbl: "text-amber-600",
+        val: "text-amber-800",
+        sub: "text-amber-400",
+      },
+    }[color] || {};
+  return (
+    <div className={`border rounded-2xl px-3 py-3.5 text-center ${s.wrap}`}>
+      <p
+        className={`text-[11px] font-bold uppercase tracking-wider mb-1 ${s.lbl}`}
+      >
+        {label}
+      </p>
+      <p className={`text-2xl font-black leading-tight ${s.val}`}>{value}</p>
+      <p className={`text-[10px] mt-1 ${s.sub}`}>{sub}</p>
+    </div>
+  );
+}
+
+function PagBtn({ onClick, disabled, children }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-25 disabled:cursor-not-allowed transition-colors"
+    >
+      {children}
+    </button>
+  );
+}
+
+function buildPageNumbers(current, total) {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const show = new Set(
+    [1, total, current, current - 1, current + 1].filter(
+      (p) => p >= 1 && p <= total,
+    ),
+  );
+  const arr = [...show].sort((a, b) => a - b);
+  const result = [];
+  for (let i = 0; i < arr.length; i++) {
+    if (i > 0 && arr[i] - arr[i - 1] > 1) result.push("…");
+    result.push(arr[i]);
+  }
+  return result;
+}
+</file>
+
 <file path="src/components/ui/HistoryModal.jsx">
 import {
   Calendar,
@@ -4554,668 +5055,6 @@ export default function InvoiceModal({
             </div>
           </div>
         </div>
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="src/components/ui/Issuehistorymodal.jsx">
-import {
-  ArrowUpCircle,
-  User,
-  FileText,
-  Calendar,
-  Package,
-  Inbox,
-  DollarSign,
-} from "lucide-react";
-import { formatDate } from "../../utils/dateUtils";
-
-/**
- * IssueHistoryModal
- * Displays a timeline of all stock issue events for a single inventory item.
- * Now shows per-unit price and total value per issue.
- *
- * Props:
- *  item    – the inventory item object
- *  onClose – callback to close
- */
-export default function IssueHistoryModal({ item, onClose }) {
-  const log = Array.isArray(item.issueLog) ? [...item.issueLog].reverse() : [];
-  const totalIssued = log.reduce((sum, e) => sum + (e.qty || 0), 0);
-  const totalIssuedValue = log.reduce(
-    (sum, e) =>
-      sum + (e.totalValue || (e.qty || 0) * (e.unitRate || item.unitRate || 0)),
-    0,
-  );
-
-  return (
-    <div className="space-y-4">
-      {/* ── Item summary bar ── */}
-      <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-2.5">
-          <Package size={16} className="text-gray-500" />
-          <div>
-            <p className="font-bold text-gray-900">{item.description}</p>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Unit:{" "}
-              <span className="font-semibold text-gray-700">{item.unit}</span>
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-5 text-center">
-          <div>
-            <p className="text-xs text-gray-400 font-medium">Total Issued</p>
-            <p className="text-lg font-black text-red-500">
-              {item.stockOut || 0}
-            </p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-400 font-medium">Total Value</p>
-            <p className="text-base font-black text-orange-600">
-              PKR {totalIssuedValue.toLocaleString()}
-            </p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-400 font-medium">In Hand</p>
-            <p
-              className={`text-lg font-black ${(item.inHand ?? 0) === 0 ? "text-red-500" : "text-green-600"}`}
-            >
-              {item.inHand ?? 0}
-            </p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-400 font-medium">Events</p>
-            <p className="text-lg font-black text-gray-700">{log.length}</p>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Timeline ── */}
-      {log.length === 0 ? (
-        <div className="flex flex-col items-center gap-3 py-10 text-center">
-          <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center">
-            <Inbox size={22} className="text-gray-400" />
-          </div>
-          <p className="font-semibold text-gray-500">No issue history yet</p>
-          <p className="text-xs text-gray-400">
-            Use the <strong>Issue</strong> button to record stock being given
-            out.
-          </p>
-        </div>
-      ) : (
-        <div className="relative">
-          {/* vertical line */}
-          <div className="absolute left-4.75 top-0 bottom-0 w-px bg-gray-200" />
-
-          <div className="space-y-3">
-            {log.map((entry, idx) => {
-              const entryRate = entry.unitRate || item.unitRate || 0;
-              const entryValue =
-                entry.totalValue || (entry.qty || 0) * entryRate;
-              return (
-                <div key={idx} className="flex gap-3 relative">
-                  {/* dot */}
-                  <div className="shrink-0 w-10 flex justify-center pt-1">
-                    <div className="w-5 h-5 rounded-full bg-red-100 border-2 border-red-400 flex items-center justify-center z-10">
-                      <ArrowUpCircle size={10} className="text-red-500" />
-                    </div>
-                  </div>
-
-                  {/* card */}
-                  <div className="flex-1 bg-white border border-gray-200 rounded-xl px-4 py-3 shadow-sm mb-1">
-                    <div className="flex items-start justify-between gap-2 flex-wrap">
-                      {/* qty badge + value */}
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="bg-red-50 border border-red-200 text-red-700 text-sm font-black px-2.5 py-0.5 rounded-lg">
-                          − {entry.qty} {item.unit}
-                        </span>
-                        <span className="bg-orange-50 border border-orange-200 text-orange-700 text-xs font-semibold px-2 py-0.5 rounded-lg">
-                          PKR {entryValue.toLocaleString()}
-                        </span>
-                        {idx === 0 && (
-                          <span className="text-xs bg-blue-50 border border-blue-200 text-blue-600 font-semibold px-2 py-0.5 rounded-full">
-                            Latest
-                          </span>
-                        )}
-                      </div>
-                      {/* date */}
-                      <span className="flex items-center gap-1 text-xs text-gray-400 font-medium whitespace-nowrap">
-                        <Calendar size={11} />
-                        {formatDate(entry.date)}
-                      </span>
-                    </div>
-
-                    {/* Rate row */}
-                    <div className="flex items-center gap-1.5 text-xs text-gray-500 mt-2">
-                      <DollarSign size={11} className="text-gray-400" />
-                      <span>
-                        PKR {entryRate.toLocaleString()} per {item.unit}
-                        {entryRate !== item.unitRate && (
-                          <span className="ml-1 text-amber-600 font-semibold">
-                            (custom rate)
-                          </span>
-                        )}
-                      </span>
-                    </div>
-
-                    {/* Technician */}
-                    {entry.issuedTo && (
-                      <p className="flex items-center gap-1.5 text-sm text-gray-700 font-medium mt-1.5">
-                        <User size={12} className="text-gray-400 shrink-0" />
-                        Technician: {entry.issuedTo}
-                      </p>
-                    )}
-
-                    {/* Subscriber */}
-                    {entry.subscriberName && (
-                      <p className="flex items-center gap-1.5 text-sm text-gray-700 font-medium mt-1">
-                        <User size={12} className="text-blue-400 shrink-0" />
-                        Subscriber: {entry.subscriberName}
-                      </p>
-                    )}
-
-                    {/* note */}
-                    {entry.note && (
-                      <p className="flex items-start gap-1.5 text-xs text-gray-500 mt-1.5 leading-relaxed">
-                        <FileText
-                          size={11}
-                          className="text-gray-400 shrink-0 mt-0.5"
-                        />
-                        {entry.note}
-                      </p>
-                    )}
-
-                    {/* running balance */}
-                    <p className="text-xs text-gray-400 mt-2 border-t border-gray-100 pt-1.5">
-                      Balance after this issue:{" "}
-                      <span className="font-semibold text-gray-600">
-                        {entry.balanceAfter} {item.unit}
-                      </span>
-                    </p>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* ── Total summary at bottom ── */}
-          {log.length > 1 && (
-            <div className="ml-10 mt-2 bg-gray-50 border border-gray-200 rounded-xl px-4 py-2.5 space-y-1">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-gray-500 font-medium">
-                  Total issued across all {log.length} events
-                </span>
-                <span className="font-bold text-red-600">
-                  {totalIssued} {item.unit}
-                </span>
-              </div>
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-gray-500 font-medium">
-                  Total issued value
-                </span>
-                <span className="font-bold text-orange-600">
-                  PKR {totalIssuedValue.toLocaleString()}
-                </span>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Close ── */}
-      <div className="flex justify-end pt-1 border-t border-gray-100">
-        <button
-          onClick={onClose}
-          className="px-5 py-2 text-sm font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
-        >
-          Close
-        </button>
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="src/components/ui/IssueStockModal.jsx">
-import { useState } from "react";
-import {
-  ArrowUpCircle,
-  Warehouse,
-  User,
-  FileText,
-  AlertTriangle,
-  CheckCircle,
-  History,
-  DollarSign,
-  TrendingDown,
-} from "lucide-react";
-import useInventoryStore from "../../store/useInventoryStore";
-import { today } from "../../utils/dateUtils";
-
-/**
- * IssueStockModal
- * A focused modal for issuing stock out of a specific inventory item.
- * Supports custom per-unit price override (defaults to item's recorded rate).
- * Writes structured entries to item.issueLog (array) for full history tracking.
- *
- * Props:
- *  item          – the inventory item object (required)
- *  onClose       – callback to close the modal
- *  onViewHistory – optional callback to open the history modal
- */
-export default function IssueStockModal({ item, onClose, onViewHistory }) {
-  const updateItem = useInventoryStore((s) => s.updateItem);
-
-  const [qty, setQty] = useState("");
-  const [issuedTo, setIssuedTo] = useState("");
-  const [subscriberName, setSubscriberName] = useState("");
-  const [note, setNote] = useState("");
-  const [date, setDate] = useState(today());
-  const [customRate, setCustomRate] = useState(String(item.unitRate || ""));
-  const [error, setError] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [done, setDone] = useState(false);
-
-  const currentInHand = item.inHand ?? 0;
-  const issueQty = Number(qty) || 0;
-  const effectiveRate = Number(customRate) || item.unitRate || 0;
-  const remaining = currentInHand - issueQty;
-  const totalIssueValue = issueQty * effectiveRate;
-
-  const stockAfterPercent =
-    item.quantity > 0 ? Math.max(0, (remaining / item.quantity) * 100) : 0;
-
-  const barColor =
-    remaining <= 0
-      ? "bg-red-500"
-      : stockAfterPercent <= 20
-        ? "bg-amber-400"
-        : "bg-green-500";
-
-  const statusLabel =
-    remaining < 0
-      ? "Over-issuing!"
-      : remaining === 0
-        ? "Stock will be empty"
-        : stockAfterPercent <= 20
-          ? "Low stock after issue"
-          : "Stock OK";
-
-  const statusColor =
-    remaining < 0
-      ? "text-red-600"
-      : remaining === 0
-        ? "text-amber-600"
-        : stockAfterPercent <= 20
-          ? "text-amber-500"
-          : "text-green-600";
-
-  const existingLog = Array.isArray(item.issueLog) ? item.issueLog : [];
-  const historyCount = existingLog.length;
-
-  const handleSubmit = async () => {
-    setError("");
-    if (!issueQty || issueQty <= 0) {
-      setError("Enter a quantity greater than 0.");
-      return;
-    }
-    if (issueQty > currentInHand) {
-      setError(
-        `Only ${currentInHand} ${item.unit}(s) available in hand. Cannot issue more.`,
-      );
-      return;
-    }
-    if (!effectiveRate || effectiveRate <= 0) {
-      setError("Per-unit price must be greater than 0.");
-      return;
-    }
-
-    setSaving(true);
-    try {
-      const newStockOut = (item.stockOut || 0) + issueQty;
-      const newInHand = (item.stockIn || 0) - newStockOut;
-
-      // Build structured log entry — now includes rate & total value
-      const logEntry = {
-        date,
-        qty: issueQty,
-        unitRate: effectiveRate,
-        totalValue: issueQty * effectiveRate,
-        issuedTo: issuedTo.trim() || null,
-        subscriberName: subscriberName.trim() || null,
-        note: note.trim() || null,
-        balanceAfter: newInHand,
-        createdAt: new Date().toISOString(),
-      };
-
-      await updateItem(item.id, {
-        ...item,
-        stockOut: newStockOut,
-        inHand: newInHand,
-        balanced: newInHand,
-        issued: newStockOut,
-        issueLog: [...existingLog, logEntry],
-      });
-      setDone(true);
-    } catch (err) {
-      setError("Failed to issue stock: " + err.message);
-    }
-    setSaving(false);
-  };
-
-  // ── Success State ──
-  if (done) {
-    return (
-      <div className="flex flex-col items-center gap-4 py-6 text-center">
-        <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center">
-          <CheckCircle size={28} className="text-green-600" />
-        </div>
-        <div>
-          <p className="text-base font-bold text-gray-900">Stock Issued!</p>
-          <p className="text-sm text-gray-500 mt-1">
-            <span className="font-semibold text-red-500">
-              {issueQty} {item.unit}
-            </span>{" "}
-            of <span className="font-semibold">{item.description}</span> issued
-            successfully.
-            <br />
-            <span className="text-gray-400">
-              Total value:{" "}
-              <span className="font-semibold text-gray-700">
-                PKR {totalIssueValue.toLocaleString()}
-              </span>
-            </span>
-            <br />
-            <span className="text-gray-400">
-              Remaining in hand:{" "}
-              <span className="font-semibold text-gray-600">
-                {remaining} {item.unit}
-              </span>
-            </span>
-          </p>
-        </div>
-        <div className="flex gap-3 mt-1">
-          {onViewHistory && (
-            <button
-              onClick={() => {
-                onClose();
-                onViewHistory();
-              }}
-              className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
-            >
-              <History size={14} /> View History
-            </button>
-          )}
-          <button
-            onClick={onClose}
-            className="px-6 py-2 bg-gray-900 text-white text-sm font-semibold rounded-lg hover:bg-gray-700 transition-colors"
-          >
-            Close
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Form State ──
-  return (
-    <div className="space-y-5">
-      {/* ── Item Info Banner ── */}
-      <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 flex items-center justify-between gap-4">
-        <div>
-          <p className="text-xs text-gray-400 font-medium uppercase tracking-wide mb-0.5">
-            Item
-          </p>
-          <p className="font-bold text-gray-900 text-base">
-            {item.description}
-          </p>
-          <p className="text-xs text-gray-500 mt-0.5">
-            Unit:{" "}
-            <span className="font-semibold text-gray-700">{item.unit}</span>
-            {" · "}
-            <span className="text-gray-400">
-              Recorded rate: PKR {(item.unitRate || 0).toLocaleString()}
-            </span>
-          </p>
-        </div>
-        <div className="flex items-end gap-4">
-          {/* History badge */}
-          {historyCount > 0 && onViewHistory && (
-            <button
-              onClick={() => {
-                onClose();
-                onViewHistory();
-              }}
-              className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-800 transition-colors"
-            >
-              <History size={13} />
-              {historyCount} issue{historyCount !== 1 ? "s" : ""} logged
-            </button>
-          )}
-          <div className="text-right shrink-0">
-            <p className="text-xs text-gray-400 font-medium uppercase tracking-wide mb-0.5">
-              Available In Hand
-            </p>
-            <p
-              className={`text-2xl font-black leading-tight ${
-                currentInHand === 0 ? "text-red-500" : "text-green-600"
-              }`}
-            >
-              {currentInHand}
-            </p>
-            <p className="text-xs text-gray-400">{item.unit}(s)</p>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Out-of-stock warning ── */}
-      {currentInHand === 0 && (
-        <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-sm text-red-700 font-medium">
-          <AlertTriangle size={14} className="shrink-0" />
-          This item is out of stock. No units can be issued.
-        </div>
-      )}
-
-      {/* ── Qty + Date + Per Unit Price row ── */}
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="block text-xs font-bold text-gray-600 mb-1.5">
-            Quantity to Issue <span className="text-red-500">*</span>
-          </label>
-          <input
-            type="number"
-            min="1"
-            max={currentInHand}
-            disabled={currentInHand === 0}
-            className={`w-full border rounded-lg px-3 h-10 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all disabled:bg-gray-100 disabled:cursor-not-allowed ${
-              error && (!issueQty || issueQty > currentInHand)
-                ? "border-red-400 bg-red-50"
-                : "border-gray-300"
-            }`}
-            placeholder={`Max: ${currentInHand}`}
-            value={qty}
-            onChange={(e) => {
-              setQty(e.target.value);
-              setError("");
-            }}
-            autoFocus
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-bold text-gray-600 mb-1.5">
-            Date <span className="text-red-500">*</span>
-          </label>
-          <input
-            type="date"
-            max={today()}
-            className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-          />
-        </div>
-
-        {/* Per Unit Price — full width */}
-        <div className="col-span-2">
-          <label className="block text-xs font-bold text-gray-600 mb-1.5">
-            <span className="flex items-center gap-1.5">
-              <DollarSign size={12} /> Per Unit Price (PKR){" "}
-              <span className="text-red-500">*</span>
-              <span className="font-normal text-gray-400">
-                — default is recorded purchase rate
-              </span>
-            </span>
-          </label>
-          <div className="relative">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 font-semibold pointer-events-none">
-              PKR
-            </span>
-            <input
-              type="number"
-              min="0"
-              className="w-full border border-gray-300 rounded-lg pl-12 pr-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-              value={customRate}
-              placeholder={`Default: ${item.unitRate || 0}`}
-              onChange={(e) => {
-                setCustomRate(e.target.value);
-                setError("");
-              }}
-            />
-          </div>
-          {Number(customRate) !== item.unitRate && item.unitRate > 0 && (
-            <p className="text-xs text-amber-600 font-medium mt-1 flex items-center gap-1">
-              <AlertTriangle size={11} />
-              Rate changed from recorded PKR {item.unitRate?.toLocaleString()} —
-              this only affects this issue entry, not the item record.
-            </p>
-          )}
-        </div>
-      </div>
-
-      {/* ── Live Stock + Value Preview ── */}
-      {issueQty > 0 && effectiveRate > 0 && (
-        <div className="bg-white border border-gray-200 rounded-xl px-4 py-3 space-y-2">
-          <div className="flex items-center justify-between text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            <span>Stock After Issuing</span>
-            <span className={statusColor}>{statusLabel}</span>
-          </div>
-          <div className="flex items-center justify-between text-sm font-bold">
-            <span className="text-gray-600">
-              {currentInHand} →{" "}
-              <span
-                className={remaining < 0 ? "text-red-600" : "text-gray-900"}
-              >
-                {remaining}
-              </span>{" "}
-              <span className="font-normal text-gray-400">{item.unit}(s)</span>
-            </span>
-            <span className="text-xs text-gray-400">
-              of {item.quantity} total
-            </span>
-          </div>
-          <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all duration-300 ${barColor}`}
-              style={{
-                width: `${Math.max(0, Math.min(100, stockAfterPercent))}%`,
-              }}
-            />
-          </div>
-          {/* Total value of this issue */}
-          <div className="flex items-center justify-between pt-1 border-t border-gray-100">
-            <span className="flex items-center gap-1.5 text-xs text-gray-500 font-medium">
-              <TrendingDown size={12} className="text-red-500" />
-              Total value of this issue
-            </span>
-            <span className="text-sm font-bold text-red-600">
-              PKR {totalIssueValue.toLocaleString()}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* ── Issued To (Technician) ── */}
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="block text-xs font-bold text-gray-600 mb-1.5">
-            <span className="flex items-center gap-1.5">
-              <User size={12} /> Technician Name
-              <span className="font-normal text-gray-400">(optional)</span>
-            </span>
-          </label>
-          <input
-            className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-            placeholder="e.g. Ali Technician"
-            value={issuedTo}
-            onChange={(e) => setIssuedTo(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-bold text-gray-600 mb-1.5">
-            <span className="flex items-center gap-1.5">
-              <User size={12} /> Subscriber Name
-              <span className="font-normal text-gray-400">(optional)</span>
-            </span>
-          </label>
-          <input
-            className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-            placeholder="e.g. Ahmed Ali (customer)"
-            value={subscriberName}
-            onChange={(e) => setSubscriberName(e.target.value)}
-          />
-        </div>
-      </div>
-
-      {/* ── Note ── */}
-      <div>
-        <label className="block text-xs font-bold text-gray-600 mb-1.5">
-          <span className="flex items-center gap-1.5">
-            <FileText size={12} /> Note
-            <span className="font-normal text-gray-400">(optional)</span>
-          </span>
-        </label>
-        <input
-          className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-          placeholder="e.g. New connection at Gulshan, fiber repair..."
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-        />
-      </div>
-
-      {/* ── Error ── */}
-      {error && (
-        <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-sm text-red-700 font-medium">
-          <AlertTriangle size={14} className="shrink-0" />
-          {error}
-        </div>
-      )}
-
-      {/* ── Actions ── */}
-      <div className="flex justify-end gap-3 pt-1 border-t border-gray-100">
-        <button
-          onClick={onClose}
-          className="px-5 py-2 text-sm font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={handleSubmit}
-          disabled={saving || currentInHand === 0}
-          className="flex items-center gap-2 px-6 py-2 text-sm font-semibold bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm"
-        >
-          {saving ? (
-            "Issuing..."
-          ) : (
-            <>
-              <ArrowUpCircle size={15} />
-              Issue{" "}
-              {issueQty > 0
-                ? `${issueQty} ${item.unit} · PKR ${totalIssueValue.toLocaleString()}`
-                : "Stock"}
-            </>
-          )}
-        </button>
       </div>
     </div>
   );
@@ -6446,6 +6285,950 @@ function _toYMD(date) {
   const mm = String(date.getMonth() + 1).padStart(2, "0");
   const dd = String(date.getDate()).padStart(2, "0");
   return `${yy}-${mm}-${dd}`;
+}
+</file>
+
+<file path="src/components/ui/Issuehistorymodal.jsx">
+import {
+  ArrowUpCircle,
+  User,
+  FileText,
+  Calendar,
+  Package,
+  Inbox,
+  DollarSign,
+  Link2,
+  Hammer,
+  Wrench,
+} from "lucide-react";
+import { formatDate } from "../../utils/dateUtils";
+
+/**
+ * IssueHistoryModal — "Dispatch History"
+ *
+ * Fix 2: Each dispatch entry now shows a clear type tag:
+ *   🔗 Subscriber Connection  (jobRef === true or dispatchType === "connection")
+ *   🔧 Ad-hoc Dispatch        (everything else)
+ *
+ * Summary stats split into Connection vs Ad-hoc totals.
+ */
+export default function IssueHistoryModal({ item, onClose }) {
+  const log = Array.isArray(item.issueLog) ? [...item.issueLog].reverse() : [];
+
+  // Fix 2 + Fix 3: split log by type so we can show separate totals
+  const connectionEntries = log.filter(
+    (e) => e.jobRef === true || e.dispatchType === "connection",
+  );
+  const adhocEntries = log.filter(
+    (e) => e.jobRef !== true && e.dispatchType !== "connection",
+  );
+
+  const totalIssuedQty = log.reduce((s, e) => s + (e.qty || 0), 0);
+  const totalIssuedValue = log.reduce(
+    (s, e) =>
+      s + (e.totalValue || (e.qty || 0) * (e.unitRate || item.unitRate || 0)),
+    0,
+  );
+  const connectionValue = connectionEntries.reduce(
+    (s, e) =>
+      s + (e.totalValue || (e.qty || 0) * (e.unitRate || item.unitRate || 0)),
+    0,
+  );
+  const adhocValue = adhocEntries.reduce(
+    (s, e) =>
+      s + (e.totalValue || (e.qty || 0) * (e.unitRate || item.unitRate || 0)),
+    0,
+  );
+
+  return (
+    <div className="space-y-4">
+      {/* ── Item summary bar ── */}
+      <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 flex items-start justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-2.5">
+          <Package size={16} className="text-gray-500 shrink-0" />
+          <div>
+            <p className="font-bold text-gray-900">{item.description}</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Unit:{" "}
+              <span className="font-semibold text-gray-700">{item.unit}</span>
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-4 text-center flex-wrap">
+          <div>
+            <p className="text-xs text-gray-400 font-medium">
+              Total Dispatched
+            </p>
+            <p className="text-lg font-black text-red-500">
+              {item.stockOut || 0}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-400 font-medium">Total Value</p>
+            <p className="text-base font-black text-orange-600">
+              PKR {totalIssuedValue.toLocaleString()}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-400 font-medium">In Hand</p>
+            <p
+              className={`text-lg font-black ${(item.inHand ?? 0) === 0 ? "text-red-500" : "text-green-600"}`}
+            >
+              {item.inHand ?? 0}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-400 font-medium">Events</p>
+            <p className="text-lg font-black text-gray-700">{log.length}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Fix 3: Split summary — Connection vs Ad-hoc */}
+      {log.length > 0 &&
+        (connectionEntries.length > 0 || adhocEntries.length > 0) && (
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3">
+              <div className="flex items-center gap-1.5 mb-1">
+                <Link2 size={13} className="text-blue-600 shrink-0" />
+                <p className="text-xs font-bold text-blue-700 uppercase tracking-wide">
+                  Subscriber Connections
+                </p>
+              </div>
+              <p className="text-lg font-black text-blue-800">
+                PKR {connectionValue.toLocaleString()}
+              </p>
+              <p className="text-xs text-blue-600 mt-0.5">
+                {connectionEntries.length} dispatch
+                {connectionEntries.length !== 1 ? "es" : ""}
+              </p>
+            </div>
+            <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+              <div className="flex items-center gap-1.5 mb-1">
+                <Hammer size={13} className="text-amber-600 shrink-0" />
+                <p className="text-xs font-bold text-amber-700 uppercase tracking-wide">
+                  Ad-hoc Dispatches
+                </p>
+              </div>
+              <p className="text-lg font-black text-amber-800">
+                PKR {adhocValue.toLocaleString()}
+              </p>
+              <p className="text-xs text-amber-600 mt-0.5">
+                {adhocEntries.length} dispatch
+                {adhocEntries.length !== 1 ? "es" : ""}
+              </p>
+            </div>
+          </div>
+        )}
+
+      {/* ── Timeline ── */}
+      {log.length === 0 ? (
+        <div className="flex flex-col items-center gap-3 py-10 text-center">
+          <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center">
+            <Inbox size={22} className="text-gray-400" />
+          </div>
+          <p className="font-semibold text-gray-500">No dispatch history yet</p>
+          <p className="text-xs text-gray-400">
+            Use the <strong>Dispatch Stock</strong> button to record stock being
+            sent out.
+          </p>
+        </div>
+      ) : (
+        <div className="relative">
+          {/* vertical line */}
+          <div className="absolute left-4.75 top-0 bottom-0 w-px bg-gray-200" />
+
+          <div className="space-y-3">
+            {log.map((entry, idx) => {
+              const entryRate = entry.unitRate || item.unitRate || 0;
+              const entryValue =
+                entry.totalValue || (entry.qty || 0) * entryRate;
+              const isConnection =
+                entry.jobRef === true || entry.dispatchType === "connection";
+
+              return (
+                <div key={idx} className="flex gap-3 relative">
+                  {/* dot */}
+                  <div className="shrink-0 w-10 flex justify-center pt-1">
+                    <div
+                      className={`w-5 h-5 rounded-full border-2 flex items-center justify-center z-10 ${
+                        isConnection
+                          ? "bg-blue-100 border-blue-400"
+                          : "bg-amber-100 border-amber-400"
+                      }`}
+                    >
+                      {isConnection ? (
+                        <Link2 size={9} className="text-blue-600" />
+                      ) : (
+                        <Hammer size={9} className="text-amber-600" />
+                      )}
+                    </div>
+                  </div>
+
+                  {/* card */}
+                  <div
+                    className={`flex-1 bg-white border rounded-xl px-4 py-3 shadow-sm mb-1 ${
+                      isConnection ? "border-blue-100" : "border-amber-100"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {/* Qty badge */}
+                        <span className="bg-red-50 border border-red-200 text-red-700 text-sm font-black px-2.5 py-0.5 rounded-lg">
+                          − {entry.qty} {item.unit}
+                        </span>
+                        {/* Value badge */}
+                        <span className="bg-orange-50 border border-orange-200 text-orange-700 text-xs font-semibold px-2 py-0.5 rounded-lg">
+                          PKR {entryValue.toLocaleString()}
+                        </span>
+                        {/* Type tag — Fix 2 */}
+                        <span
+                          className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                            isConnection
+                              ? "bg-blue-100 border-blue-200 text-blue-700"
+                              : "bg-amber-100 border-amber-200 text-amber-700"
+                          }`}
+                        >
+                          {isConnection ? (
+                            <>
+                              <Link2 size={9} /> Connection
+                            </>
+                          ) : (
+                            <>
+                              <Hammer size={9} /> Ad-hoc
+                            </>
+                          )}
+                        </span>
+                        {idx === 0 && (
+                          <span className="text-xs bg-blue-50 border border-blue-200 text-blue-600 font-semibold px-2 py-0.5 rounded-full">
+                            Latest
+                          </span>
+                        )}
+                      </div>
+                      {/* date */}
+                      <span className="flex items-center gap-1 text-xs text-gray-400 font-medium whitespace-nowrap">
+                        <Calendar size={11} />
+                        {formatDate(entry.date)}
+                      </span>
+                    </div>
+
+                    {/* Rate row */}
+                    <div className="flex items-center gap-1.5 text-xs text-gray-500 mt-2">
+                      <DollarSign size={11} className="text-gray-400" />
+                      <span>
+                        PKR {entryRate.toLocaleString()} per {item.unit}
+                        {entryRate !== item.unitRate && (
+                          <span className="ml-1 text-amber-600 font-semibold">
+                            (custom rate)
+                          </span>
+                        )}
+                      </span>
+                    </div>
+
+                    {/* Technician */}
+                    {entry.issuedTo && (
+                      <p className="flex items-center gap-1.5 text-sm text-gray-700 font-medium mt-1.5">
+                        <Wrench size={12} className="text-gray-400 shrink-0" />
+                        Technician: {entry.issuedTo}
+                      </p>
+                    )}
+
+                    {/* Subscriber / Reference */}
+                    {entry.subscriberName && (
+                      <p className="flex items-center gap-1.5 text-sm text-gray-700 font-medium mt-1">
+                        <User size={12} className="text-blue-400 shrink-0" />
+                        {isConnection ? "Subscriber" : "Reference"}:{" "}
+                        {entry.subscriberName}
+                      </p>
+                    )}
+
+                    {/* note */}
+                    {entry.note && (
+                      <p className="flex items-start gap-1.5 text-xs text-gray-500 mt-1.5 leading-relaxed">
+                        <FileText
+                          size={11}
+                          className="text-gray-400 shrink-0 mt-0.5"
+                        />
+                        {entry.note}
+                      </p>
+                    )}
+
+                    {/* running balance */}
+                    <p className="text-xs text-gray-400 mt-2 border-t border-gray-100 pt-1.5">
+                      Warehouse balance after this dispatch:{" "}
+                      <span className="font-semibold text-gray-600">
+                        {entry.balanceAfter} {item.unit}
+                      </span>
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Total summary */}
+          {log.length > 1 && (
+            <div className="ml-10 mt-2 bg-gray-50 border border-gray-200 rounded-xl px-4 py-2.5 space-y-1">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-500 font-medium">
+                  Total dispatched across all {log.length} events
+                </span>
+                <span className="font-bold text-red-600">
+                  {totalIssuedQty} {item.unit}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-500 font-medium">
+                  Total dispatch value
+                </span>
+                <span className="font-bold text-orange-600">
+                  PKR {totalIssuedValue.toLocaleString()}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Close */}
+      <div className="flex justify-end pt-1 border-t border-gray-100">
+        <button
+          onClick={onClose}
+          className="px-5 py-2 text-sm font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/components/ui/IssueStockModal.jsx">
+import { useState } from "react";
+import {
+  ArrowUpCircle,
+  User,
+  FileText,
+  AlertTriangle,
+  CheckCircle,
+  History,
+  DollarSign,
+  TrendingDown,
+  Wrench,
+  Link2,
+  Hammer,
+  ChevronRight,
+} from "lucide-react";
+import useInventoryStore from "../../store/useInventoryStore";
+import { today } from "../../utils/dateUtils";
+
+/**
+ * IssueStockModal — "Dispatch Stock"
+ *
+ * Fix 1: First asks WHY stock is being dispatched:
+ *   A) New Subscriber Connection  → creates issueLog entry with jobRef:true
+ *   B) Ad-hoc / General Dispatch  → creates issueLog entry with jobRef:false
+ *
+ * Fix 2: Renamed "Issue" → "Dispatch Stock" throughout.
+ *        History badge now says "N dispatches".
+ *
+ * Props:
+ *  item          – the inventory item object (required)
+ *  onClose       – callback to close the modal
+ *  onViewHistory – optional callback to open the dispatch history modal
+ */
+export default function IssueStockModal({ item, onClose, onViewHistory }) {
+  const updateItem = useInventoryStore((s) => s.updateItem);
+
+  // ── Step 1: purpose selection ──────────────────────────────────────────────
+  const [purpose, setPurpose] = useState(null); // null | "connection" | "adhoc"
+
+  // ── Step 2: form fields ────────────────────────────────────────────────────
+  const [qty, setQty] = useState("");
+  const [issuedTo, setIssuedTo] = useState(""); // technician
+  const [subscriberName, setSubscriberName] = useState("");
+  const [note, setNote] = useState("");
+  const [date, setDate] = useState(today());
+  const [customRate, setCustomRate] = useState(String(item.unitRate || ""));
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const currentInHand = item.inHand ?? 0;
+  const issueQty = Number(qty) || 0;
+  const effectiveRate = Number(customRate) || item.unitRate || 0;
+  const remaining = currentInHand - issueQty;
+  const totalIssueValue = issueQty * effectiveRate;
+
+  const stockAfterPercent =
+    item.quantity > 0 ? Math.max(0, (remaining / item.quantity) * 100) : 0;
+
+  const barColor =
+    remaining <= 0
+      ? "bg-red-500"
+      : stockAfterPercent <= 20
+        ? "bg-amber-400"
+        : "bg-green-500";
+
+  const statusLabel =
+    remaining < 0
+      ? "Over-dispatching!"
+      : remaining === 0
+        ? "Stock will be empty"
+        : stockAfterPercent <= 20
+          ? "Low stock after dispatch"
+          : "Stock OK";
+
+  const statusColor =
+    remaining < 0
+      ? "text-red-600"
+      : remaining === 0
+        ? "text-amber-600"
+        : stockAfterPercent <= 20
+          ? "text-amber-500"
+          : "text-green-600";
+
+  const existingLog = Array.isArray(item.issueLog) ? item.issueLog : [];
+  const historyCount = existingLog.length;
+
+  const handleSubmit = async () => {
+    setError("");
+    if (!issueQty || issueQty <= 0) {
+      setError("Enter a quantity greater than 0.");
+      return;
+    }
+    if (issueQty > currentInHand) {
+      setError(
+        `Only ${currentInHand} ${item.unit}(s) available. Cannot dispatch more.`,
+      );
+      return;
+    }
+    if (!effectiveRate || effectiveRate <= 0) {
+      setError("Per-unit price must be greater than 0.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const newStockOut = (item.stockOut || 0) + issueQty;
+      const newInHand = (item.stockIn || 0) - newStockOut;
+
+      const logEntry = {
+        date,
+        qty: issueQty,
+        unitRate: effectiveRate,
+        totalValue: issueQty * effectiveRate,
+        issuedTo: issuedTo.trim() || null,
+        subscriberName: subscriberName.trim() || null,
+        note: note.trim() || null,
+        balanceAfter: newInHand,
+        // Fix 1: tag with purpose so history + cards can distinguish the two types
+        jobRef: purpose === "connection", // true = subscriber connection
+        dispatchType: purpose, // "connection" | "adhoc"
+        createdAt: new Date().toISOString(),
+      };
+
+      await updateItem(item.id, {
+        ...item,
+        stockOut: newStockOut,
+        inHand: newInHand,
+        balanced: newInHand,
+        issued: newStockOut,
+        issueLog: [...existingLog, logEntry],
+      });
+      setDone(true);
+    } catch (err) {
+      setError("Failed to dispatch stock: " + err.message);
+    }
+    setSaving(false);
+  };
+
+  // ── Success State ────────────────────────────────────────────────────────────
+  if (done) {
+    return (
+      <div className="flex flex-col items-center gap-4 py-6 text-center">
+        <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center">
+          <CheckCircle size={28} className="text-green-600" />
+        </div>
+        <div>
+          <p className="text-base font-bold text-gray-900">Stock Dispatched!</p>
+          <p className="text-sm text-gray-500 mt-1">
+            <span className="font-semibold text-red-500">
+              {issueQty} {item.unit}
+            </span>{" "}
+            of <span className="font-semibold">{item.description}</span>{" "}
+            dispatched.
+            <br />
+            <span className="text-gray-400">
+              Total value:{" "}
+              <span className="font-semibold text-gray-700">
+                PKR {totalIssueValue.toLocaleString()}
+              </span>
+            </span>
+            <br />
+            <span className="text-gray-400">
+              Remaining in warehouse:{" "}
+              <span className="font-semibold text-gray-600">
+                {remaining} {item.unit}
+              </span>
+            </span>
+          </p>
+          {/* Type tag on success */}
+          <div
+            className={`inline-flex items-center gap-1.5 mt-2 px-3 py-1 rounded-full text-xs font-semibold ${
+              purpose === "connection"
+                ? "bg-blue-100 text-blue-700 border border-blue-200"
+                : "bg-amber-100 text-amber-700 border border-amber-200"
+            }`}
+          >
+            {purpose === "connection" ? (
+              <>
+                <Link2 size={11} /> Subscriber Connection
+              </>
+            ) : (
+              <>
+                <Hammer size={11} /> Ad-hoc Dispatch
+              </>
+            )}
+          </div>
+        </div>
+        <div className="flex gap-3 mt-1">
+          {onViewHistory && (
+            <button
+              onClick={() => {
+                onClose();
+                onViewHistory();
+              }}
+              className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              <History size={14} /> View History
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            className="px-6 py-2 bg-gray-900 text-white text-sm font-semibold rounded-lg hover:bg-gray-700 transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Step 1: Purpose Selector ─────────────────────────────────────────────────
+  if (purpose === null) {
+    return (
+      <div className="space-y-4">
+        {/* Item info */}
+        <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 flex items-center justify-between gap-4">
+          <div>
+            <p className="text-xs text-gray-400 font-medium uppercase tracking-wide mb-0.5">
+              Dispatching from
+            </p>
+            <p className="font-bold text-gray-900 text-base">
+              {item.description}
+            </p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Unit:{" "}
+              <span className="font-semibold text-gray-700">{item.unit}</span>
+              {" · "}
+              <span className="text-gray-400">
+                Recorded rate: PKR {(item.unitRate || 0).toLocaleString()}
+              </span>
+            </p>
+          </div>
+          <div className="text-right shrink-0">
+            <p className="text-xs text-gray-400 font-medium uppercase tracking-wide mb-0.5">
+              Available
+            </p>
+            <p
+              className={`text-3xl font-black leading-tight ${currentInHand === 0 ? "text-red-500" : "text-green-600"}`}
+            >
+              {currentInHand}
+            </p>
+            <p className="text-xs text-gray-400">{item.unit}(s)</p>
+          </div>
+        </div>
+
+        {currentInHand === 0 && (
+          <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-sm text-red-700 font-medium">
+            <AlertTriangle size={14} className="shrink-0" />
+            This item is out of stock. No units can be dispatched.
+          </div>
+        )}
+
+        <div className="space-y-1.5">
+          <p className="text-sm font-bold text-gray-700 mb-3">
+            Why are you dispatching this stock?
+          </p>
+
+          {/* Option A: New Subscriber Connection */}
+          <button
+            disabled={currentInHand === 0}
+            onClick={() => setPurpose("connection")}
+            className="w-full flex items-start gap-4 p-4 rounded-2xl border-2 border-blue-200 bg-blue-50 hover:border-blue-400 hover:bg-blue-100 transition-all text-left disabled:opacity-40 disabled:cursor-not-allowed group"
+          >
+            <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center shrink-0 mt-0.5">
+              <Link2 size={18} className="text-white" />
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center justify-between">
+                <p className="font-bold text-blue-800 text-sm">
+                  New Subscriber Connection
+                </p>
+                <ChevronRight
+                  size={16}
+                  className="text-blue-400 group-hover:text-blue-600 transition-colors"
+                />
+              </div>
+              <p className="text-xs text-blue-600 mt-0.5 leading-relaxed">
+                Fiber, cable, or equipment for a new customer's setup. Logged as
+                a <strong>Connection Job</strong> — visible in Jobs Log and
+                linked to the subscriber.
+              </p>
+              <div className="mt-2 flex items-center gap-1.5">
+                <span className="text-[10px] font-bold bg-blue-200 text-blue-800 px-2 py-0.5 rounded-full uppercase tracking-wide">
+                  🔗 Creates Job Record
+                </span>
+                <span className="text-[10px] font-bold bg-blue-200 text-blue-800 px-2 py-0.5 rounded-full uppercase tracking-wide">
+                  Visible in Jobs Log
+                </span>
+              </div>
+            </div>
+          </button>
+
+          {/* Option B: Ad-hoc */}
+          <button
+            disabled={currentInHand === 0}
+            onClick={() => setPurpose("adhoc")}
+            className="w-full flex items-start gap-4 p-4 rounded-2xl border-2 border-amber-200 bg-amber-50 hover:border-amber-400 hover:bg-amber-100 transition-all text-left disabled:opacity-40 disabled:cursor-not-allowed group"
+          >
+            <div className="w-10 h-10 rounded-xl bg-amber-500 flex items-center justify-center shrink-0 mt-0.5">
+              <Hammer size={18} className="text-white" />
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center justify-between">
+                <p className="font-bold text-amber-800 text-sm">
+                  Ad-hoc / General Dispatch
+                </p>
+                <ChevronRight
+                  size={16}
+                  className="text-amber-400 group-hover:text-amber-600 transition-colors"
+                />
+              </div>
+              <p className="text-xs text-amber-700 mt-0.5 leading-relaxed">
+                Repair work, spare parts, testing, field maintenance, or any
+                stock not tied to a specific new subscriber.
+              </p>
+              <div className="mt-2 flex items-center gap-1.5">
+                <span className="text-[10px] font-bold bg-amber-200 text-amber-800 px-2 py-0.5 rounded-full uppercase tracking-wide">
+                  🔧 Ad-hoc Record
+                </span>
+                <span className="text-[10px] font-bold bg-amber-200 text-amber-800 px-2 py-0.5 rounded-full uppercase tracking-wide">
+                  No Subscriber Linked
+                </span>
+              </div>
+            </div>
+          </button>
+        </div>
+
+        <div className="flex justify-end pt-1 border-t border-gray-100">
+          <button
+            onClick={onClose}
+            className="px-5 py-2 text-sm font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Step 2: Dispatch Form ────────────────────────────────────────────────────
+  const isConnection = purpose === "connection";
+
+  return (
+    <div className="space-y-5">
+      {/* Purpose tag + back button */}
+      <div className="flex items-center justify-between">
+        <button
+          onClick={() => {
+            setPurpose(null);
+            setError("");
+          }}
+          className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 transition-colors font-medium"
+        >
+          ← Change purpose
+        </button>
+        <div
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold ${
+            isConnection
+              ? "bg-blue-100 text-blue-700 border border-blue-200"
+              : "bg-amber-100 text-amber-700 border border-amber-200"
+          }`}
+        >
+          {isConnection ? <Link2 size={11} /> : <Hammer size={11} />}
+          {isConnection ? "New Subscriber Connection" : "Ad-hoc Dispatch"}
+        </div>
+      </div>
+
+      {/* Item Info Banner */}
+      <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 flex items-center justify-between gap-4">
+        <div>
+          <p className="text-xs text-gray-400 font-medium uppercase tracking-wide mb-0.5">
+            Item
+          </p>
+          <p className="font-bold text-gray-900 text-base">
+            {item.description}
+          </p>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Unit:{" "}
+            <span className="font-semibold text-gray-700">{item.unit}</span>
+            {" · "}
+            <span className="text-gray-400">
+              Recorded rate: PKR {(item.unitRate || 0).toLocaleString()}
+            </span>
+          </p>
+        </div>
+        <div className="flex items-end gap-4">
+          {historyCount > 0 && onViewHistory && (
+            <button
+              onClick={() => {
+                onClose();
+                onViewHistory();
+              }}
+              className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-800 transition-colors"
+            >
+              <History size={13} />
+              {historyCount} dispatch{historyCount !== 1 ? "es" : ""} logged
+            </button>
+          )}
+          <div className="text-right shrink-0">
+            <p className="text-xs text-gray-400 font-medium uppercase tracking-wide mb-0.5">
+              Available
+            </p>
+            <p
+              className={`text-2xl font-black leading-tight ${currentInHand === 0 ? "text-red-500" : "text-green-600"}`}
+            >
+              {currentInHand}
+            </p>
+            <p className="text-xs text-gray-400">{item.unit}(s)</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Qty + Date */}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs font-bold text-gray-600 mb-1.5">
+            Quantity to Dispatch <span className="text-red-500">*</span>
+          </label>
+          <input
+            type="number"
+            min="1"
+            max={currentInHand}
+            className={`w-full border rounded-lg px-3 h-10 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all ${
+              error && (!issueQty || issueQty > currentInHand)
+                ? "border-red-400 bg-red-50"
+                : "border-gray-300"
+            }`}
+            placeholder={`Max: ${currentInHand}`}
+            value={qty}
+            onChange={(e) => {
+              setQty(e.target.value);
+              setError("");
+            }}
+            autoFocus
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-bold text-gray-600 mb-1.5">
+            Date <span className="text-red-500">*</span>
+          </label>
+          <input
+            type="date"
+            max={today()}
+            className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+          />
+        </div>
+
+        {/* Per Unit Price */}
+        <div className="col-span-2">
+          <label className="block text-xs font-bold text-gray-600 mb-1.5">
+            <span className="flex items-center gap-1.5">
+              <DollarSign size={12} /> Per Unit Price (PKR){" "}
+              <span className="text-red-500">*</span>
+              <span className="font-normal text-gray-400">
+                — default is recorded purchase rate
+              </span>
+            </span>
+          </label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 font-semibold pointer-events-none">
+              PKR
+            </span>
+            <input
+              type="number"
+              min="0"
+              className="w-full border border-gray-300 rounded-lg pl-12 pr-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+              value={customRate}
+              placeholder={`Default: ${item.unitRate || 0}`}
+              onChange={(e) => {
+                setCustomRate(e.target.value);
+                setError("");
+              }}
+            />
+          </div>
+          {Number(customRate) !== item.unitRate && item.unitRate > 0 && (
+            <p className="text-xs text-amber-600 font-medium mt-1 flex items-center gap-1">
+              <AlertTriangle size={11} />
+              Rate changed from recorded PKR {item.unitRate?.toLocaleString()} —
+              this only affects this dispatch entry, not the item record.
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Live Preview */}
+      {issueQty > 0 && effectiveRate > 0 && (
+        <div className="bg-white border border-gray-200 rounded-xl px-4 py-3 space-y-2">
+          <div className="flex items-center justify-between text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            <span>Stock After Dispatch</span>
+            <span className={statusColor}>{statusLabel}</span>
+          </div>
+          <div className="flex items-center justify-between text-sm font-bold">
+            <span className="text-gray-600">
+              {currentInHand} →{" "}
+              <span
+                className={remaining < 0 ? "text-red-600" : "text-gray-900"}
+              >
+                {remaining}
+              </span>{" "}
+              <span className="font-normal text-gray-400">{item.unit}(s)</span>
+            </span>
+            <span className="text-xs text-gray-400">
+              of {item.quantity} total
+            </span>
+          </div>
+          <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${barColor}`}
+              style={{
+                width: `${Math.max(0, Math.min(100, stockAfterPercent))}%`,
+              }}
+            />
+          </div>
+          <div className="flex items-center justify-between pt-1 border-t border-gray-100">
+            <span className="flex items-center gap-1.5 text-xs text-gray-500 font-medium">
+              <TrendingDown size={12} className="text-red-500" />
+              Total value of this dispatch
+            </span>
+            <span className="text-sm font-bold text-red-600">
+              PKR {totalIssueValue.toLocaleString()}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Technician + Subscriber / Purpose */}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs font-bold text-gray-600 mb-1.5">
+            <span className="flex items-center gap-1.5">
+              <Wrench size={12} /> Technician Name
+              <span className="font-normal text-gray-400">(optional)</span>
+            </span>
+          </label>
+          <input
+            className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            placeholder="e.g. Ali Technician"
+            value={issuedTo}
+            onChange={(e) => setIssuedTo(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-bold text-gray-600 mb-1.5">
+            <span className="flex items-center gap-1.5">
+              <User size={12} />
+              {isConnection ? "Subscriber Name" : "Purpose / Reference"}
+              <span className="font-normal text-gray-400">(optional)</span>
+            </span>
+          </label>
+          <input
+            className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            placeholder={
+              isConnection
+                ? "e.g. Ahmed Ali (customer)"
+                : "e.g. Gulshan B5 repair"
+            }
+            value={subscriberName}
+            onChange={(e) => setSubscriberName(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {/* Note */}
+      <div>
+        <label className="block text-xs font-bold text-gray-600 mb-1.5">
+          <span className="flex items-center gap-1.5">
+            <FileText size={12} /> Note
+            <span className="font-normal text-gray-400">(optional)</span>
+          </span>
+        </label>
+        <input
+          className="w-full border border-gray-300 rounded-lg px-3 h-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+          placeholder={
+            isConnection
+              ? "e.g. New connection at Gulshan B5..."
+              : "e.g. Fiber repair at main junction..."
+          }
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+        />
+      </div>
+
+      {error && (
+        <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-sm text-red-700 font-medium">
+          <AlertTriangle size={14} className="shrink-0" />
+          {error}
+        </div>
+      )}
+
+      {/* Actions */}
+      <div className="flex justify-end gap-3 pt-1 border-t border-gray-100">
+        <button
+          onClick={onClose}
+          className="px-5 py-2 text-sm font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleSubmit}
+          disabled={saving}
+          className={`flex items-center gap-2 px-6 py-2 text-sm font-semibold text-white rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm ${
+            isConnection
+              ? "bg-blue-600 hover:bg-blue-700"
+              : "bg-amber-500 hover:bg-amber-600"
+          }`}
+        >
+          {saving ? (
+            "Dispatching..."
+          ) : (
+            <>
+              <ArrowUpCircle size={15} />
+              Dispatch{" "}
+              {issueQty > 0
+                ? `${issueQty} ${item.unit} · PKR ${totalIssueValue.toLocaleString()}`
+                : "Stock"}
+            </>
+          )}
+        </button>
+      </div>
+    </div>
+  );
 }
 </file>
 
@@ -8123,6 +8906,8 @@ import {
   ChevronDown,
   ChevronsUpDown,
   ClipboardList,
+  Link2,
+  Hammer,
 } from "lucide-react";
 import Modal from "../../components/ui/Modal";
 import ConfirmDialog from "../../components/ui/ConfirmDialog";
@@ -8165,10 +8950,30 @@ export default function Inventory() {
     0,
   );
   const totalOriginalCost = items.reduce((sum, i) => sum + (i.amount || 0), 0);
-  const totalIssuedValue = items.reduce(
-    (sum, i) => sum + (i.stockOut || 0) * (i.unitRate || 0),
-    0,
-  );
+  // Fix 3: Split issued value into Connection dispatches vs Ad-hoc dispatches
+  // Uses issueLog[].dispatchType or jobRef to distinguish the two paths
+  const { totalIssuedValue, connectionIssuedValue, adhocIssuedValue } = (() => {
+    let connection = 0;
+    let adhoc = 0;
+    for (const item of items) {
+      const log = Array.isArray(item.issueLog) ? item.issueLog : [];
+      for (const entry of log) {
+        const val =
+          entry.totalValue ||
+          (entry.qty || 0) * (entry.unitRate || item.unitRate || 0);
+        if (entry.jobRef === true || entry.dispatchType === "connection") {
+          connection += val;
+        } else {
+          adhoc += val;
+        }
+      }
+    }
+    return {
+      totalIssuedValue: connection + adhoc,
+      connectionIssuedValue: connection,
+      adhocIssuedValue: adhoc,
+    };
+  })();
 
   const lowStockItems = items.filter((i) => {
     if (!i.quantity) return false;
@@ -8271,7 +9076,7 @@ export default function Inventory() {
             onClick={() => setShowJobsLog(true)}
             className="flex items-center gap-2 px-3 py-2 text-sm font-semibold border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 shadow-sm transition-colors"
           >
-            <ClipboardList size={15} /> Jobs Log
+            <ClipboardList size={15} /> Jobs & Dispatch Log
           </button>
 
           {/* Add Item */}
@@ -8321,8 +9126,8 @@ export default function Inventory() {
                 <History size={14} className="text-purple-600" /> History
               </p>
               <p className="text-xs text-gray-500 leading-relaxed">
-                Each item shows history buttons for <strong>issues</strong> and{" "}
-                <strong>restocks</strong>.
+                Each item shows history buttons for <strong>dispatches</strong>{" "}
+                and <strong>restocks</strong>.
               </p>
             </div>
           </div>
@@ -8381,7 +9186,7 @@ export default function Inventory() {
       )}
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <div className="col-span-2 lg:col-span-1 bg-white border border-gray-200 rounded-xl px-4 py-3">
           <div className="flex items-center gap-2 mb-1.5">
             <div className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center shrink-0">
@@ -8434,20 +9239,46 @@ export default function Inventory() {
           </p>
         </div>
 
-        <div className="bg-white border border-gray-200 rounded-xl px-4 py-3">
+        {/* Fix 3: Split into two cards — Connection vs Ad-hoc */}
+        <div className="bg-white border border-blue-200 rounded-xl px-4 py-3">
           <div className="flex items-center gap-2 mb-1.5">
-            <div className="w-7 h-7 rounded-lg bg-red-100 flex items-center justify-center shrink-0">
-              <TrendingDown size={14} className="text-red-500" />
+            <div className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center shrink-0">
+              <Link2 size={14} className="text-blue-600" />
             </div>
-            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-              Total Issued
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide leading-tight">
+              Issued to Connections
             </span>
           </div>
-          <p className="text-2xl font-black text-red-500 leading-tight">
-            PKR {totalIssuedValue.toLocaleString()}
+          <p className="text-2xl font-black text-blue-700 leading-tight">
+            PKR {connectionIssuedValue.toLocaleString()}
           </p>
           <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
-            Value of stock already given out to technicians for field work.
+            Stock dispatched for{" "}
+            <strong className="text-blue-600">
+              new subscriber connections
+            </strong>
+            . Visible in Jobs Log.
+          </p>
+        </div>
+
+        <div className="bg-white border border-amber-200 rounded-xl px-4 py-3">
+          <div className="flex items-center gap-2 mb-1.5">
+            <div className="w-7 h-7 rounded-lg bg-amber-100 flex items-center justify-center shrink-0">
+              <Hammer size={14} className="text-amber-600" />
+            </div>
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide leading-tight">
+              Ad-hoc Dispatches
+            </span>
+          </div>
+          <p className="text-2xl font-black text-amber-600 leading-tight">
+            PKR {adhocIssuedValue.toLocaleString()}
+          </p>
+          <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
+            Stock for{" "}
+            <strong className="text-amber-600">
+              repairs, spares & field work
+            </strong>{" "}
+            — no subscriber linked.
           </p>
         </div>
       </div>
@@ -8661,14 +9492,14 @@ export default function Inventory() {
                                 : "bg-red-50 text-red-700 border-red-200 hover:bg-red-100"
                             }`}
                           >
-                            <ArrowUpCircle size={10} /> Issue
+                            <ArrowUpCircle size={10} /> Dispatch
                           </button>
                           <button
                             onClick={() => setHistoryItem(item)}
                             title={
                               issueLogCount > 0
-                                ? `${issueLogCount} issue event(s) — click to view`
-                                : "No issue history"
+                                ? `${issueLogCount} dispatch(es) — click to view`
+                                : "No dispatch history"
                             }
                             className={`flex items-center gap-0.5 px-1.5 py-1 text-xs font-semibold border rounded-md transition-colors ${
                               issueLogCount > 0
@@ -8785,7 +9616,7 @@ export default function Inventory() {
       <Modal
         isOpen={!!issueItem}
         onClose={() => setIssueItem(null)}
-        title="Issue Stock"
+        title="Dispatch Stock"
         size="md"
       >
         {issueItem && (
@@ -8815,7 +9646,7 @@ export default function Inventory() {
       <Modal
         isOpen={showJobsLog}
         onClose={() => setShowJobsLog(false)}
-        title="Connection Jobs Log"
+        title="Jobs & Dispatch Log"
         size="lg"
       >
         <ConnectionJobsLog onClose={() => setShowJobsLog(false)} />
@@ -8844,1238 +9675,6 @@ function SortIcon({ field, sortField, sortDir }) {
     <ChevronDown size={11} className="text-blue-500" />
   );
 }
-</file>
-
-<file path="src/utils/devTools.js">
-// src/utils/devTools.js
-// ─────────────────────────────────────────────────────────────────────────────
-//  Galaxy ISP — Developer / Test-Data Tools
-//  Attach to window so you can call them from the browser console.
-// ─────────────────────────────────────────────────────────────────────────────
-import db from "../db/database";
-import usePaymentStore from "../store/usePaymentStore";
-import useCustomerStore from "../store/useCustomerStore";
-import useExpenseStore from "../store/useExpenseStore";
-import useInventoryStore from "../store/useInventoryStore";
-import usePackageStore from "../store/usePackageStore";
-import useConnectionJobStore from "../store/useConnectionJobStore";
-import { addDays, today, CYCLE_LENGTH_DAYS } from "./dateUtils";
-
-// ─── Seed Data ────────────────────────────────────────────────────────────────
-
-const SEED_AREAS = [
-  "City Center",
-  "North Town",
-  "South Block",
-  "Garden Colony",
-  "Model Town",
-  "DHA Phase 1",
-];
-
-const SEED_AGENTS = [
-  "Usman Tariq",
-  "Bilal Raza",
-  "Kamran Sheikh",
-  "Naveed Akhtar",
-  "Zubair Malik",
-  "Adeel Hussain",
-];
-
-const SEED_PACKAGES = [
-  { name: "Starter 5 MB", speedMbps: 5, price: 800 },
-  { name: "Basic 10 MB", speedMbps: 10, price: 1400 },
-  { name: "Standard 25 MB", speedMbps: 25, price: 2200 },
-  { name: "Fast 50 MB", speedMbps: 50, price: 3200 },
-  { name: "Ultra 100 MB", speedMbps: 100, price: 4800 },
-];
-
-// 7 inventory items with varied stock levels
-const SEED_INVENTORY = [
-  { description: "ONU Device", unit: "piece", qty: 250, unitRate: 900 },
-  { description: "Fiber Cable", unit: "meter", qty: 8000, unitRate: 18 },
-  { description: "Ethernet Cable", unit: "meter", qty: 4000, unitRate: 12 },
-  { description: "Splitter 1:8", unit: "piece", qty: 120, unitRate: 380 },
-  { description: "Wall Socket", unit: "piece", qty: 350, unitRate: 130 },
-  { description: "Cable Tie", unit: "piece", qty: 2000, unitRate: 5 },
-  { description: "Fiber Connector", unit: "piece", qty: 500, unitRate: 45 },
-];
-
-// Pakistani names pool
-const FIRST_NAMES = [
-  "Ahmed",
-  "Ali",
-  "Hassan",
-  "Usman",
-  "Bilal",
-  "Tariq",
-  "Imran",
-  "Faisal",
-  "Zubair",
-  "Naveed",
-  "Kamran",
-  "Salman",
-  "Asad",
-  "Omar",
-  "Adeel",
-  "Hamid",
-  "Waseem",
-  "Shoaib",
-  "Irfan",
-  "Javed",
-  "Fatima",
-  "Ayesha",
-  "Sana",
-  "Nadia",
-  "Maria",
-  "Hira",
-  "Zara",
-  "Sara",
-  "Amna",
-  "Rabia",
-  "Saima",
-  "Uzma",
-  "Shazia",
-  "Bushra",
-  "Nazia",
-  "Sobia",
-  "Rubina",
-  "Samia",
-  "Asma",
-  "Kiran",
-];
-const LAST_NAMES = [
-  "Khan",
-  "Ahmed",
-  "Ali",
-  "Malik",
-  "Sheikh",
-  "Butt",
-  "Chaudhry",
-  "Akhtar",
-  "Hussain",
-  "Baig",
-  "Mirza",
-  "Qureshi",
-  "Siddiqui",
-  "Ansari",
-  "Hashmi",
-  "Raza",
-  "Rizvi",
-  "Javed",
-  "Iqbal",
-  "Nawaz",
-  "Zafar",
-  "Mehmood",
-  "Aslam",
-  "Farooq",
-  "Bhatti",
-  "Dogar",
-  "Gondal",
-  "Niazi",
-  "Warraich",
-  "Bajwa",
-];
-
-// ─── Status Distribution ──────────────────────────────────────────────────────
-//
-//  Display statuses (from Statusutils.js):
-//    "clear"     → active customer, active cycle, fully paid
-//    "pending"   → active customer, active cycle, unpaid balance
-//    "expired"   → active customer, cycle ended + unpaid
-//    "renewal"   → active customer, cycle ended + paid (needs renewal)
-//    "suspended" → manually suspended by operator
-//
-//  We map these to internal "scenario" keys used by buildCycles():
-//    "clear"     → 35 %
-//    "pending"   → 25 %
-//    "expired"   → 15 %
-//    "renewal"   → 10 %
-//    "suspended" → 10 %
-//    "archived"  → 5  %
-
-const STATUS_POOL = [
-  ...Array(35).fill("clear"),
-  ...Array(25).fill("pending"),
-  ...Array(15).fill("expired"),
-  ...Array(10).fill("renewal"),
-  ...Array(10).fill("suspended"),
-  ...Array(5).fill("archived"),
-];
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function pick(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
-function rand(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-function randomPhone() {
-  const prefixes = [
-    "0300",
-    "0301",
-    "0302",
-    "0303",
-    "0311",
-    "0312",
-    "0321",
-    "0333",
-    "0345",
-    "0346",
-  ];
-  return pick(prefixes) + String(rand(1000000, 9999999));
-}
-
-function randomUsername(firstName, lastName, idx) {
-  return (firstName + lastName).toLowerCase().replace(/\s/g, "") + idx;
-}
-
-function makeInstallment(amountPaid, datePaid, note = "Seeded") {
-  return {
-    id: crypto.randomUUID(),
-    amountPaid,
-    datePaid,
-    note,
-    createdAt: new Date().toISOString(),
-  };
-}
-
-async function reloadAll() {
-  await Promise.all([
-    useCustomerStore.getState().loadCustomers(),
-    usePaymentStore.getState().loadCycles(),
-    useExpenseStore.getState().loadExpenses(),
-    useInventoryStore.getState().loadInventory(),
-    usePackageStore.getState().loadPackages(),
-    useConnectionJobStore.getState().loadJobs(),
-  ]);
-}
-
-// ─── Core: Build payment cycles for one customer ──────────────────────────────
-//
-//  numHistoricalCycles: how many past cycles to create before the current one.
-//  scenario:           drives the shape of the CURRENT (latest) cycle.
-//
-//  Historical pattern (cycles before the current one):
-//    Even index → paid in full
-//    Odd  index → carried forward (shifted to next cycle)
-//
-async function buildCycles(
-  customerId,
-  packagePrice,
-  scenario,
-  numHistoricalCycles = 3,
-) {
-  const totalCycles = numHistoricalCycles + 1; // historical + current
-
-  // Build date ranges (oldest → newest)
-  const ranges = [];
-  // Current cycle: started 5 days ago, ends CYCLE_LENGTH_DAYS later
-  let end = addDays(today(), CYCLE_LENGTH_DAYS - 5);
-  let start = addDays(today(), -5);
-  for (let i = 0; i < totalCycles; i++) {
-    ranges.unshift({ start, end });
-    end = addDays(start, -1);
-    start = addDays(end, -CYCLE_LENGTH_DAYS);
-  }
-
-  let pendingFromPrev = 0;
-
-  // Historical cycles
-  for (let i = 0; i < numHistoricalCycles; i++) {
-    const { start: s, end: e } = ranges[i];
-    const isPaid = i % 2 === 0;
-    const totalAmount = packagePrice + pendingFromPrev;
-    const previousBalance = pendingFromPrev;
-
-    if (isPaid) {
-      await db.paymentCycles.add({
-        customerId: Number(customerId),
-        cycleStartDate: s,
-        cycleEndDate: e,
-        totalAmount,
-        amountPaid: totalAmount,
-        amountPending: 0,
-        status: "clear",
-        shiftedAmount: 0,
-        previousBalance,
-        installments: [makeInstallment(totalAmount, s, "Seed: paid")],
-        isRenewal: i > 0,
-        createdAt: new Date().toISOString(),
-      });
-      pendingFromPrev = 0;
-    } else {
-      // Unpaid — carried forward
-      await db.paymentCycles.add({
-        customerId: Number(customerId),
-        cycleStartDate: s,
-        cycleEndDate: e,
-        totalAmount,
-        amountPaid: 0,
-        amountPending: 0,
-        status: "clear",
-        shiftedAmount: totalAmount,
-        previousBalance,
-        installments: [],
-        isRenewal: i > 0,
-        createdAt: new Date().toISOString(),
-      });
-      pendingFromPrev = totalAmount;
-    }
-  }
-
-  // Current cycle
-  const { start: cs, end: ce } = ranges[totalCycles - 1];
-  const totalAmount = packagePrice + pendingFromPrev;
-  const previousBalance = pendingFromPrev;
-
-  switch (scenario) {
-    case "clear":
-      await db.paymentCycles.add({
-        customerId: Number(customerId),
-        cycleStartDate: cs,
-        cycleEndDate: ce,
-        totalAmount,
-        amountPaid: totalAmount,
-        amountPending: 0,
-        status: "clear",
-        shiftedAmount: 0,
-        previousBalance,
-        installments: [makeInstallment(totalAmount, cs, "Seed: cleared")],
-        isRenewal: true,
-        createdAt: new Date().toISOString(),
-      });
-      break;
-
-    case "pending": {
-      // Partially paid — some amount still owed within active cycle
-      const partialPaid = Math.floor(totalAmount * (rand(10, 60) / 100));
-      const stillOwed = totalAmount - partialPaid;
-      await db.paymentCycles.add({
-        customerId: Number(customerId),
-        cycleStartDate: cs,
-        cycleEndDate: ce,
-        totalAmount,
-        amountPaid: partialPaid,
-        amountPending: stillOwed,
-        status: "pending",
-        shiftedAmount: 0,
-        previousBalance,
-        installments:
-          partialPaid > 0
-            ? [
-                makeInstallment(
-                  partialPaid,
-                  addDays(cs, rand(1, 5)),
-                  "Seed: partial",
-                ),
-              ]
-            : [],
-        isRenewal: true,
-        createdAt: new Date().toISOString(),
-      });
-      break;
-    }
-
-    case "expired": {
-      // Cycle ended 10–20 days ago, still unpaid
-      const expiredEnd = addDays(today(), -rand(10, 20));
-      const expiredStart = addDays(expiredEnd, -CYCLE_LENGTH_DAYS);
-      await db.paymentCycles.add({
-        customerId: Number(customerId),
-        cycleStartDate: expiredStart,
-        cycleEndDate: expiredEnd,
-        totalAmount,
-        amountPaid: 0,
-        amountPending: totalAmount,
-        status: "pending",
-        shiftedAmount: 0,
-        previousBalance,
-        installments: [],
-        isRenewal: true,
-        createdAt: new Date().toISOString(),
-      });
-      break;
-    }
-
-    case "renewal": {
-      // Cycle ended recently, fully paid → needs renewal
-      const renewEnd = addDays(today(), -rand(1, 5));
-      const renewStart = addDays(renewEnd, -CYCLE_LENGTH_DAYS);
-      await db.paymentCycles.add({
-        customerId: Number(customerId),
-        cycleStartDate: renewStart,
-        cycleEndDate: renewEnd,
-        totalAmount,
-        amountPaid: totalAmount,
-        amountPending: 0,
-        status: "clear",
-        shiftedAmount: 0,
-        previousBalance,
-        installments: [
-          makeInstallment(totalAmount, renewStart, "Seed: renewal"),
-        ],
-        isRenewal: true,
-        createdAt: new Date().toISOString(),
-      });
-      break;
-    }
-
-    case "suspended": {
-      // Partial payment, cycle active, customer manually suspended
-      const partial = Math.floor(totalAmount * (rand(20, 50) / 100));
-      await db.paymentCycles.add({
-        customerId: Number(customerId),
-        cycleStartDate: cs,
-        cycleEndDate: ce,
-        totalAmount,
-        amountPaid: partial,
-        amountPending: totalAmount - partial,
-        status: "pending",
-        shiftedAmount: 0,
-        previousBalance,
-        installments: [
-          makeInstallment(
-            partial,
-            addDays(cs, 2),
-            "Seed: partial before suspend",
-          ),
-        ],
-        isRenewal: true,
-        createdAt: new Date().toISOString(),
-      });
-      break;
-    }
-
-    case "archived": {
-      // Old, fully paid cycle from 60–90 days ago
-      const archEnd = addDays(today(), -rand(60, 90));
-      const archStart = addDays(archEnd, -CYCLE_LENGTH_DAYS);
-      await db.paymentCycles.add({
-        customerId: Number(customerId),
-        cycleStartDate: archStart,
-        cycleEndDate: archEnd,
-        totalAmount: packagePrice,
-        amountPaid: packagePrice,
-        amountPending: 0,
-        status: "clear",
-        shiftedAmount: 0,
-        previousBalance: 0,
-        installments: [
-          makeInstallment(packagePrice, archStart, "Seed: archived final"),
-        ],
-        isRenewal: true,
-        createdAt: new Date().toISOString(),
-      });
-      break;
-    }
-
-    default:
-      break;
-  }
-}
-
-// ─── Main DevTools Setup ──────────────────────────────────────────────────────
-
-export const setupDevTools = () => {
-  // ════════════════════════════════════════════════════════════════════════════
-  //  seedAll(count, wipeFirst)
-  //  The one-command full seeder.
-  //
-  //  Usage:
-  //    seedAll()              → seed everything with 1000 subscribers
-  //    seedAll(200)           → 200 subscribers (faster for quick checks)
-  //    seedAll(1000, true)    → wipe all existing data first, then seed 1000
-  // ════════════════════════════════════════════════════════════════════════════
-  window.seedAll = async (count = 1000, wipeFirst = false) => {
-    if (wipeFirst) {
-      const ok = confirm(
-        `⚠️ This will DELETE all existing data and seed ${count} subscribers. Continue?`,
-      );
-      if (!ok) return;
-      await _wipeAllData(true);
-    }
-
-    console.log(
-      `⏳ Starting full seed: areas + agents + packages + inventory + ${count} subscribers…`,
-    );
-    const t0 = Date.now();
-
-    // ── Areas ────────────────────────────────────────────────────────────────
-    const existingAreas = (await db.settings.get("areas"))?.value || [];
-    const mergedAreas = [...new Set([...existingAreas, ...SEED_AREAS])];
-    await db.settings.put({ key: "areas", value: mergedAreas });
-    console.log(
-      `  ✅ Areas (${mergedAreas.length}): ${mergedAreas.join(", ")}`,
-    );
-
-    // ── Recovery Agents ──────────────────────────────────────────────────────
-    const existingAgents = (await db.settings.get("agents"))?.value || [];
-    const mergedAgents = [...new Set([...existingAgents, ...SEED_AGENTS])];
-    await db.settings.put({ key: "agents", value: mergedAgents });
-    console.log(
-      `  ✅ Agents (${mergedAgents.length}): ${mergedAgents.join(", ")}`,
-    );
-
-    // ── Packages ─────────────────────────────────────────────────────────────
-    let existingPkgs = await db.packages.toArray();
-    if (existingPkgs.length === 0) {
-      for (const pkg of SEED_PACKAGES) {
-        await db.packages.add({
-          ...pkg,
-          priceHistory: [],
-          lastUpdated: null,
-          createdAt: new Date().toISOString(),
-        });
-      }
-      existingPkgs = await db.packages.toArray();
-      console.log(
-        `  ✅ Packages (${existingPkgs.length}): ${existingPkgs.map((p) => p.name).join(", ")}`,
-      );
-    } else {
-      console.log(
-        `  ℹ️  Packages already exist (${existingPkgs.length}), skipping.`,
-      );
-    }
-
-    // ── Inventory ────────────────────────────────────────────────────────────
-    let existingInv = await db.inventory.toArray();
-    if (existingInv.length === 0) {
-      for (const item of SEED_INVENTORY) {
-        await db.inventory.add({
-          description: item.description,
-          unit: item.unit,
-          quantity: item.qty,
-          unitRate: item.unitRate,
-          amount: item.qty * item.unitRate,
-          stockIn: item.qty,
-          stockOut: 0,
-          inHand: item.qty,
-          received: item.qty,
-          issued: 0,
-          balanced: item.qty,
-          purchaseDate: today(),
-          invoiceNo: null,
-          remarks: "Seeded by devTools",
-          restockLog: [],
-          issueLog: [],
-          createdAt: new Date().toISOString(),
-        });
-      }
-      console.log(
-        `  ✅ Inventory (${SEED_INVENTORY.length} items): ${SEED_INVENTORY.map((i) => i.description).join(", ")}`,
-      );
-    } else {
-      console.log(
-        `  ℹ️  Inventory already exists (${existingInv.length} items), skipping.`,
-      );
-    }
-
-    // ── Subscribers ──────────────────────────────────────────────────────────
-    const packages = await db.packages.toArray();
-    const areas = (await db.settings.get("areas"))?.value || SEED_AREAS;
-
-    let created = 0,
-      failed = 0;
-    const BATCH = 50;
-
-    for (let i = 0; i < count; i++) {
-      try {
-        const firstName = pick(FIRST_NAMES);
-        const lastName = pick(LAST_NAMES);
-        const scenario = STATUS_POOL[i % STATUS_POOL.length];
-        const pkg = pick(packages);
-        const area = pick(areas);
-        const isArchived = scenario === "archived";
-        const isSuspended = scenario === "suspended";
-
-        // Some subscribers get extra historical cycles (2–6) to stress-test multi-cycle UI
-        const numHistorical = rand(1, 6);
-
-        const customerId = await db.customers.add({
-          fullName: `${firstName} ${lastName}`,
-          userName: randomUsername(firstName, lastName, i + 1),
-          mobileNo: randomPhone(),
-          mainArea: area,
-          packageId: pkg.id,
-          status: isArchived
-            ? "terminated"
-            : isSuspended
-              ? "suspended"
-              : "active",
-          isArchived,
-          archivedAt: isArchived ? addDays(today(), -rand(50, 100)) : null,
-          archiveReason: isArchived
-            ? pick([
-                "Left area",
-                "Relocated",
-                "Switched provider",
-                "Non-payment",
-              ])
-            : "",
-          lockedPackagePrice: pkg.price,
-          createdAt: new Date().toISOString(),
-        });
-
-        await buildCycles(customerId, pkg.price, scenario, numHistorical);
-        created++;
-
-        if ((i + 1) % BATCH === 0) {
-          console.log(`  ⏳ ${i + 1}/${count} subscribers created…`);
-        }
-      } catch (err) {
-        failed++;
-        console.warn(`  ⚠️  Failed on subscriber ${i + 1}:`, err.message);
-      }
-    }
-
-    // Reload all stores
-    await reloadAll();
-
-    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    const breakdown = {
-      "✅ Clear (paid)": Math.round(count * 0.35),
-      "🟡 Pending": Math.round(count * 0.25),
-      "🔴 Expired": Math.round(count * 0.15),
-      "🔄 Renewal due": Math.round(count * 0.1),
-      "⛔ Suspended": Math.round(count * 0.1),
-      "📦 Archived": Math.round(count * 0.05),
-    };
-    console.log(`\n✅ Seeding complete in ${elapsed}s`);
-    console.log(`   👥 Subscribers: ${created} created, ${failed} failed`);
-    console.log(`   📊 Approximate status breakdown:`);
-    Object.entries(breakdown).forEach(([k, v]) =>
-      console.log(`      ${k}: ~${v}`),
-    );
-    console.log(
-      `\n   ℹ️  Each subscriber has 2–7 historical cycles (great for stress-testing).`,
-    );
-  };
-
-  // ════════════════════════════════════════════════════════════════════════════
-  //  seedAreas(customList?)
-  //  Usage:
-  //    seedAreas()
-  //    seedAreas(["Block A", "Cantt", "Gulberg"])
-  // ════════════════════════════════════════════════════════════════════════════
-  window.seedAreas = async (customList) => {
-    const list = customList || SEED_AREAS;
-    const existing = (await db.settings.get("areas"))?.value || [];
-    const merged = [...new Set([...existing, ...list])];
-    await db.settings.put({ key: "areas", value: merged });
-    await reloadAll();
-    console.log(`✅ Areas saved (${merged.length}): ${merged.join(", ")}`);
-  };
-
-  // ════════════════════════════════════════════════════════════════════════════
-  //  seedAgents(customList?)
-  //  Usage:
-  //    seedAgents()
-  //    seedAgents(["Ali Raza", "Hamid Khan"])
-  // ════════════════════════════════════════════════════════════════════════════
-  window.seedAgents = async (customList) => {
-    const list = customList || SEED_AGENTS;
-    const existing = (await db.settings.get("agents"))?.value || [];
-    const merged = [...new Set([...existing, ...list])];
-    await db.settings.put({ key: "agents", value: merged });
-    await reloadAll();
-    console.log(
-      `✅ Recovery Agents saved (${merged.length}): ${merged.join(", ")}`,
-    );
-  };
-
-  // ════════════════════════════════════════════════════════════════════════════
-  //  seedPackages(customList?)
-  //  Usage:
-  //    seedPackages()
-  //    seedPackages([{ name: "Gold 20MB", speedMbps: 20, price: 1800 }])
-  // ════════════════════════════════════════════════════════════════════════════
-  window.seedPackages = async (customList) => {
-    const list = customList || SEED_PACKAGES;
-    for (const pkg of list) {
-      await db.packages.add({
-        ...pkg,
-        price: Number(pkg.price),
-        speedMbps: Number(pkg.speedMbps) || 0,
-        priceHistory: [],
-        lastUpdated: null,
-        createdAt: new Date().toISOString(),
-      });
-    }
-    await usePackageStore.getState().loadPackages();
-    console.log(`✅ Added ${list.length} packages:`);
-    console.table(list);
-  };
-
-  // ════════════════════════════════════════════════════════════════════════════
-  //  seedInventory(customList?)
-  //  Usage:
-  //    seedInventory()
-  //    seedInventory([{ description: "Router", unit: "piece", qty: 50, unitRate: 2500 }])
-  // ════════════════════════════════════════════════════════════════════════════
-  window.seedInventory = async (customList) => {
-    const list = customList || SEED_INVENTORY;
-    for (const item of list) {
-      await db.inventory.add({
-        description: item.description,
-        unit: item.unit,
-        quantity: item.qty,
-        unitRate: item.unitRate,
-        amount: item.qty * item.unitRate,
-        stockIn: item.qty,
-        stockOut: 0,
-        inHand: item.qty,
-        received: item.qty,
-        issued: 0,
-        balanced: item.qty,
-        purchaseDate: today(),
-        invoiceNo: null,
-        remarks: "Seeded by devTools",
-        restockLog: [],
-        issueLog: [],
-        createdAt: new Date().toISOString(),
-      });
-    }
-    await useInventoryStore.getState().loadInventory();
-    console.log(`✅ Added ${list.length} inventory items:`);
-    console.table(
-      list.map((i) => ({
-        Item: i.description,
-        Unit: i.unit,
-        Qty: i.qty,
-        Rate: i.unitRate,
-      })),
-    );
-  };
-
-  // ════════════════════════════════════════════════════════════════════════════
-  //  seedSubscribers(count)
-  //  Adds more subscribers using already-seeded packages and areas.
-  //  Usage:
-  //    seedSubscribers(500)
-  // ════════════════════════════════════════════════════════════════════════════
-  window.seedSubscribers = async (count = 100) => {
-    const packages = await db.packages.toArray();
-    const areas = (await db.settings.get("areas"))?.value || [];
-
-    if (packages.length === 0)
-      return console.error("❌ No packages. Run seedPackages() first.");
-    if (areas.length === 0)
-      return console.error("❌ No areas. Run seedAreas() first.");
-
-    console.log(`⏳ Adding ${count} subscribers…`);
-    let created = 0;
-
-    for (let i = 0; i < count; i++) {
-      const firstName = pick(FIRST_NAMES);
-      const lastName = pick(LAST_NAMES);
-      const scenario = STATUS_POOL[i % STATUS_POOL.length];
-      const pkg = pick(packages);
-      const area = pick(areas);
-      const isArchived = scenario === "archived";
-      const isSuspended = scenario === "suspended";
-      const numHistorical = rand(1, 6);
-
-      const customerId = await db.customers.add({
-        fullName: `${firstName} ${lastName}`,
-        userName: randomUsername(firstName, lastName, Date.now() + i),
-        mobileNo: randomPhone(),
-        mainArea: area,
-        packageId: pkg.id,
-        status: isArchived
-          ? "terminated"
-          : isSuspended
-            ? "suspended"
-            : "active",
-        isArchived,
-        archivedAt: isArchived ? addDays(today(), -rand(50, 100)) : null,
-        archiveReason: isArchived
-          ? pick(["Left area", "Relocated", "Non-payment"])
-          : "",
-        lockedPackagePrice: pkg.price,
-        createdAt: new Date().toISOString(),
-      });
-
-      await buildCycles(customerId, pkg.price, scenario, numHistorical);
-      created++;
-    }
-
-    await useCustomerStore.getState().loadCustomers();
-    await usePaymentStore.getState().loadCycles();
-    console.log(`✅ Added ${created} subscribers.`);
-  };
-
-  // ════════════════════════════════════════════════════════════════════════════
-  //  generateTestCycles(customerId, packagePrice, numCycles)
-  //  Replace a specific customer's cycles with a full alternating paid/unpaid history.
-  //  Usage:
-  //    generateTestCycles(5, 2500, 10)
-  // ════════════════════════════════════════════════════════════════════════════
-  window.generateTestCycles = async (
-    customerId,
-    packagePrice = 2500,
-    numCycles = 10,
-  ) => {
-    if (!customerId)
-      return console.error(
-        "❌ Provide a customerId. Example: generateTestCycles(5, 2500, 10)",
-      );
-    try {
-      // Wipe existing cycles for this customer
-      const allCycles = await db.paymentCycles.toArray();
-      for (const c of allCycles.filter(
-        (c) => Number(c.customerId) === Number(customerId),
-      )) {
-        await db.paymentCycles.delete(c.id);
-      }
-
-      const ranges = [];
-      let end = addDays(today(), CYCLE_LENGTH_DAYS - 10);
-      let start = addDays(today(), -10);
-      for (let i = 0; i < numCycles; i++) {
-        ranges.unshift({ start, end });
-        end = addDays(start, -1);
-        start = addDays(end, -CYCLE_LENGTH_DAYS);
-      }
-
-      let pendingFromPrev = 0;
-      for (let i = 0; i < ranges.length; i++) {
-        const { start: cs, end: ce } = ranges[i];
-        const isNewest = i === ranges.length - 1;
-        const isPaid = !isNewest && i % 2 !== 0;
-        const totalAmount = packagePrice + pendingFromPrev;
-        const prevBal = pendingFromPrev;
-
-        if (isPaid) {
-          await db.paymentCycles.add({
-            customerId: Number(customerId),
-            cycleStartDate: cs,
-            cycleEndDate: ce,
-            totalAmount,
-            amountPaid: totalAmount,
-            amountPending: 0,
-            status: "clear",
-            shiftedAmount: 0,
-            previousBalance: prevBal,
-            installments: [makeInstallment(totalAmount, cs, `Cycle ${i + 1}`)],
-            isRenewal: i > 0,
-            createdAt: new Date().toISOString(),
-          });
-          pendingFromPrev = 0;
-        } else if (!isNewest) {
-          await db.paymentCycles.add({
-            customerId: Number(customerId),
-            cycleStartDate: cs,
-            cycleEndDate: ce,
-            totalAmount,
-            amountPaid: 0,
-            amountPending: 0,
-            status: "clear",
-            shiftedAmount: totalAmount,
-            previousBalance: prevBal,
-            installments: [],
-            isRenewal: i > 0,
-            createdAt: new Date().toISOString(),
-          });
-          pendingFromPrev = totalAmount;
-        } else {
-          await db.paymentCycles.add({
-            customerId: Number(customerId),
-            cycleStartDate: cs,
-            cycleEndDate: ce,
-            totalAmount,
-            amountPaid: 0,
-            amountPending: totalAmount,
-            status: "pending",
-            shiftedAmount: 0,
-            previousBalance: prevBal,
-            installments: [],
-            isRenewal: i > 0,
-            createdAt: new Date().toISOString(),
-          });
-        }
-      }
-
-      await usePaymentStore.getState().loadCycles();
-      console.log(
-        `✅ ${numCycles} alternating cycles created for customer ${customerId}.`,
-      );
-    } catch (err) {
-      console.error("❌", err);
-    }
-  };
-
-  // ════════════════════════════════════════════════════════════════════════════
-  //  generateStreakTest(customerId, packagePrice, unpaidStreak, totalCycles)
-  //  Creates a streak of consecutive unpaid cycles, then a mega-clearance payment.
-  //  Usage:
-  //    generateStreakTest(5, 1500, 4, 8)
-  //    → 4 unpaid → mega payment → alternating paid/unpaid until newest (pending)
-  // ════════════════════════════════════════════════════════════════════════════
-  window.generateStreakTest = async (
-    customerId,
-    packagePrice = 1500,
-    unpaidStreak = 4,
-    totalCycles = 8,
-  ) => {
-    if (!customerId) return console.error("❌ Provide a customerId.");
-    if (unpaidStreak >= totalCycles)
-      return console.error("❌ unpaidStreak must be < totalCycles.");
-    try {
-      const allCycles = await db.paymentCycles.toArray();
-      for (const c of allCycles.filter(
-        (c) => Number(c.customerId) === Number(customerId),
-      )) {
-        await db.paymentCycles.delete(c.id);
-      }
-
-      const ranges = [];
-      let end = addDays(today(), CYCLE_LENGTH_DAYS - 10);
-      let start = addDays(today(), -10);
-      for (let i = 0; i < totalCycles; i++) {
-        ranges.unshift({ start, end });
-        end = addDays(start, -1);
-        start = addDays(end, -CYCLE_LENGTH_DAYS);
-      }
-
-      let pendingFromPrev = 0;
-      for (let i = 0; i < ranges.length; i++) {
-        const { start: cs, end: ce } = ranges[i];
-        const isNewest = i === ranges.length - 1;
-        const totalAmount = packagePrice + pendingFromPrev;
-        const prevBal = pendingFromPrev;
-        const isInStreak = i < unpaidStreak;
-        const isMegaPayment = i === unpaidStreak;
-        const isPaidPostStreak = !isNewest && (i - unpaidStreak) % 2 === 1;
-
-        if (isInStreak) {
-          await db.paymentCycles.add({
-            customerId: Number(customerId),
-            cycleStartDate: cs,
-            cycleEndDate: ce,
-            totalAmount,
-            amountPaid: 0,
-            amountPending: 0,
-            status: "clear",
-            shiftedAmount: totalAmount,
-            previousBalance: prevBal,
-            installments: [],
-            isRenewal: i > 0,
-            createdAt: new Date().toISOString(),
-          });
-          pendingFromPrev = totalAmount;
-        } else if (isMegaPayment) {
-          await db.paymentCycles.add({
-            customerId: Number(customerId),
-            cycleStartDate: cs,
-            cycleEndDate: ce,
-            totalAmount,
-            amountPaid: totalAmount,
-            amountPending: 0,
-            status: "clear",
-            shiftedAmount: 0,
-            previousBalance: prevBal,
-            installments: [
-              makeInstallment(
-                totalAmount,
-                cs,
-                `Full clearance — PKR ${totalAmount.toLocaleString()}`,
-              ),
-            ],
-            isRenewal: i > 0,
-            createdAt: new Date().toISOString(),
-          });
-          pendingFromPrev = 0;
-        } else if (isNewest) {
-          await db.paymentCycles.add({
-            customerId: Number(customerId),
-            cycleStartDate: cs,
-            cycleEndDate: ce,
-            totalAmount,
-            amountPaid: 0,
-            amountPending: totalAmount,
-            status: "pending",
-            shiftedAmount: 0,
-            previousBalance: prevBal,
-            installments: [],
-            isRenewal: i > 0,
-            createdAt: new Date().toISOString(),
-          });
-        } else if (isPaidPostStreak) {
-          await db.paymentCycles.add({
-            customerId: Number(customerId),
-            cycleStartDate: cs,
-            cycleEndDate: ce,
-            totalAmount,
-            amountPaid: totalAmount,
-            amountPending: 0,
-            status: "clear",
-            shiftedAmount: 0,
-            previousBalance: prevBal,
-            installments: [makeInstallment(totalAmount, cs, `Cycle ${i + 1}`)],
-            isRenewal: i > 0,
-            createdAt: new Date().toISOString(),
-          });
-          pendingFromPrev = 0;
-        } else {
-          await db.paymentCycles.add({
-            customerId: Number(customerId),
-            cycleStartDate: cs,
-            cycleEndDate: ce,
-            totalAmount,
-            amountPaid: 0,
-            amountPending: 0,
-            status: "clear",
-            shiftedAmount: totalAmount,
-            previousBalance: prevBal,
-            installments: [],
-            isRenewal: i > 0,
-            createdAt: new Date().toISOString(),
-          });
-          pendingFromPrev = totalAmount;
-        }
-      }
-
-      await usePaymentStore.getState().loadCycles();
-      console.log(`✅ Streak test set for customer ${customerId}:`);
-      console.log(
-        `   ${unpaidStreak} unpaid → mega clearance → alternating → newest pending`,
-      );
-    } catch (err) {
-      console.error("❌", err);
-    }
-  };
-
-  // ════════════════════════════════════════════════════════════════════════════
-  //  inspectCustomer(customerId)
-  //  Print full cycle history for one subscriber.
-  //  Usage:
-  //    inspectCustomer(5)
-  // ════════════════════════════════════════════════════════════════════════════
-  window.inspectCustomer = async (customerId) => {
-    if (!customerId) return console.error("❌ Provide a customerId.");
-    const customer = await db.customers.get(Number(customerId));
-    if (!customer) return console.error(`❌ No customer with id ${customerId}`);
-    const allCycles = await db.paymentCycles.toArray();
-    const cycles = allCycles
-      .filter((c) => Number(c.customerId) === Number(customerId))
-      .sort((a, b) => a.cycleStartDate.localeCompare(b.cycleStartDate));
-
-    console.log(
-      `\n👤 ${customer.fullName} (@${customer.userName}) — ${customer.status}`,
-    );
-    console.log(
-      `   Package ID: ${customer.packageId} | Area: ${customer.mainArea}`,
-    );
-    console.log(`   Cycles: ${cycles.length}`);
-    console.table(
-      cycles.map((c, i) => ({
-        "#": i + 1,
-        Start: c.cycleStartDate,
-        End: c.cycleEndDate,
-        Total: c.totalAmount,
-        Paid: c.amountPaid,
-        Pending: c.amountPending,
-        Shifted: c.shiftedAmount,
-        PrevBal: c.previousBalance,
-        Status: c.status,
-        Payments: c.installments?.length || 0,
-      })),
-    );
-  };
-
-  // ════════════════════════════════════════════════════════════════════════════
-  //  listCustomers()
-  //  Quick table of all subscribers with their IDs.
-  // ════════════════════════════════════════════════════════════════════════════
-  window.listCustomers = () => {
-    const customers = useCustomerStore.getState().customers;
-    console.table(
-      customers.map((c, i) => ({
-        "#": i + 1,
-        ID: c.id,
-        Name: c.fullName,
-        Username: c.userName,
-        Area: c.mainArea,
-        Status: c.status,
-        Archived: c.isArchived ? "Yes" : "No",
-      })),
-    );
-    console.log(`Total: ${customers.length} subscribers (incl. archived)`);
-  };
-
-  // ════════════════════════════════════════════════════════════════════════════
-  //  dbStats()
-  //  Print row counts for every table + status breakdown.
-  // ════════════════════════════════════════════════════════════════════════════
-  window.dbStats = async () => {
-    const [customers, cycles, packages, inventory, expenses] =
-      await Promise.all([
-        db.customers.toArray(),
-        db.paymentCycles.toArray(),
-        db.packages.toArray(),
-        db.inventory.toArray(),
-        db.expenses.toArray(),
-      ]);
-    const areas = (await db.settings.get("areas"))?.value || [];
-    const agents = (await db.settings.get("agents"))?.value || [];
-
-    const active = customers.filter(
-      (c) => !c.isArchived && c.status === "active",
-    );
-    const suspended = customers.filter((c) => c.status === "suspended");
-    const archived = customers.filter((c) => c.isArchived);
-
-    console.log("📊 Database Stats:");
-    console.table({
-      "Subscribers (total)": { count: customers.length },
-      "  → Active": { count: active.length },
-      "  → Suspended": { count: suspended.length },
-      "  → Archived": { count: archived.length },
-      "Payment Cycles": { count: cycles.length },
-      Packages: { count: packages.length },
-      "Inventory Items": { count: inventory.length },
-      Expenses: { count: expenses.length },
-      "Coverage Areas": { count: areas.length },
-      "Recovery Agents": { count: agents.length },
-    });
-
-    const cyclesByCustomer = {};
-    for (const c of cycles) {
-      cyclesByCustomer[c.customerId] =
-        (cyclesByCustomer[c.customerId] || 0) + 1;
-    }
-    const counts = Object.values(cyclesByCustomer);
-    if (counts.length > 0) {
-      const avg = (counts.reduce((a, b) => a + b, 0) / counts.length).toFixed(
-        1,
-      );
-      const max = Math.max(...counts);
-      console.log(`\n   Cycles per subscriber — avg: ${avg}, max: ${max}`);
-    }
-  };
-
-  // ════════════════════════════════════════════════════════════════════════════
-  //  clearAllData()    — removes subscribers, payments, inventory, expenses
-  //  clearEverything() — also removes packages and areas
-  // ════════════════════════════════════════════════════════════════════════════
-  window.clearAllData = async () => {
-    if (
-      !confirm(
-        "⚠️ DELETE all subscribers, payments, inventory, and expenses?\n(Packages and areas will be kept.)",
-      )
-    )
-      return;
-    await _wipeAllData(false);
-    console.log("✨ Data cleared. Packages, areas, and agents kept.");
-  };
-
-  window.clearEverything = async () => {
-    if (
-      !confirm(
-        "⚠️ DELETE ABSOLUTELY EVERYTHING including packages, areas, and agents?",
-      )
-    )
-      return;
-    await _wipeAllData(true);
-    console.log("💥 Everything wiped. Fresh slate.");
-  };
-
-  // ── Internal wipe helper ──────────────────────────────────────────────────
-  async function _wipeAllData(alsoWipeSettings = false) {
-    console.log("🧹 Wiping data…");
-    const [customers, cycles, expenses, inventory, packages] =
-      await Promise.all([
-        db.customers.toArray(),
-        db.paymentCycles.toArray(),
-        db.expenses.toArray(),
-        db.inventory.toArray(),
-        db.packages.toArray(),
-      ]);
-
-    for (const r of customers) await db.customers.delete(r.id);
-    for (const r of cycles) await db.paymentCycles.delete(r.id);
-    for (const r of expenses) await db.expenses.delete(r.id);
-    for (const r of inventory) await db.inventory.delete(r.id);
-
-    if (alsoWipeSettings) {
-      for (const r of packages) await db.packages.delete(r.id);
-      await db.settings.put({ key: "areas", value: [] });
-      await db.settings.put({ key: "agents", value: [] });
-    }
-
-    await reloadAll();
-  }
-
-  // ── Help banner ───────────────────────────────────────────────────────────
-  console.log(
-    "%c🛠️  Galaxy ISP DevTools Ready",
-    "font-weight:bold;font-size:14px;color:#4f46e5",
-  );
-  console.log("");
-  console.log(
-    "── QUICK START ──────────────────────────────────────────────────────────",
-  );
-  console.log(
-    "  seedAll()              → seed EVERYTHING with 1000 subscribers",
-  );
-  console.log(
-    "  seedAll(200)           → same but only 200 subscribers (faster)",
-  );
-  console.log("  seedAll(1000, true)    → wipe all data first, then seed 1000");
-  console.log("");
-  console.log(
-    "── SEED INDIVIDUALLY ────────────────────────────────────────────────────",
-  );
-  console.log("  seedAreas()            → add 6 coverage areas to Settings");
-  console.log("  seedAgents()           → add 6 recovery agents to Settings");
-  console.log("  seedPackages()         → add 5 packages (Starter → Ultra)");
-  console.log("  seedInventory()        → add 7 inventory items");
-  console.log(
-    "  seedSubscribers(500)   → add 500 more subscribers (needs packages+areas)",
-  );
-  console.log("");
-  console.log(
-    "── STATUS MIX (per 100 subscribers) ────────────────────────────────────",
-  );
-  console.log(
-    "  ✅ Clear (paid)    ~35   🟡 Pending     ~25   🔴 Expired    ~15",
-  );
-  console.log(
-    "  🔄 Renewal due     ~10   ⛔ Suspended   ~10   📦 Archived   ~5",
-  );
-  console.log("");
-  console.log(
-    "── INSPECT ──────────────────────────────────────────────────────────────",
-  );
-  console.log("  dbStats()              → count every table + cycle stats");
-  console.log("  listCustomers()        → table of all subscriber IDs/names");
-  console.log(
-    "  inspectCustomer(id)    → full cycle history for one subscriber",
-  );
-  console.log("");
-  console.log(
-    "── CYCLE TOOLS ──────────────────────────────────────────────────────────",
-  );
-  console.log(
-    "  generateTestCycles(id, price, count)         → alternating paid/unpaid",
-  );
-  console.log(
-    "  generateStreakTest(id, price, streak, total) → streak + mega clearance",
-  );
-  console.log("");
-  console.log(
-    "── CLEAR DATA ───────────────────────────────────────────────────────────",
-  );
-  console.log(
-    "  clearAllData()         → delete subscribers, payments, inventory",
-  );
-  console.log(
-    "  clearEverything()      → delete EVERYTHING (incl. packages, areas)",
-  );
-};
 </file>
 
 <file path="src/pages/Payments/PaymentForm.jsx">
@@ -11787,7 +11386,7 @@ export default function Dashboard({ onNavigate }) {
               icon={<TrendingUp size={16} />}
               label="Net Income"
               value={`PKR ${(mode === "monthly" ? monthly.netIncome : allTime.netIncome).toLocaleString()}`}
-              sub="Collected − expenses − warehouse stock"
+              sub="Revenue after expenses & unsold stock"
               color={
                 (mode === "monthly" ? monthly.netIncome : allTime.netIncome) >=
                 0
@@ -12235,31 +11834,66 @@ function BigCard({
                     )}
                     {infoContent.type === "netIncome" && (
                       <>
-                        <p className="font-bold text-gray-800 mb-2 text-sm">
+                        <p className="font-bold text-gray-800 mb-3 text-sm">
                           📊 Net Income Breakdown
                         </p>
-                        <div className="space-y-1.5">
-                          <div className="flex justify-between text-green-700">
-                            <span className="font-semibold">+ Collected</span>
-                            <span className="font-bold">
+                        <div className="space-y-2">
+                          {/* Collected */}
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <span className="font-semibold text-green-700 text-sm">
+                                ✅ Ever Collected
+                              </span>
+                              <p className="text-[10px] text-gray-400 mt-0.5 leading-relaxed">
+                                All subscriber payments received so far
+                              </p>
+                            </div>
+                            <span className="font-bold text-green-700 text-sm whitespace-nowrap ml-4">
                               PKR {infoContent.collected.toLocaleString()}
                             </span>
                           </div>
-                          <div className="flex justify-between text-red-600">
-                            <span>− Recorded Expenses</span>
-                            <span className="font-semibold">
+                          {/* Expenses */}
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <span className="text-red-600 font-semibold text-sm">
+                                ➖ Recorded Expenses
+                              </span>
+                              <p className="text-[10px] text-gray-400 mt-0.5">
+                                Bills, salaries, tools, etc.
+                              </p>
+                            </div>
+                            <span className="font-semibold text-red-600 text-sm whitespace-nowrap ml-4">
                               PKR {infoContent.expenses.toLocaleString()}
                             </span>
                           </div>
-                          <div className="flex justify-between text-red-600">
-                            <span>− Warehouse Stock</span>
-                            <span className="font-semibold">
+                          {/* Warehouse stock */}
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <span className="text-red-600 font-semibold text-sm">
+                                ➖ Stock in Warehouse
+                              </span>
+                              <p className="text-[10px] text-gray-400 mt-0.5 leading-relaxed max-w-44">
+                                Cash you already spent on materials still
+                                sitting unsold
+                              </p>
+                            </div>
+                            <span className="font-semibold text-red-600 text-sm whitespace-nowrap ml-4">
                               PKR {infoContent.warehouseStock.toLocaleString()}
                             </span>
                           </div>
-                          <div className="border-t border-gray-200 pt-1.5 flex justify-between font-bold text-gray-800">
-                            <span>= Net Income</span>
-                            <span>
+                          {/* Divider + result */}
+                          <div className="border-t-2 border-gray-200 pt-2 flex justify-between font-bold text-gray-900">
+                            <span className="text-sm">= Net Income</span>
+                            <span
+                              className={`text-sm whitespace-nowrap ml-4 ${
+                                infoContent.collected -
+                                  infoContent.expenses -
+                                  infoContent.warehouseStock >=
+                                0
+                                  ? "text-green-700"
+                                  : "text-red-600"
+                              }`}
+                            >
                               PKR{" "}
                               {(
                                 infoContent.collected -
@@ -12269,18 +11903,40 @@ function BigCard({
                             </span>
                           </div>
                         </div>
-                        <div className="mt-2 bg-blue-50 border border-blue-100 rounded-lg px-2.5 py-2 text-blue-700 leading-relaxed">
-                          <p className="font-semibold text-xs mb-0.5">
-                            Why does issuing stock increase Net Income?
-                          </p>
-                          <p className="text-xs">
-                            When you issue cable and the technician collects the
-                            cable money from the subscriber (included in their
-                            payment), your "Ever Collected" goes up AND your
-                            warehouse stock goes down — so Net Income grows.
-                            This is correct!
-                          </p>
-                        </div>
+                        {/* Contextual explanation */}
+                        {infoContent.collected -
+                          infoContent.expenses -
+                          infoContent.warehouseStock <
+                          0 && (
+                          <div className="mt-3 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2.5 text-blue-700 leading-relaxed">
+                            <p className="font-semibold text-xs mb-1">
+                              Why is this negative?
+                            </p>
+                            <p className="text-xs">
+                              You have{" "}
+                              <strong>
+                                PKR{" "}
+                                {infoContent.warehouseStock.toLocaleString()} of
+                                stock
+                              </strong>{" "}
+                              sitting in your warehouse that you paid for but
+                              haven't yet recovered. As subscribers pay and you
+                              issue more stock, this number will improve
+                              automatically.
+                            </p>
+                          </div>
+                        )}
+                        {infoContent.collected -
+                          infoContent.expenses -
+                          infoContent.warehouseStock >=
+                          0 && (
+                          <div className="mt-3 bg-green-50 border border-green-100 rounded-lg px-3 py-2.5 text-green-700">
+                            <p className="text-xs font-semibold">
+                              ✅ You are in profit after all costs and remaining
+                              stock.
+                            </p>
+                          </div>
+                        )}
                       </>
                     )}
                   </div>

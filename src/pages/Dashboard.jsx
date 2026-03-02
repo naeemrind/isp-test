@@ -115,6 +115,14 @@ export default function Dashboard({ onNavigate }) {
     }
   });
 
+  const at_renewalDueCount = activeCustomers.filter((c) => {
+    if (c.status === "suspended") return false;
+    const cycle = getLatestCycle(cycles, c.id);
+    if (!cycle) return false;
+    const days = daysUntil(cycle.cycleEndDate);
+    return days < 0 && (cycle.amountPending || 0) === 0;
+  }).length;
+
   cycles.forEach((cy) => {
     (cy.installments || []).forEach((inst) => {
       at_totalEver += inst.amountPaid || 0;
@@ -143,6 +151,7 @@ export default function Dashboard({ onNavigate }) {
     overdueMoney: at_overdueMoney,
     totalEverCollected: at_totalEver,
     overdueCount: at_overdueCount,
+    renewalDueCount: at_renewalDueCount,
     pendingStatusBalance: at_pendingStatusBalance,
     suspendedBalance: at_suspendedBalance,
     totalExpenses: at_totalExpenses,
@@ -407,7 +416,17 @@ export default function Dashboard({ onNavigate }) {
             />
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <BigCard
+              icon={<RefreshCw size={16} />}
+              label="Renewal Due Accounts"
+              value={allTime.renewalDueCount}
+              sub="Cycle ended + all dues clear"
+              color="amber"
+              highlight={allTime.renewalDueCount > 0}
+              onClick={() => onNavigate("customers", "renewal-due")}
+              isClickable
+            />
             <BigCard
               icon={<Users size={16} />}
               label="Expired Accounts"

@@ -156,6 +156,8 @@ export default function Customers({ initialFilter }) {
     if (filter === "balance-due") return unpaid;
     // pending = within cycle, unpaid, not suspended
     if (filter === "pending") return !isSuspended && !expired && unpaid;
+    // renewal-due = cycle ended, fully paid, not suspended
+    if (filter === "renewal-due") return !isSuspended && expired && !unpaid;
     return true;
   });
 
@@ -228,6 +230,11 @@ export default function Customers({ initialFilter }) {
       return unpaid;
     }).length,
     suspended: activeCustomers.filter((c) => c.status === "suspended").length,
+    "renewal-due": activeCustomers.filter((c) => {
+      const cy = getActiveCycle(c.id);
+      const { expired, unpaid } = getCycleFacts(cy);
+      return c.status !== "suspended" && expired && !unpaid;
+    }).length,
   };
 
   // ── Filter tab definitions ─────────────────────────────────────────────────
@@ -235,7 +242,7 @@ export default function Customers({ initialFilter }) {
     { id: "all", label: "All", dot: null, activeDot: null },
     {
       id: "active",
-      label: "Good Standing",
+      label: "Active",
       dot: "bg-green-400",
       activeDot: "bg-green-300",
     },
@@ -262,6 +269,12 @@ export default function Customers({ initialFilter }) {
       label: "Suspended",
       dot: "bg-gray-400",
       activeDot: "bg-gray-300",
+    },
+    {
+      id: "renewal-due",
+      label: "Renewal Due",
+      dot: "bg-orange-400",
+      activeDot: "bg-orange-300",
     },
   ];
 
@@ -351,7 +364,9 @@ export default function Customers({ initialFilter }) {
                                 ? "Anyone who owes money (pending + expired combined)"
                                 : f.id === "suspended"
                                   ? "Manually suspended subscribers"
-                                  : ""
+                                  : f.id === "renewal-due"
+                                    ? "Cycle ended, all dues cleared — ready for renewal"
+                                    : ""
                     }
                     className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
                       isActive
