@@ -140,14 +140,34 @@ export default function Dashboard({ onNavigate }) {
   });
   at_totalEver += at_inventoryPaid;
 
-  // Warehouse stock value = money you already spent buying materials still sitting in your store.
-  // This IS your cost. You paid PKR 19,000 for cable — that PKR 19,000 is gone from your pocket.
-  // As you issue cable and collect the cable money from subscribers (included in their payment),
-  // the warehouse stock decreases and Net Income naturally improves.
+  // ── NEW ACCOUNTING LOGIC (COGS vs Inventory Value) ──
+
+  // Current Warehouse Asset Value (Not used for Profit, just for reference)
   const at_inventoryValue = inventoryItems.reduce(
     (s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0),
     0,
   );
+
+  // Total Cash Spent on Inventory (All stock ever purchased)
+  let at_totalInventorySpend = 0;
+  // COGS (Cost of Goods Sold) - The value of stock that has been USED/ISSUED
+  let at_cogs = 0;
+
+  inventoryItems.forEach((i) => {
+    at_totalInventorySpend += i.amount || (i.quantity || 0) * (i.unitRate || 0);
+
+    const logs = Array.isArray(i.issueLog) ? i.issueLog : [];
+    if (logs.length > 0) {
+      logs.forEach((log) => {
+        at_cogs +=
+          log.totalValue || (log.qty || 0) * (log.unitRate || i.unitRate || 0);
+      });
+    } else {
+      // Fallback for legacy items with no issue log
+      at_cogs += (i.stockOut || 0) * (i.unitRate || 0);
+    }
+  });
+
   const at_totalExpenses = expenses.reduce(
     (s, e) => s + (Number(e.amount) || 0),
     0,
@@ -160,18 +180,21 @@ export default function Dashboard({ onNavigate }) {
     collected: at_collected,
     pending: at_pending,
     overdueMoney: at_overdueMoney,
-    totalEverCollected: at_totalEver,
+    totalEverCollected: at_totalEver, // Total Revenue
     overdueCount: at_overdueCount,
     renewalDueCount: at_renewalDueCount,
     pendingStatusBalance: at_pendingStatusBalance,
     suspendedBalance: at_suspendedBalance,
-    totalExpenses: at_totalExpenses,
-    inventoryValue: at_inventoryValue,
-    // Net Income = Total ever received − Recorded expenses − Current warehouse stock value
-    // The warehouse stock IS a cost you have already paid. As subscribers pay you for
-    // materials (included in their connection fee), your "Total Revenue" goes up and
-    // the warehouse stock goes down — so Net Income grows naturally. Correct!
-    netIncome: at_totalEver - at_totalExpenses - at_inventoryValue,
+    totalExpenses: at_totalExpenses, // OpEx
+    inventoryValue: at_inventoryValue, // Unsold assets
+    cogs: at_cogs, // Cost of Goods Sold
+    totalInventorySpend: at_totalInventorySpend,
+    // CORRECT ACCOUNTING METRICS:
+    // Profit = Revenue - OpEx - Cost of Used Inventory
+    netIncome: at_totalEver - at_totalExpenses - at_cogs,
+    // Cash Flow = Revenue - OpEx - Cost of ALL Bought Inventory
+    netCashFlow: at_totalEver - at_totalExpenses - at_totalInventorySpend,
+
     inventoryPending: at_inventoryPending,
     inventoryPaid: at_inventoryPaid,
   };
@@ -214,12 +237,17 @@ export default function Dashboard({ onNavigate }) {
     })
     .reduce((s, e) => s + (Number(e.amount) || 0), 0);
 
-  const mo_inventoryValue = inventoryItems
-    .filter((i) => {
-      const d = new Date(i.date);
-      return d >= monthStart && d <= monthEnd;
-    })
-    .reduce((s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0), 0);
+  let mo_cogs = 0;
+  inventoryItems.forEach((i) => {
+    const logs = Array.isArray(i.issueLog) ? i.issueLog : [];
+    logs.forEach((log) => {
+      const ld = new Date(log.date);
+      if (ld >= monthStart && ld <= monthEnd) {
+        mo_cogs +=
+          log.totalValue || (log.qty || 0) * (log.unitRate || i.unitRate || 0);
+      }
+    });
+  });
 
   let mo_totalCollected = 0;
   cycles.forEach((cy) => {
@@ -240,8 +268,8 @@ export default function Dashboard({ onNavigate }) {
     pendingCount: mo_pendingCount,
     overdueCount: mo_overdueCount,
     totalExpenses: mo_expenses,
-    inventoryValue: mo_inventoryValue,
-    netIncome: mo_totalCollected - mo_expenses - mo_inventoryValue,
+    cogs: mo_cogs,
+    netIncome: mo_totalCollected - mo_expenses - mo_cogs,
     pendingStatusBalance: 0,
     suspendedBalance: 0,
   };
@@ -260,16 +288,24 @@ export default function Dashboard({ onNavigate }) {
   const day_expenses = expenses
     .filter((e) => e.date === selDate)
     .reduce((s, e) => s + (Number(e.amount) || 0), 0);
-  const day_inventoryValue = inventoryItems
-    .filter((i) => i.date === selDate)
-    .reduce((s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0), 0);
+
+  let day_cogs = 0;
+  inventoryItems.forEach((i) => {
+    const logs = Array.isArray(i.issueLog) ? i.issueLog : [];
+    logs.forEach((log) => {
+      if (log.date === selDate) {
+        day_cogs +=
+          log.totalValue || (log.qty || 0) * (log.unitRate || i.unitRate || 0);
+      }
+    });
+  });
 
   const daily = {
     collected: day_collected,
     newCustomers: day_newCustomers,
     totalExpenses: day_expenses,
-    inventoryValue: day_inventoryValue,
-    netIncome: day_collected - day_expenses - day_inventoryValue,
+    cogs: day_cogs,
+    netIncome: day_collected - day_expenses - day_cogs,
   };
 
   // ── Alerts ───────────────────────────────────────────────────────────────────
@@ -410,10 +446,10 @@ export default function Dashboard({ onNavigate }) {
             <BigCard
               icon={<XCircle size={16} />}
               label="Total Expenses"
-              value={`PKR ${((displayStats.totalExpenses || 0) + (displayStats.inventoryValue || 0)).toLocaleString()}`}
-              sub="Operational expenses"
+              value={`PKR ${((displayStats.totalExpenses || 0) + (displayStats.cogs || 0)).toLocaleString()}`}
+              sub="Operational Expenses + COGS"
               color="red"
-              inventoryValue={displayStats.inventoryValue || 0}
+              cogsValue={displayStats.cogs || 0}
               expensesValue={displayStats.totalExpenses || 0}
             />
             <BigCard
@@ -468,7 +504,7 @@ export default function Dashboard({ onNavigate }) {
               icon={<TrendingUp size={16} />}
               label="Net Income"
               value={`PKR ${(mode === "monthly" ? monthly.netIncome : allTime.netIncome).toLocaleString()}`}
-              sub="Revenue after expenses & unsold stock"
+              sub="Revenue minus OpEx & COGS"
               color={
                 (mode === "monthly" ? monthly.netIncome : allTime.netIncome) >=
                 0
@@ -486,10 +522,7 @@ export default function Dashboard({ onNavigate }) {
                   mode === "monthly"
                     ? monthly.totalExpenses
                     : allTime.totalExpenses,
-                warehouseStock:
-                  mode === "monthly"
-                    ? monthly.inventoryValue
-                    : allTime.inventoryValue,
+                cogs: mode === "monthly" ? monthly.cogs : allTime.cogs,
               }}
             />
           </div>
@@ -507,17 +540,17 @@ export default function Dashboard({ onNavigate }) {
           <BigCard
             icon={<XCircle size={16} />}
             label="Expenses Today"
-            value={`PKR ${(daily.totalExpenses + (daily.inventoryValue || 0)).toLocaleString()}`}
-            sub={`Expenses + new stock on ${formatDate(selDate)}`}
+            value={`PKR ${(daily.totalExpenses + (daily.cogs || 0)).toLocaleString()}`}
+            sub={`OpEx + COGS on ${formatDate(selDate)}`}
             color="red"
-            inventoryValue={daily.inventoryValue || 0}
+            cogsValue={daily.cogs || 0}
             expensesValue={daily.totalExpenses || 0}
           />
           <BigCard
             icon={<TrendingUp size={16} />}
             label="Daily Net Income"
             value={`PKR ${daily.netIncome.toLocaleString()}`}
-            sub="Collected − expenses − new stock"
+            sub="Collected − OpEx − COGS"
             color={daily.netIncome >= 0 ? "green" : "red"}
             isSensitive={true}
           />
@@ -815,7 +848,7 @@ function BigCard({
   isSensitive = false,
   onClick,
   isClickable = false,
-  inventoryValue,
+  cogsValue,
   expensesValue,
   pendingStatusBalance,
   suspendedBalance,
@@ -841,7 +874,7 @@ function BigCard({
   }, [showInfo]);
 
   const hasExpenseBreakdown =
-    inventoryValue !== undefined && expensesValue !== undefined;
+    cogsValue !== undefined && expensesValue !== undefined;
   const hasInventoryPending =
     inventoryPending !== undefined && inventoryPending > 0;
   const hasBalanceBreakdown =
@@ -875,7 +908,7 @@ function BigCard({
                   <Info size={14} />
                 </button>
                 {showInfo && (
-                  <div className="absolute right-0 top-6 z-50 bg-white border border-gray-200 rounded-xl shadow-xl p-3 w-68 text-xs">
+                  <div className="absolute right-0 top-6 z-50 bg-white border border-gray-200 rounded-xl shadow-xl p-3 w-72 text-xs">
                     {infoContent.type === "everCollected" && (
                       <>
                         <p className="font-bold text-gray-800 mb-2 text-sm">
@@ -953,19 +986,19 @@ function BigCard({
                               PKR {infoContent.expenses.toLocaleString()}
                             </span>
                           </div>
-                          {/* Warehouse stock */}
+                          {/* COGS */}
                           <div className="flex justify-between items-start">
                             <div>
                               <span className="text-red-600 font-semibold text-sm">
-                                ➖ Stock in Warehouse
+                                ➖ Cost of Goods Sold (COGS)
                               </span>
                               <p className="text-[10px] text-gray-400 mt-0.5 leading-relaxed max-w-44">
-                                Cash you already spent on materials still
-                                sitting unsold
+                                The cost of inventory actually installed/issued
+                                to customers.
                               </p>
                             </div>
                             <span className="font-semibold text-red-600 text-sm whitespace-nowrap ml-4">
-                              PKR {infoContent.warehouseStock.toLocaleString()}
+                              PKR {infoContent.cogs.toLocaleString()}
                             </span>
                           </div>
                           {/* Divider + result */}
@@ -975,7 +1008,7 @@ function BigCard({
                               className={`text-sm whitespace-nowrap ml-4 ${
                                 infoContent.collected -
                                   infoContent.expenses -
-                                  infoContent.warehouseStock >=
+                                  infoContent.cogs >=
                                 0
                                   ? "text-green-700"
                                   : "text-red-600"
@@ -985,45 +1018,23 @@ function BigCard({
                               {(
                                 infoContent.collected -
                                 infoContent.expenses -
-                                infoContent.warehouseStock
+                                infoContent.cogs
                               ).toLocaleString()}
                             </span>
                           </div>
                         </div>
                         {/* Contextual explanation */}
-                        {infoContent.collected -
-                          infoContent.expenses -
-                          infoContent.warehouseStock <
-                          0 && (
-                          <div className="mt-3 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2.5 text-blue-700 leading-relaxed">
-                            <p className="font-semibold text-xs mb-1">
-                              Why is this negative?
-                            </p>
-                            <p className="text-xs">
-                              You have{" "}
-                              <strong>
-                                PKR{" "}
-                                {infoContent.warehouseStock.toLocaleString()} of
-                                stock
-                              </strong>{" "}
-                              sitting in your warehouse that you paid for but
-                              haven't yet recovered. As subscribers pay and you
-                              issue more stock, this number will improve
-                              automatically.
-                            </p>
-                          </div>
-                        )}
-                        {infoContent.collected -
-                          infoContent.expenses -
-                          infoContent.warehouseStock >=
-                          0 && (
-                          <div className="mt-3 bg-green-50 border border-green-100 rounded-lg px-3 py-2.5 text-green-700">
-                            <p className="text-xs font-semibold">
-                              ✅ You are in profit after all costs and remaining
-                              stock.
-                            </p>
-                          </div>
-                        )}
+                        <div className="mt-3 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2.5 text-blue-700 leading-relaxed">
+                          <p className="font-semibold text-xs mb-1">
+                            How is this calculated?
+                          </p>
+                          <p className="text-xs">
+                            Profit is calculated by subtracting OpEx and{" "}
+                            <strong>COGS</strong> from Revenue. Stock sitting in
+                            your warehouse is an Asset, not an expense, so it
+                            does not lower your profit until you issue it!
+                          </p>
+                        </div>
                       </>
                     )}
                   </div>
@@ -1070,12 +1081,12 @@ function BigCard({
               </span>
             </div>
             <div className="flex items-center justify-between text-xs">
-              <span className="flex items-center gap-1 text-blue-600 font-semibold">
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500"></span>
-                Inventory Stock
+              <span className="flex items-center gap-1 text-red-500 font-semibold">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-400"></span>
+                Cost of Goods Sold (COGS)
               </span>
-              <span className="font-semibold text-blue-600">
-                PKR {inventoryValue.toLocaleString()}
+              <span className="font-semibold text-red-600">
+                PKR {cogsValue.toLocaleString()}
               </span>
             </div>
           </div>
@@ -1134,3 +1145,4 @@ function BigCard({
     </div>
   );
 }
+``;

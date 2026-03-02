@@ -97,7 +97,13 @@ export default function Settings() {
 
   // ── PACKAGE HANDLERS ──
   const handleAddPkg = async () => {
-    if (!newPkg.name || !newPkg.price) return;
+    if (
+      !newPkg.name ||
+      !newPkg.price ||
+      Number(newPkg.price) < 0 ||
+      Number(newPkg.speedMbps) < 0
+    )
+      return;
     await addPackage({
       name: newPkg.name,
       price: newPkg.price,
@@ -117,6 +123,8 @@ export default function Settings() {
   };
 
   const saveEdit = async () => {
+    if (Number(editPkgData.price) < 0 || Number(editPkgData.speedMbps) < 0)
+      return;
     if (!editPkgId) return;
     await updatePackage(editPkgId, editPkgData);
     setEditPkgId(null);
@@ -264,6 +272,7 @@ export default function Settings() {
                       <td className="px-6 py-3">
                         <input
                           type="number"
+                          min={"0"}
                           className={inp()}
                           value={editPkgData.speedMbps}
                           placeholder="Mbps"
@@ -273,11 +282,16 @@ export default function Settings() {
                               speedMbps: e.target.value,
                             }))
                           }
+                          onKeyDown={(e) =>
+                            ["-", "+", "e", "E"].includes(e.key) &&
+                            e.preventDefault()
+                          }
                         />
                       </td>
                       <td className="px-6 py-3">
                         <input
                           type="number"
+                          min={"0"}
                           className={inp()}
                           value={editPkgData.price}
                           onChange={(e) =>
@@ -285,6 +299,10 @@ export default function Settings() {
                               ...d,
                               price: e.target.value,
                             }))
+                          }
+                          onKeyDown={(e) =>
+                            ["-", "+", "e", "E"].includes(e.key) &&
+                            e.preventDefault()
                           }
                         />
                       </td>
@@ -411,20 +429,28 @@ export default function Settings() {
             />
             <input
               type="number"
+              min={"0"}
               className={inp()}
               placeholder="Price (PKR)"
               value={newPkg.price}
               onChange={(e) =>
                 setNewPkg((d) => ({ ...d, price: e.target.value }))
               }
+              onKeyDown={(e) =>
+                ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
+              }
             />
             <input
               type="number"
+              min={"0"}
               className={inp()}
               placeholder="Speed (Mbps)"
               value={newPkg.speedMbps}
               onChange={(e) =>
                 setNewPkg((d) => ({ ...d, speedMbps: e.target.value }))
+              }
+              onKeyDown={(e) =>
+                ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
               }
             />
           </div>

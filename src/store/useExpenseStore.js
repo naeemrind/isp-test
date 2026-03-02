@@ -2,14 +2,17 @@ import { create } from "zustand";
 import db from "../db/database";
 
 export const EXPENSE_CATEGORIES = [
-  "Monthly Salary",
-  "Food Labour",
-  "Electricity Bill",
-  "Petrol",
-  "Misc",
-  "Devices Purchased",
-  "Rent",
   "Internet Uplink",
+  "Monthly Salary",
+  "Rent",
+  "Electricity Bill",
+  "Petrol / Travel",
+  "Food & Labour",
+  "Marketing & Ads",
+  "Software & Hosting",
+  "Maintenance & Tools",
+  "Taxes & Fees",
+  "Misc",
 ];
 
 const useExpenseStore = create((set) => ({
@@ -42,8 +45,7 @@ const useExpenseStore = create((set) => ({
   },
 
   getTotalExpenses: () => {
-    // accessed via get() pattern, but easier as a computed here
-    return 0; // components will compute from expenses array directly
+    return 0; // computed dynamically in components
   },
 }));
 
