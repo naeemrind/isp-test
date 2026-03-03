@@ -93,6 +93,9 @@ export default function ExpenseForm({ expense, onClose }) {
             className={inp(errors.amount)}
             value={form.amount}
             onChange={(e) => set("amount", e.target.value)}
+            onKeyDown={(e) =>
+              ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
+            }
           />
         </Field>
         <Field label="Description" className="col-span-2">

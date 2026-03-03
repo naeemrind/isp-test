@@ -205,6 +205,9 @@ export default function InventoryForm({ item, onClose }) {
               value={form.quantity}
               placeholder="How many did you buy in total?"
               onChange={(e) => set("quantity", e.target.value)}
+              onKeyDown={(e) =>
+                ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
+              }
             />
             <p className="text-xs text-gray-400 mt-1">
               Total units on the purchase invoice.
@@ -222,6 +225,9 @@ export default function InventoryForm({ item, onClose }) {
                 value={form.unitRate}
                 placeholder="Cost per unit"
                 onChange={(e) => set("unitRate", e.target.value)}
+                onKeyDown={(e) =>
+                  ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
+                }
               />
             </div>
             <p className="text-xs text-gray-400 mt-1">
@@ -285,6 +291,9 @@ export default function InventoryForm({ item, onClose }) {
               value={form.stockIn}
               placeholder={qty ? `Max ${qty}` : "Units received"}
               onChange={(e) => set("stockIn", e.target.value)}
+              onKeyDown={(e) =>
+                ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
+              }
             />
             <p className="text-xs text-gray-400 mt-1">
               Units physically in your warehouse now.
@@ -314,6 +323,9 @@ export default function InventoryForm({ item, onClose }) {
               value={form.stockOut}
               placeholder="0"
               onChange={(e) => set("stockOut", e.target.value)}
+              onKeyDown={(e) =>
+                ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
+              }
             />
             <p className="text-xs text-gray-400 mt-1">
               Units already given to technicians.

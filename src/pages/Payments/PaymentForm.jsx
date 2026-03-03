@@ -444,6 +444,9 @@ export default function PaymentForm({ customer, onClose }) {
                 ? `Suggested: PKR ${renewalPrice.toLocaleString()}`
                 : `Max: PKR ${pendingAmount.toLocaleString()}`
             }
+            onKeyDown={(e) =>
+              ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
+            }
           />
           {isRenewal && (
             <p className="text-xs text-gray-400 mt-1">

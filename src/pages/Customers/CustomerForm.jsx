@@ -396,6 +396,9 @@ export default function CustomerForm({ customer, onClose }) {
                     value={payment.amountPaid}
                     onChange={(e) => setPayField("amountPaid", e.target.value)}
                     placeholder={`Max PKR ${packagePrice.toLocaleString()}`}
+                    onKeyDown={(e) =>
+                      ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
+                    }
                   />
                 </Field>
 

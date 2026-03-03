@@ -203,6 +203,9 @@ export default function RestockModal({ item, onClose, onViewHistory }) {
                 placeholder={`How many ${item.unit}s purchased?`}
                 onChange={(e) => setQty(e.target.value)}
                 autoFocus
+                onKeyDown={(e) =>
+                  ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
+                }
               />
             </div>
           </div>
@@ -228,6 +231,9 @@ export default function RestockModal({ item, onClose, onViewHistory }) {
                 value={unitRate}
                 placeholder="Cost per unit"
                 onChange={(e) => setUnitRate(e.target.value)}
+                onKeyDown={(e) =>
+                  ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
+                }
               />
             </div>
           </div>

@@ -8,6 +8,8 @@ import {
   Receipt,
   ChevronLeft,
   ChevronRight,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react";
 import Modal from "../../components/ui/Modal";
 import ConfirmDialog from "../../components/ui/ConfirmDialog";
@@ -86,10 +88,11 @@ export default function Expenses() {
   const [pendingEditExpense, setPendingEditExpense] = useState(null); // Intercepts edit for password
   const [deleteTarget, setDeleteTarget] = useState(null);
 
-  // Filters & Pagination
+  // Filters, Sort & Pagination
   const [filterCategory, setFilterCategory] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
+  const [sortDir, setSortDir] = useState("desc"); // 'desc' = newest first, 'asc' = oldest first
 
   // Reset to page 1 when search or category changes
   useEffect(() => {
@@ -112,10 +115,12 @@ export default function Expenses() {
     return matchCategory && matchSearch;
   });
 
-  // Sort (Newest first)
-  const sorted = [...filtered].sort(
-    (a, b) => new Date(b.date) - new Date(a.date),
-  );
+  // Sort by Date
+  const sorted = [...filtered].sort((a, b) => {
+    const dateA = new Date(a.date);
+    const dateB = new Date(b.date);
+    return sortDir === "desc" ? dateB - dateA : dateA - dateB;
+  });
 
   // Pagination Slice
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
@@ -247,8 +252,20 @@ export default function Expenses() {
           <table className="w-full text-sm text-left">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200 text-gray-500 uppercase tracking-wider">
-                <th className="px-4 py-3 font-bold text-xs whitespace-nowrap">
-                  Date
+                <th
+                  onClick={() =>
+                    setSortDir((s) => (s === "desc" ? "asc" : "desc"))
+                  }
+                  className="px-4 py-3 font-bold text-xs whitespace-nowrap cursor-pointer select-none hover:bg-gray-100 transition-colors"
+                >
+                  <div className="flex items-center gap-1">
+                    Date
+                    {sortDir === "desc" ? (
+                      <ArrowDown size={13} className="text-gray-500" />
+                    ) : (
+                      <ArrowUp size={13} className="text-gray-500" />
+                    )}
+                  </div>
                 </th>
                 <th className="px-4 py-3 font-bold text-xs whitespace-nowrap">
                   Category

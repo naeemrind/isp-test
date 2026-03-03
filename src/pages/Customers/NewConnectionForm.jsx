@@ -13,6 +13,8 @@ import {
   Tag,
   Info,
   Zap,
+  ArrowDown,
+  ArrowRight,
 } from "lucide-react";
 import { checkDuplicate } from "../../utils/duplicateCheck";
 import { today } from "../../utils/dateUtils";
@@ -122,6 +124,8 @@ export default function NewConnectionForm({ onClose }) {
   const [amountPaid, setAmountPaid] = useState("");
   const [paymentDate, setPaymentDate] = useState(today());
   const [paymentNote, setPaymentNote] = useState("");
+  // Allocation Priority: "package" or "material"
+  const [allocationPriority, setAllocationPriority] = useState("package");
 
   // ── Discount fields ──────────────────────────────────────────────────────────
   const [discountType, setDiscountType] = useState("none");
@@ -167,7 +171,39 @@ export default function NewConnectionForm({ onClose }) {
         : 0;
   const discountAmt = Math.min(Math.max(0, rawDiscount), packagePrice);
   const effectivePkgPrice = packagePrice - discountAmt;
+
+  // Grand Total calculation
   const grandTotal = effectivePkgPrice + (showInventory ? materialTotal : 0);
+
+  // ── Payment Split Calculation (The Logic Fix) ─────────────────────────────────
+  const enteredAmount = Number(amountPaid) || 0;
+  const showMat = showInventory && materialTotal > 0;
+
+  let allocPackage = 0;
+  let allocMaterial = 0;
+
+  if (enteredAmount > 0) {
+    if (allocationPriority === "package") {
+      // Priority 1: Clear Package
+      allocPackage = Math.min(enteredAmount, effectivePkgPrice);
+      const remainingForMat = enteredAmount - allocPackage;
+      // Priority 2: Clear Material
+      if (showMat) {
+        allocMaterial = Math.min(remainingForMat, materialTotal);
+      }
+    } else {
+      // Priority 1: Clear Material
+      if (showMat) {
+        allocMaterial = Math.min(enteredAmount, materialTotal);
+      }
+      const remainingForPkg = enteredAmount - allocMaterial;
+      // Priority 2: Clear Package
+      allocPackage = Math.min(remainingForPkg, effectivePkgPrice);
+    }
+  }
+
+  const pendingPackage = effectivePkgPrice - allocPackage;
+  const pendingMaterial = showMat ? materialTotal - allocMaterial : 0;
 
   // ── Auto-fill amountPaid when totals change ───────────────────────────────────
   useEffect(() => {
@@ -316,11 +352,12 @@ export default function NewConnectionForm({ onClose }) {
         notes: form.notes,
       });
 
-      // 2. Create billing cycle with grandTotal as totalAmount
+      // 2. Create billing cycle
+      // IMPORTANT: Cycle only tracks package price. Inventory price goes to job.
       const newCycle = await createInitialCycle(
         newCustomer.id,
         form.startDate,
-        grandTotal,
+        effectivePkgPrice, // Only package amount in cycle
       );
 
       // Store breakdown metadata on the cycle for invoice rendering
@@ -333,20 +370,22 @@ export default function NewConnectionForm({ onClose }) {
         materialTotal: showInventory ? materialTotal : 0,
       };
       await db.paymentCycles.update(newCycle.id, { breakdown });
-      newCycle.breakdown = breakdown; // patch in-memory
+      newCycle.breakdown = breakdown;
 
-      // 3. Record payment
-      const paidAmt = Number(amountPaid) || 0;
-      if (showPayment && paidAmt > 0) {
-        await addInstallment(
-          newCycle.id,
-          paidAmt,
-          paymentDate,
-          paymentNote || "",
-        );
+      // 3. Record Payment (Split Logic)
+      if (showPayment) {
+        // A. Package Payment (goes to cycle)
+        if (allocPackage > 0) {
+          await addInstallment(
+            newCycle.id,
+            allocPackage,
+            paymentDate,
+            paymentNote || "Initial Payment",
+          );
+        }
       }
 
-      // 4. Issue inventory items
+      // 4. Issue Inventory & Record Job Payment
       let savedJob = null;
       if (showInventory && lines.length > 0) {
         const validLines = lineDetails.filter(
@@ -396,6 +435,8 @@ export default function NewConnectionForm({ onClose }) {
             });
           }
 
+          // B. Inventory Payment (goes to job)
+          const jobPending = materialTotal - allocMaterial;
           savedJob = await addJob({
             date: form.startDate,
             technicianName: technicianName.trim() || null,
@@ -405,19 +446,26 @@ export default function NewConnectionForm({ onClose }) {
             note: jobNote.trim() || null,
             items: issuedItems,
             totalValue: materialTotal,
+            amountPaid: allocMaterial, // Explicitly allocated to material
+            amountPending: jobPending,
           });
         }
       }
 
       setSavedSummary({
         customer: newCustomer,
-        paidAmt,
+        paidAmt: enteredAmount,
         grandTotal,
         discountAmt,
         effectivePkgPrice,
         materialTotal: showInventory ? materialTotal : 0,
         job: savedJob,
         packageName: pkg?.name ?? "—",
+        // Pass split info for summary view
+        allocPackage,
+        allocMaterial,
+        pendingPackage,
+        pendingMaterial,
       });
       setDone(true);
     } catch (err) {
@@ -428,7 +476,7 @@ export default function NewConnectionForm({ onClose }) {
 
   // ── Success screen ─────────────────────────────────────────────────────────────
   if (done && savedSummary) {
-    const remaining = savedSummary.grandTotal - savedSummary.paidAmt;
+    const totalRemaining = savedSummary.grandTotal - savedSummary.paidAmt;
     return (
       <div className="space-y-5">
         <div className="flex flex-col items-center gap-3 py-3 text-center">
@@ -475,12 +523,43 @@ export default function NewConnectionForm({ onClose }) {
               </span>
             </div>
           )}
-          {remaining > 0 ? (
-            <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-amber-800">
-              <span className="font-semibold">Remaining Balance</span>
-              <span className="font-bold">
-                PKR {remaining.toLocaleString()}
-              </span>
+
+          {/* Detailed Breakdown of where money went */}
+          {(savedSummary.allocPackage > 0 ||
+            savedSummary.allocMaterial > 0) && (
+            <div className="text-xs text-gray-500 bg-gray-100 p-2 rounded mt-1">
+              {savedSummary.allocPackage > 0 && (
+                <p>
+                  • Package received PKR{" "}
+                  {savedSummary.allocPackage.toLocaleString()}
+                </p>
+              )}
+              {savedSummary.allocMaterial > 0 && (
+                <p>
+                  • Inventory received PKR{" "}
+                  {savedSummary.allocMaterial.toLocaleString()}
+                </p>
+              )}
+            </div>
+          )}
+
+          {totalRemaining > 0 ? (
+            <div className="space-y-1">
+              <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-amber-800">
+                <span className="font-semibold">Total Remaining</span>
+                <span className="font-bold">
+                  PKR {totalRemaining.toLocaleString()}
+                </span>
+              </div>
+              {/* Show where the debt is */}
+              <div className="flex justify-between text-xs px-1 text-red-600 font-medium">
+                {savedSummary.pendingPackage > 0 && (
+                  <span>Package Dues: {savedSummary.pendingPackage}</span>
+                )}
+                {savedSummary.pendingMaterial > 0 && (
+                  <span>Inventory Dues: {savedSummary.pendingMaterial}</span>
+                )}
+              </div>
             </div>
           ) : savedSummary.paidAmt > 0 ? (
             <div className="flex items-center gap-1.5 text-green-700 text-xs font-semibold pt-0.5">
@@ -488,22 +567,6 @@ export default function NewConnectionForm({ onClose }) {
             </div>
           ) : null}
         </div>
-
-        {savedSummary.job && (
-          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-800">
-            <p className="font-semibold mb-1.5">
-              📦 {savedSummary.job.items.length} item
-              {savedSummary.job.items.length !== 1 ? "s" : ""} issued from
-              inventory
-            </p>
-            {savedSummary.job.items.map((item, i) => (
-              <p key={i} className="text-xs text-blue-700 leading-relaxed">
-                {item.description} × {item.qty} {item.unit} = PKR{" "}
-                {item.totalValue.toLocaleString()}
-              </p>
-            ))}
-          </div>
-        )}
 
         <button
           onClick={onClose}
@@ -713,6 +776,9 @@ export default function NewConnectionForm({ onClose }) {
                   placeholder={
                     discountType === "percent" ? "e.g. 10" : "e.g. 500"
                   }
+                  onKeyDown={(e) =>
+                    ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
+                  }
                 />
               </Field>
             )}
@@ -852,6 +918,10 @@ export default function NewConnectionForm({ onClose }) {
                               updateLine(l.id, "qty", e.target.value)
                             }
                             className={`w-full border rounded-lg px-2 h-9 text-sm text-center font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors[`qty_${l.id}`] ? "border-red-400 bg-red-50" : "border-gray-300"}`}
+                            onKeyDown={(e) =>
+                              ["-", "+", "e", "E"].includes(e.key) &&
+                              e.preventDefault()
+                            }
                           />
                           {errors[`qty_${l.id}`] && (
                             <p className="text-xs text-red-500 mt-0.5">
@@ -879,6 +949,10 @@ export default function NewConnectionForm({ onClose }) {
                                 updateLine(l.id, "customRate", e.target.value)
                               }
                               className={`w-24 border rounded-lg px-2 h-8 text-sm text-right font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 ${errors[`rate_${l.id}`] ? "border-red-400 bg-red-50" : "border-gray-300"}`}
+                              onKeyDown={(e) =>
+                                ["-", "+", "e", "E"].includes(e.key) &&
+                                e.preventDefault()
+                              }
                             />
                             <span className="text-xs text-gray-400">
                               per {l.item.unit}
@@ -945,92 +1019,188 @@ export default function NewConnectionForm({ onClose }) {
         {showPayment && (
           <div className="px-5 pb-5 border-t border-gray-100">
             {selectedPkg && (
-              <div className="mt-4 bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-1.5 text-sm mb-4">
-                <p className="text-[10px] font-bold uppercase text-gray-400 tracking-widest mb-2 flex items-center gap-1">
-                  <Info size={11} /> Billing Summary
-                </p>
-                <div className="flex justify-between text-gray-600">
-                  <span>Package — {selectedPkg.name}</span>
-                  <span>PKR {packagePrice.toLocaleString()}</span>
-                </div>
-                {discountAmt > 0 && (
-                  <div className="flex justify-between text-green-700">
-                    <span>Discount</span>
-                    <span>− PKR {discountAmt.toLocaleString()}</span>
-                  </div>
-                )}
-                {showInventory && materialTotal > 0 && (
+              <div className="mt-4 mb-6">
+                {/* ── Bill Summary ── */}
+                <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-1.5 text-sm">
+                  <p className="text-[10px] font-bold uppercase text-gray-400 tracking-widest mb-2 flex items-center gap-1">
+                    <Info size={11} /> Billing Summary
+                  </p>
                   <div className="flex justify-between text-gray-600">
-                    <span>Material / Equipment</span>
-                    <span>+ PKR {materialTotal.toLocaleString()}</span>
+                    <span>Package — {selectedPkg.name}</span>
+                    <span>PKR {packagePrice.toLocaleString()}</span>
+                  </div>
+                  {discountAmt > 0 && (
+                    <div className="flex justify-between text-green-700">
+                      <span>Discount</span>
+                      <span>− PKR {discountAmt.toLocaleString()}</span>
+                    </div>
+                  )}
+                  {showInventory && materialTotal > 0 && (
+                    <div className="flex justify-between text-gray-600">
+                      <span>Material / Equipment</span>
+                      <span>+ PKR {materialTotal.toLocaleString()}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between font-bold text-gray-900 border-t border-gray-200 pt-2 mt-1">
+                    <span>Total Due</span>
+                    <span>PKR {grandTotal.toLocaleString()}</span>
+                  </div>
+                </div>
+
+                {/* ── Allocation Controls ── */}
+                {showMat && (
+                  <div className="flex items-center gap-4 mt-4 mb-2">
+                    <p className="text-xs font-semibold text-gray-500">
+                      Allocation Priority:
+                    </p>
+                    <label className="flex items-center gap-2 text-xs font-medium text-gray-700 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="allocation"
+                        checked={allocationPriority === "package"}
+                        onChange={() => setAllocationPriority("package")}
+                        className="text-blue-600 focus:ring-blue-500"
+                      />
+                      Clear Package First (Recommended)
+                    </label>
+                    <label className="flex items-center gap-2 text-xs font-medium text-gray-700 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="allocation"
+                        checked={allocationPriority === "material"}
+                        onChange={() => setAllocationPriority("material")}
+                        className="text-amber-600 focus:ring-amber-500"
+                      />
+                      Clear Material First
+                    </label>
                   </div>
                 )}
-                <div className="flex justify-between font-bold text-gray-900 border-t border-gray-200 pt-2 mt-1">
-                  <span>Total Due</span>
-                  <span>PKR {grandTotal.toLocaleString()}</span>
+
+                {/* ── Main Input ── */}
+                <div className="grid grid-cols-2 gap-4 mt-2">
+                  <Field
+                    label="Total Amount Received (PKR)"
+                    error={errors.amountPaid}
+                  >
+                    <input
+                      type="number"
+                      min="0"
+                      className={`${inp(errors.amountPaid)} text-lg font-bold text-gray-800`}
+                      value={amountPaid}
+                      onChange={(e) => {
+                        userEditedAmount.current = true;
+                        setAmountPaid(e.target.value);
+                        setErrors((ex) => ({ ...ex, amountPaid: "" }));
+                      }}
+                      placeholder="0"
+                      onKeyDown={(e) =>
+                        ["-", "+", "e", "E"].includes(e.key) &&
+                        e.preventDefault()
+                      }
+                    />
+                  </Field>
+
+                  <Field label="Payment Date *" error={errors.paymentDate}>
+                    <input
+                      type="date"
+                      className={inp(errors.paymentDate)}
+                      value={paymentDate}
+                      max={today()}
+                      onChange={(e) => setPaymentDate(e.target.value)}
+                    />
+                  </Field>
                 </div>
-              </div>
-            )}
 
-            <div className="grid grid-cols-2 gap-4">
-              <Field
-                label="Amount Paid (leave blank to skip)"
-                error={errors.amountPaid}
-              >
-                <input
-                  type="number"
-                  min="0"
-                  className={inp(errors.amountPaid)}
-                  value={amountPaid}
-                  onChange={(e) => {
-                    userEditedAmount.current = true;
-                    setAmountPaid(e.target.value);
-                    setErrors((ex) => ({ ...ex, amountPaid: "" }));
-                  }}
-                  placeholder={`Total: PKR ${grandTotal.toLocaleString()}`}
-                />
-              </Field>
+                {/* ── Dynamic Breakdown Table ── */}
+                {enteredAmount > 0 && (
+                  <div className="mt-4 border rounded-xl overflow-hidden text-sm">
+                    <table className="w-full text-left">
+                      <thead className="bg-gray-100 text-gray-500 text-xs uppercase font-semibold">
+                        <tr>
+                          <th className="px-4 py-2">Item</th>
+                          <th className="px-4 py-2 text-right">Cost</th>
+                          <th className="px-4 py-2 text-right">Paid</th>
+                          <th className="px-4 py-2 text-right">Remaining</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {/* Package Row */}
+                        <tr className="bg-white">
+                          <td className="px-4 py-2 font-medium text-blue-700">
+                            Package
+                          </td>
+                          <td className="px-4 py-2 text-right text-gray-600">
+                            {effectivePkgPrice.toLocaleString()}
+                          </td>
+                          <td className="px-4 py-2 text-right font-bold text-green-600">
+                            {allocPackage.toLocaleString()}
+                          </td>
+                          <td className="px-4 py-2 text-right">
+                            {pendingPackage > 0 ? (
+                              <span className="text-red-500 font-semibold">
+                                {pendingPackage.toLocaleString()}
+                              </span>
+                            ) : (
+                              <span className="text-gray-400 text-xs">
+                                Cleared
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                        {/* Material Row (if exists) */}
+                        {showMat && (
+                          <tr className="bg-white">
+                            <td className="px-4 py-2 font-medium text-amber-700">
+                              Material
+                            </td>
+                            <td className="px-4 py-2 text-right text-gray-600">
+                              {materialTotal.toLocaleString()}
+                            </td>
+                            <td className="px-4 py-2 text-right font-bold text-green-600">
+                              {allocMaterial.toLocaleString()}
+                            </td>
+                            <td className="px-4 py-2 text-right">
+                              {pendingMaterial > 0 ? (
+                                <span className="text-red-500 font-semibold">
+                                  {pendingMaterial.toLocaleString()}
+                                </span>
+                              ) : (
+                                <span className="text-gray-400 text-xs">
+                                  Cleared
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                        {/* Footer / Balance Check */}
+                        {enteredAmount > grandTotal && (
+                          <tr className="bg-green-50">
+                            <td
+                              colSpan={3}
+                              className="px-4 py-2 text-right font-bold text-green-800"
+                            >
+                              Excess Payment (Credit)
+                            </td>
+                            <td className="px-4 py-2 text-right font-bold text-green-800">
+                              {(enteredAmount - grandTotal).toLocaleString()}
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
 
-              <Field label="Payment Date *" error={errors.paymentDate}>
-                <input
-                  type="date"
-                  className={inp(errors.paymentDate)}
-                  value={paymentDate}
-                  max={today()}
-                  onChange={(e) => setPaymentDate(e.target.value)}
-                />
-              </Field>
-
-              <div className="col-span-2">
-                <Field label="Payment Note (optional)">
-                  <input
-                    className={inp()}
-                    value={paymentNote}
-                    onChange={(e) => setPaymentNote(e.target.value)}
-                    placeholder="e.g. Cash, JazzCash, EasyPaisa..."
-                  />
-                </Field>
-              </div>
-            </div>
-
-            {selectedPkg && Number(amountPaid) > 0 && (
-              <div
-                className={`mt-3 flex items-center justify-between rounded-lg px-4 py-2.5 text-sm font-semibold ${
-                  Number(amountPaid) >= grandTotal
-                    ? "bg-green-100 text-green-800"
-                    : "bg-yellow-50 text-yellow-800 border border-yellow-200"
-                }`}
-              >
-                <span>
-                  {Number(amountPaid) >= grandTotal
-                    ? "✓ Fully Paid"
-                    : "Remaining Balance"}
-                </span>
-                <span>
-                  {Number(amountPaid) >= grandTotal
-                    ? "PKR 0"
-                    : `PKR ${(grandTotal - Number(amountPaid)).toLocaleString()}`}
-                </span>
+                <div className="mt-4">
+                  <Field label="Payment Note (optional)">
+                    <input
+                      className={inp()}
+                      value={paymentNote}
+                      onChange={(e) => setPaymentNote(e.target.value)}
+                      placeholder="e.g. Cash, JazzCash, EasyPaisa..."
+                    />
+                  </Field>
+                </div>
               </div>
             )}
           </div>

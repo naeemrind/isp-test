@@ -49,6 +49,7 @@ export default function Settings() {
   const [newPkg, setNewPkg] = useState({ name: "", price: "", speedMbps: "" });
   const [editPkgId, setEditPkgId] = useState(null);
   const [editPkgData, setEditPkgData] = useState({});
+  const [pendingEditPkg, setPendingEditPkg] = useState(null); // Intercepts edit for password
   const [historyPkg, setHistoryPkg] = useState(null);
   const [deletePkg, setDeletePkg] = useState(null);
 
@@ -379,7 +380,7 @@ export default function Settings() {
                           </button>
 
                           <button
-                            onClick={() => startEdit(pkg)}
+                            onClick={() => setPendingEditPkg(pkg)}
                             className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
                             title="Edit"
                           >
@@ -565,6 +566,21 @@ export default function Settings() {
           </div>
         </div>
       </Modal>
+
+      {/* PASSWORD PROMPT FOR EDITING */}
+      <ConfirmDialog
+        isOpen={!!pendingEditPkg}
+        onClose={() => setPendingEditPkg(null)}
+        onConfirm={() => {
+          startEdit(pendingEditPkg);
+          setPendingEditPkg(null);
+        }}
+        title="Authorize Edit"
+        message={`You are about to edit the package "${pendingEditPkg?.name}". Please enter the Admin password to proceed.`}
+        confirmLabel="Proceed to Edit"
+        requirePassword={true}
+        danger={false}
+      />
 
       {/* CONFIRM DELETE DIALOG */}
       <ConfirmDialog

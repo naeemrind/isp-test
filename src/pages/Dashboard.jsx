@@ -93,8 +93,7 @@ export default function Dashboard({ onNavigate }) {
     at_overdueMoney = 0,
     at_overdueCount = 0;
   let at_activeCount = 0,
-    at_suspendedCount = 0,
-    at_totalEver = 0;
+    at_suspendedCount = 0;
   let at_pendingStatusBalance = 0,
     at_suspendedBalance = 0;
 
@@ -125,32 +124,28 @@ export default function Dashboard({ onNavigate }) {
     return days < 0 && (cycle.amountPending || 0) === 0;
   }).length;
 
+  let at_subscriptionPaid = 0;
   cycles.forEach((cy) => {
     (cy.installments || []).forEach((inst) => {
-      at_totalEver += inst.amountPaid || 0;
+      at_subscriptionPaid += inst.amountPaid || 0;
     });
   });
 
-  // Inventory job payments — jobs where subscriber paid for hardware/equipment
   let at_inventoryPaid = 0;
   let at_inventoryPending = 0;
   jobs.forEach((job) => {
     at_inventoryPaid += Number(job.amountPaid) || 0;
     at_inventoryPending += Number(job.amountPending) || 0;
   });
-  at_totalEver += at_inventoryPaid;
 
-  // ── NEW ACCOUNTING LOGIC (COGS vs Inventory Value) ──
+  const at_totalRevenue = at_subscriptionPaid + at_inventoryPaid;
 
-  // Current Warehouse Asset Value (Not used for Profit, just for reference)
   const at_inventoryValue = inventoryItems.reduce(
     (s, i) => s + (i.inHand ?? 0) * (i.unitRate || 0),
     0,
   );
 
-  // Total Cash Spent on Inventory (All stock ever purchased)
   let at_totalInventorySpend = 0;
-  // COGS (Cost of Goods Sold) - The value of stock that has been USED/ISSUED
   let at_cogs = 0;
 
   inventoryItems.forEach((i) => {
@@ -163,7 +158,6 @@ export default function Dashboard({ onNavigate }) {
           log.totalValue || (log.qty || 0) * (log.unitRate || i.unitRate || 0);
       });
     } else {
-      // Fallback for legacy items with no issue log
       at_cogs += (i.stockOut || 0) * (i.unitRate || 0);
     }
   });
@@ -180,23 +174,23 @@ export default function Dashboard({ onNavigate }) {
     collected: at_collected,
     pending: at_pending,
     overdueMoney: at_overdueMoney,
-    totalEverCollected: at_totalEver, // Total Revenue
+
+    // Revenue Breakdown
+    subscriptionRevenue: at_subscriptionPaid,
+    inventoryRevenue: at_inventoryPaid,
+    totalRevenue: at_totalRevenue,
+
     overdueCount: at_overdueCount,
     renewalDueCount: at_renewalDueCount,
     pendingStatusBalance: at_pendingStatusBalance,
     suspendedBalance: at_suspendedBalance,
-    totalExpenses: at_totalExpenses, // OpEx
-    inventoryValue: at_inventoryValue, // Unsold assets
-    cogs: at_cogs, // Cost of Goods Sold
+    totalExpenses: at_totalExpenses,
+    inventoryValue: at_inventoryValue,
+    cogs: at_cogs,
     totalInventorySpend: at_totalInventorySpend,
-    // CORRECT ACCOUNTING METRICS:
-    // Profit = Revenue - OpEx - Cost of Used Inventory
-    netIncome: at_totalEver - at_totalExpenses - at_cogs,
-    // Cash Flow = Revenue - OpEx - Cost of ALL Bought Inventory
-    netCashFlow: at_totalEver - at_totalExpenses - at_totalInventorySpend,
-
+    netIncome: at_totalRevenue - at_totalExpenses - at_cogs,
+    netCashFlow: at_totalRevenue - at_totalExpenses - at_totalInventorySpend,
     inventoryPending: at_inventoryPending,
-    inventoryPaid: at_inventoryPaid,
   };
 
   // 2. MONTHLY
@@ -249,18 +243,33 @@ export default function Dashboard({ onNavigate }) {
     });
   });
 
-  let mo_totalCollected = 0;
+  let mo_subscriptionRevenue = 0;
   cycles.forEach((cy) => {
     (cy.installments || []).forEach((inst) => {
       const d = new Date(inst.datePaid);
       if (d >= monthStart && d <= monthEnd)
-        mo_totalCollected += inst.amountPaid || 0;
+        mo_subscriptionRevenue += inst.amountPaid || 0;
     });
   });
 
+  let mo_inventoryRevenue = 0;
+  jobs.forEach((job) => {
+    const d = new Date(job.date || job.createdAt);
+    if (d >= monthStart && d <= monthEnd) {
+      mo_inventoryRevenue += Number(job.amountPaid) || 0;
+    }
+  });
+
+  const mo_totalRevenue = mo_subscriptionRevenue + mo_inventoryRevenue;
+
   const monthly = {
-    collected: mo_collected,
-    totalCollected: mo_totalCollected,
+    collected: mo_collected, // Cycle specific
+
+    // Revenue Breakdown
+    subscriptionRevenue: mo_subscriptionRevenue,
+    inventoryRevenue: mo_inventoryRevenue,
+    totalRevenue: mo_totalRevenue,
+
     pending: mo_pending,
     overdueMoney: mo_overdueMoney,
     newCustomers: mo_newCustomers,
@@ -269,22 +278,17 @@ export default function Dashboard({ onNavigate }) {
     overdueCount: mo_overdueCount,
     totalExpenses: mo_expenses,
     cogs: mo_cogs,
-    netIncome: mo_totalCollected - mo_expenses - mo_cogs,
+    netIncome: mo_totalRevenue - mo_expenses - mo_cogs,
     pendingStatusBalance: 0,
     suspendedBalance: 0,
   };
 
   // 3. DAILY
-  let day_collected = 0,
-    day_newCustomers = 0;
-  cycles.forEach((cy) => {
-    (cy.installments || []).forEach((inst) => {
-      if (inst.datePaid === selDate) day_collected += inst.amountPaid || 0;
-    });
-  });
+  let day_newCustomers = 0;
   activeCustomers.forEach((c) => {
     if (c.createdAt && c.createdAt.startsWith(selDate)) day_newCustomers++;
   });
+
   const day_expenses = expenses
     .filter((e) => e.date === selDate)
     .reduce((s, e) => s + (Number(e.amount) || 0), 0);
@@ -300,12 +304,35 @@ export default function Dashboard({ onNavigate }) {
     });
   });
 
+  let day_subscriptionRevenue = 0;
+  cycles.forEach((cy) => {
+    (cy.installments || []).forEach((inst) => {
+      if (inst.datePaid === selDate)
+        day_subscriptionRevenue += inst.amountPaid || 0;
+    });
+  });
+
+  let day_inventoryRevenue = 0;
+  jobs.forEach((job) => {
+    const jobDate =
+      job.date || (job.createdAt ? job.createdAt.split("T")[0] : "");
+    if (jobDate === selDate)
+      day_inventoryRevenue += Number(job.amountPaid) || 0;
+  });
+
+  const day_totalRevenue = day_subscriptionRevenue + day_inventoryRevenue;
+
   const daily = {
-    collected: day_collected,
     newCustomers: day_newCustomers,
+
+    // Revenue Breakdown
+    subscriptionRevenue: day_subscriptionRevenue,
+    inventoryRevenue: day_inventoryRevenue,
+    totalRevenue: day_totalRevenue,
+
     totalExpenses: day_expenses,
     cogs: day_cogs,
-    netIncome: day_collected - day_expenses - day_cogs,
+    netIncome: day_totalRevenue - day_expenses - day_cogs,
   };
 
   // ── Alerts ───────────────────────────────────────────────────────────────────
@@ -403,7 +430,7 @@ export default function Dashboard({ onNavigate }) {
       {/* CARDS */}
       {mode !== "daily" ? (
         <>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 items-stretch">
             <BigCard
               icon={<Users size={16} />}
               label="Total Subscribers"
@@ -424,11 +451,16 @@ export default function Dashboard({ onNavigate }) {
               label={
                 mode === "monthly" ? "Collected This Month" : "Total Revenue"
               }
-              value={`PKR ${(mode === "monthly" ? monthly.totalCollected : allTime.totalEverCollected).toLocaleString()}`}
-              sub={
+              value={`PKR ${(mode === "monthly" ? monthly.totalRevenue : allTime.totalRevenue).toLocaleString()}`}
+              subsRevenue={
                 mode === "monthly"
-                  ? "Payments received this month"
-                  : "Sum of all payments ever received"
+                  ? monthly.subscriptionRevenue
+                  : allTime.subscriptionRevenue
+              }
+              invRevenue={
+                mode === "monthly"
+                  ? monthly.inventoryRevenue
+                  : allTime.inventoryRevenue
               }
               color="green"
               isSensitive={true}
@@ -447,7 +479,6 @@ export default function Dashboard({ onNavigate }) {
               icon={<XCircle size={16} />}
               label="Total Expenses"
               value={`PKR ${((displayStats.totalExpenses || 0) + (displayStats.cogs || 0)).toLocaleString()}`}
-              sub="Operational Expenses + COGS"
               color="red"
               cogsValue={displayStats.cogs || 0}
               expensesValue={displayStats.totalExpenses || 0}
@@ -456,7 +487,6 @@ export default function Dashboard({ onNavigate }) {
               icon={<Clock size={16} />}
               label="Total Balance Due"
               value={`PKR ${((displayStats.pending || 0) + (allTime.inventoryPending || 0)).toLocaleString()}`}
-              sub="Click to view all"
               color="amber"
               onClick={() => onNavigate("customers", "balance-due")}
               isClickable
@@ -516,24 +546,35 @@ export default function Dashboard({ onNavigate }) {
                 type: "netIncome",
                 collected:
                   mode === "monthly"
-                    ? monthly.totalCollected
-                    : allTime.totalEverCollected,
+                    ? monthly.totalRevenue
+                    : allTime.totalRevenue,
                 expenses:
                   mode === "monthly"
                     ? monthly.totalExpenses
                     : allTime.totalExpenses,
                 cogs: mode === "monthly" ? monthly.cogs : allTime.cogs,
               }}
+              // NEW PROPS FOR NET INCOME BREAKDOWN
+              netIncomeRevenue={
+                mode === "monthly" ? monthly.totalRevenue : allTime.totalRevenue
+              }
+              netIncomeExpenses={
+                mode === "monthly"
+                  ? monthly.totalExpenses
+                  : allTime.totalExpenses
+              }
+              netIncomeCogs={mode === "monthly" ? monthly.cogs : allTime.cogs}
             />
           </div>
         </>
       ) : (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 items-stretch">
           <BigCard
             icon={<CreditCard size={16} />}
             label="Collected Today"
-            value={`PKR ${daily.collected.toLocaleString()}`}
-            sub={`Payments received on ${formatDate(selDate)}`}
+            value={`PKR ${daily.totalRevenue.toLocaleString()}`}
+            subsRevenue={daily.subscriptionRevenue}
+            invRevenue={daily.inventoryRevenue}
             color="green"
             isSensitive={true}
           />
@@ -541,7 +582,6 @@ export default function Dashboard({ onNavigate }) {
             icon={<XCircle size={16} />}
             label="Expenses Today"
             value={`PKR ${(daily.totalExpenses + (daily.cogs || 0)).toLocaleString()}`}
-            sub={`OpEx + COGS on ${formatDate(selDate)}`}
             color="red"
             cogsValue={daily.cogs || 0}
             expensesValue={daily.totalExpenses || 0}
@@ -553,6 +593,10 @@ export default function Dashboard({ onNavigate }) {
             sub="Collected − OpEx − COGS"
             color={daily.netIncome >= 0 ? "green" : "red"}
             isSensitive={true}
+            // NEW PROPS FOR NET INCOME BREAKDOWN
+            netIncomeRevenue={daily.totalRevenue}
+            netIncomeExpenses={daily.totalExpenses}
+            netIncomeCogs={daily.cogs}
           />
           <BigCard
             icon={<Users size={16} />}
@@ -848,6 +892,8 @@ function BigCard({
   isSensitive = false,
   onClick,
   isClickable = false,
+  subsRevenue,
+  invRevenue,
   cogsValue,
   expensesValue,
   pendingStatusBalance,
@@ -855,6 +901,10 @@ function BigCard({
   inventoryPending,
   onInventoryPendingClick,
   infoContent,
+  // New props for Net Income Breakdown
+  netIncomeRevenue,
+  netIncomeExpenses,
+  netIncomeCogs,
 }) {
   const c = colorMap[color] || colorMap.blue;
   const [revealed, setRevealed] = useState(false);
@@ -873,6 +923,8 @@ function BigCard({
     return () => document.removeEventListener("mousedown", handler);
   }, [showInfo]);
 
+  const hasRevenueBreakdown =
+    subsRevenue !== undefined && invRevenue !== undefined;
   const hasExpenseBreakdown =
     cogsValue !== undefined && expensesValue !== undefined;
   const hasInventoryPending =
@@ -880,11 +932,12 @@ function BigCard({
   const hasBalanceBreakdown =
     (pendingStatusBalance !== undefined && suspendedBalance !== undefined) ||
     hasInventoryPending;
+  const hasNetIncomeBreakdown = netIncomeRevenue !== undefined;
 
   return (
     <div
       onClick={isClickable ? onClick : undefined}
-      className={`rounded-xl px-4 py-3 ${c.bg} flex flex-col justify-between ${highlight ? "ring-2 ring-offset-1 ring-red-300" : ""} ${isClickable ? "cursor-pointer hover:shadow-md transition-shadow active:scale-95" : ""}`}
+      className={`rounded-xl px-4 py-3 flex flex-col justify-between h-full ${c.bg} ${highlight ? "ring-2 ring-offset-1 ring-red-300" : ""} ${isClickable ? "cursor-pointer hover:shadow-md transition-shadow active:scale-95" : ""}`}
     >
       <div>
         <div className="flex items-center justify-between mb-2">
@@ -908,7 +961,7 @@ function BigCard({
                   <Info size={14} />
                 </button>
                 {showInfo && (
-                  <div className="absolute right-0 top-6 z-50 bg-white border border-gray-200 rounded-xl shadow-xl p-3 w-72 text-xs">
+                  <div className="absolute right-0 top-6 z-50 bg-white border border-gray-200 rounded-xl shadow-xl p-3 w-72 text-xs cursor-default">
                     {infoContent.type === "everCollected" && (
                       <>
                         <p className="font-bold text-gray-800 mb-2 text-sm">
@@ -916,8 +969,8 @@ function BigCard({
                         </p>
                         <p className="text-gray-600 leading-relaxed mb-2">
                           The total of all actual cash payments ever received
-                          from subscribers — across every billing cycle since
-                          day one.
+                          from subscribers — across every billing cycle and
+                          inventory purchase since day one.
                         </p>
                         <div className="space-y-1 border-t border-gray-100 pt-2">
                           <div className="flex justify-between">
@@ -937,7 +990,7 @@ function BigCard({
                             </span>
                           </div>
                           {infoContent.pendingBalance > 0 && (
-                            <div className="flex justify-between text-amber-600">
+                            <div className="flex justify-between text-amber-600 mt-1">
                               <span>Still pending (not included)</span>
                               <span className="font-semibold">
                                 PKR{" "}
@@ -1070,7 +1123,27 @@ function BigCard({
             value
           )}
         </div>
-        {hasExpenseBreakdown ? (
+
+        {/* Dynamic Breakdowns */}
+        {hasRevenueBreakdown ? (
+          <div className="mt-1 space-y-0.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-gray-500 font-medium">Subscriptions</span>
+              <span className="font-semibold text-gray-700">
+                PKR {subsRevenue.toLocaleString()}
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="flex items-center gap-1 text-green-600 font-semibold">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-400"></span>
+                Equipment Issued
+              </span>
+              <span className="font-semibold text-green-700">
+                PKR {invRevenue.toLocaleString()}
+              </span>
+            </div>
+          </div>
+        ) : hasExpenseBreakdown ? (
           <div className="mt-1 space-y-0.5">
             <div className="flex items-center justify-between text-xs">
               <span className="text-gray-500 font-medium">
@@ -1087,6 +1160,31 @@ function BigCard({
               </span>
               <span className="font-semibold text-red-600">
                 PKR {cogsValue.toLocaleString()}
+              </span>
+            </div>
+          </div>
+        ) : hasNetIncomeBreakdown ? (
+          <div className="mt-1 space-y-0.5">
+            <div className="flex justify-between text-xs">
+              <span className="text-gray-500 font-medium">Revenue</span>
+              <span className="font-semibold text-gray-700">
+                PKR {netIncomeRevenue.toLocaleString()}
+              </span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-red-500 font-medium flex items-center gap-1">
+                <span className="w-1 h-1 rounded-full bg-red-400"></span> OpEx
+              </span>
+              <span className="font-semibold text-red-600">
+                - PKR {netIncomeExpenses.toLocaleString()}
+              </span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-red-500 font-medium flex items-center gap-1">
+                <span className="w-1 h-1 rounded-full bg-red-400"></span> COGS
+              </span>
+              <span className="font-semibold text-red-600">
+                - PKR {netIncomeCogs.toLocaleString()}
               </span>
             </div>
           </div>
@@ -1134,9 +1232,11 @@ function BigCard({
                 </span>
               </button>
             )}
-            <div className="text-xs text-gray-400 mt-0.5">
-              Click to view all
-            </div>
+            {!hasInventoryPending && (
+              <div className="text-xs text-gray-400 mt-0.5">
+                Click to view all
+              </div>
+            )}
           </div>
         ) : (
           <div className="text-xs text-gray-500 mt-0.5 font-medium">{sub}</div>
@@ -1145,4 +1245,3 @@ function BigCard({
     </div>
   );
 }
-``;

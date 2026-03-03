@@ -578,6 +578,9 @@ export default function BulkIssueStockModal({ customer, onClose }) {
                     value={row.qty}
                     onChange={(e) => updateRow(row.id, "qty", e.target.value)}
                     autoFocus={idx === 0}
+                    onKeyDown={(e) =>
+                      ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
+                    }
                   />
 
                   {/* Per unit price */}
@@ -595,6 +598,10 @@ export default function BulkIssueStockModal({ customer, onClose }) {
                       value={row.customRate}
                       onChange={(e) =>
                         updateRow(row.id, "customRate", e.target.value)
+                      }
+                      onKeyDown={(e) =>
+                        ["-", "+", "e", "E"].includes(e.key) &&
+                        e.preventDefault()
                       }
                     />
                   </div>
@@ -691,6 +698,9 @@ export default function BulkIssueStockModal({ customer, onClose }) {
                 }`}
                 value={amountPaid}
                 onChange={(e) => setAmountPaid(e.target.value)}
+                onKeyDown={(e) =>
+                  ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
+                }
               />
             </div>
             <p className="text-[10px] text-gray-400 mt-1">

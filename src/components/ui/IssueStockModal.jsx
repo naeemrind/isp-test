@@ -1172,6 +1172,9 @@ export default function IssueStockModal({ item, onClose, onViewHistory }) {
               setError("");
             }}
             autoFocus
+            onKeyDown={(e) =>
+              ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
+            }
           />
         </div>
         <div>
@@ -1212,6 +1215,9 @@ export default function IssueStockModal({ item, onClose, onViewHistory }) {
                 setCustomRate(e.target.value);
                 setError("");
               }}
+              onKeyDown={(e) =>
+                ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
+              }
             />
           </div>
           {Number(customRate) !== item.unitRate && item.unitRate > 0 && (
@@ -1421,6 +1427,9 @@ export default function IssueStockModal({ item, onClose, onViewHistory }) {
                   className="w-full border border-blue-200 bg-white rounded-lg pl-9 pr-2 h-10 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                   value={amountPaid}
                   onChange={(e) => setAmountPaid(e.target.value)}
+                  onKeyDown={(e) =>
+                    ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
+                  }
                 />
               </div>
               <p className="text-[10px] text-blue-600 mt-1 leading-tight">
