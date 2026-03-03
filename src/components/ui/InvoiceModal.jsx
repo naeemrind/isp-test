@@ -11,8 +11,10 @@ import {
   ImageDown,
   Tag,
   Package,
+  Wrench,
 } from "lucide-react";
 import { formatDate } from "../../utils/dateUtils";
+import useConnectionJobStore from "../../store/useConnectionJobStore";
 
 function invoiceNumber(cycle) {
   const year = cycle.cycleStartDate?.slice(0, 4) || new Date().getFullYear();
@@ -57,16 +59,18 @@ function buildInvoiceHTML({
   originalPackagePrice,
   discountAmt,
   discountLabel,
-  materialTotal,
-  materialItems,
+  installationFee,
+  invTotal,
+  invPaid,
+  invPending,
   previousBalance,
-  totalAmount,
-  amountPaid,
-  amountPending,
+  grandTotal,
+  grandPaid,
+  grandPending,
+  servicePending,
   installments,
 }) {
   const hasDiscount = discountAmt > 0;
-  const hasMaterial = materialTotal > 0;
   const hasPrevBalance = previousBalance > 0;
 
   const discountRow = hasDiscount
@@ -81,28 +85,27 @@ function buildInvoiceHTML({
     </tr>`
     : "";
 
-  const materialRows = hasMaterial
-    ? `
+  const installRow =
+    installationFee > 0
+      ? `
     <tr>
-      <td style="padding:5px 0; color:#92400e; font-size:13px;">📦 Material / Equipment</td>
-      <td style="padding:5px 0; text-align:right; font-weight:600; color:#92400e; font-size:13px;">
-        + PKR ${materialTotal.toLocaleString()}
+      <td style="padding:5px 0; color:#c2410c; font-size:13px;">🛠 Installation / Setup Fee</td>
+      <td style="padding:5px 0; text-align:right; font-weight:600; color:#c2410c; font-size:13px;">
+        + PKR ${installationFee.toLocaleString()}
       </td>
-    </tr>
-    ${(materialItems || [])
-      .map(
-        (it) => `
+    </tr>`
+      : "";
+
+  const materialRow =
+    invTotal > 0
+      ? `
     <tr>
-      <td style="padding:2px 0 2px 16px; color:#9ca3af; font-size:11px;">
-        ${it.description} × ${it.qty} ${it.unit}
+      <td style="padding:5px 0; color:#7e22ce; font-size:13px;">📦 Material / Equipment</td>
+      <td style="padding:5px 0; text-align:right; font-weight:600; color:#7e22ce; font-size:13px;">
+        + PKR ${invTotal.toLocaleString()}
       </td>
-      <td style="padding:2px 0; text-align:right; color:#9ca3af; font-size:11px;">
-        PKR ${it.totalValue.toLocaleString()}
-      </td>
-    </tr>`,
-      )
-      .join("")}`
-    : "";
+    </tr>`
+      : "";
 
   const prevBalanceRow = hasPrevBalance
     ? `
@@ -114,12 +117,12 @@ function buildInvoiceHTML({
     </tr>`
     : "";
 
-  const installmentRows = installments
+  let installmentRows = installments
     .map(
       (inst) => `
     <tr>
       <td style="padding:6px 0; color:#374151; font-size:13px;">
-        ${formatDate(inst.datePaid)}${inst.note ? ` · <span style="color:#9ca3af">${inst.note}</span>` : ""}
+        ${formatDate(inst.datePaid)}${inst.note ? ` · <span style="color:#9ca3af">${inst.note}</span>` : ` · <span style="color:#9ca3af">Service Payment</span>`}
       </td>
       <td style="padding:6px 0; text-align:right; font-weight:600; color:#15803d; font-size:13px;">
         PKR ${Number(inst.amountPaid).toLocaleString()}
@@ -128,8 +131,20 @@ function buildInvoiceHTML({
     )
     .join("");
 
+  if (invPaid > 0) {
+    installmentRows += `
+    <tr>
+      <td style="padding:6px 0; color:#374151; font-size:13px;">
+        ${formatDate(cycle.cycleStartDate)} · <span style="color:#9ca3af">Equipment Payment</span>
+      </td>
+      <td style="padding:6px 0; text-align:right; font-weight:600; color:#15803d; font-size:13px;">
+        PKR ${invPaid.toLocaleString()}
+      </td>
+    </tr>`;
+  }
+
   const installmentsSection =
-    installments.length > 0
+    installments.length > 0 || invPaid > 0
       ? `
     <div style="border:1px solid #e5e7eb; border-radius:10px; overflow:hidden; margin-bottom:16px;">
       <div style="background:#f9fafb; padding:8px 16px; border-bottom:1px solid #e5e7eb;">
@@ -140,7 +155,7 @@ function buildInvoiceHTML({
           ${installmentRows}
           <tr style="border-top:1px solid #f3f4f6;">
             <td style="padding-top:8px; font-weight:600; color:#374151; font-size:13px;">Total Paid</td>
-            <td style="padding-top:8px; text-align:right; font-weight:700; color:#15803d; font-size:13px;">PKR ${amountPaid.toLocaleString()}</td>
+            <td style="padding-top:8px; text-align:right; font-weight:700; color:#15803d; font-size:13px;">PKR ${grandPaid.toLocaleString()}</td>
           </tr>
         </table>
       </div>
@@ -149,34 +164,42 @@ function buildInvoiceHTML({
 
   const shiftedAmount = Number(cycle.shiftedAmount || 0);
   const isCarriedForward = shiftedAmount > 0;
-  const isPaid = amountPending === 0 && !isCarriedForward;
 
-  const statusBar = isCarriedForward
-    ? `
+  let statusBar = "";
+  if (isCarriedForward) {
+    statusBar = `
     <div style="display:flex;align-items:center;justify-content:space-between;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:12px 16px;">
       <div>
         <p style="margin:0;font-weight:700;color:#9a3412;font-size:14px;">Unpaid — Carried Forward</p>
         <p style="margin:2px 0 0;color:#c2410c;font-size:12px;">PKR ${shiftedAmount.toLocaleString()} moved to next cycle.</p>
       </div>
       <p style="margin:0;font-weight:900;color:#c2410c;font-size:20px;">PKR ${shiftedAmount.toLocaleString()}</p>
-    </div>`
-    : isPaid
-      ? `
+    </div>`;
+  } else if (grandPending === 0) {
+    statusBar = `
     <div style="display:flex;align-items:center;gap:12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:12px 16px;">
       <div style="font-size:20px;">✅</div>
       <div>
         <p style="margin:0;font-weight:700;color:#166534;font-size:14px;">Paid in Full</p>
         <p style="margin:2px 0 0;color:#16a34a;font-size:12px;">No outstanding balance. Thank you!</p>
       </div>
-    </div>`
-      : `
+    </div>`;
+  } else {
+    let duesStrs = [];
+    if (servicePending > 0)
+      duesStrs.push(`Service: PKR ${servicePending.toLocaleString()}`);
+    if (invPending > 0)
+      duesStrs.push(`Equipment: PKR ${invPending.toLocaleString()}`);
+
+    statusBar = `
     <div style="display:flex;align-items:center;justify-content:space-between;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:12px 16px;">
       <div>
         <p style="margin:0;font-weight:700;color:#991b1b;font-size:14px;">Balance Due</p>
-        <p style="margin:2px 0 0;color:#dc2626;font-size:12px;">Please pay at your earliest convenience.</p>
+        <p style="margin:4px 0 0;color:#b91c1c;font-size:12px;font-weight:600;">${duesStrs.join(" &nbsp;|&nbsp; ")}</p>
       </div>
-      <p style="margin:0;font-weight:900;color:#b91c1c;font-size:20px;">PKR ${amountPending.toLocaleString()}</p>
+      <p style="margin:0;font-weight:900;color:#b91c1c;font-size:20px;">PKR ${grandPending.toLocaleString()}</p>
     </div>`;
+  }
 
   return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"/><title>Invoice ${invNo}</title>
@@ -237,11 +260,12 @@ function buildInvoiceHTML({
           <td style="padding:5px 0;text-align:right;font-weight:600;color:#1f2937;font-size:13px;">PKR ${originalPackagePrice.toLocaleString()}</td>
         </tr>
         ${discountRow}
-        ${materialRows}
+        ${installRow}
+        ${materialRow}
         ${prevBalanceRow}
         <tr style="border-top:1px solid #e5e7eb;">
-          <td style="padding-top:10px;font-weight:700;color:#1f2937;font-size:14px;">Total Due</td>
-          <td style="padding-top:10px;text-align:right;font-weight:900;color:#111827;font-size:16px;">PKR ${totalAmount.toLocaleString()}</td>
+          <td style="padding-top:10px;font-weight:700;color:#1f2937;font-size:14px;">Grand Total Due</td>
+          <td style="padding-top:10px;text-align:right;font-weight:900;color:#111827;font-size:16px;">PKR ${grandTotal.toLocaleString()}</td>
         </tr>
       </table>
     </div>
@@ -282,6 +306,7 @@ export default function InvoiceModal({
   packageName,
 }) {
   const invoiceRef = useRef(null);
+  const jobs = useConnectionJobStore((s) => s.jobs);
 
   if (!isOpen || !customer || !cycle) return null;
 
@@ -289,26 +314,52 @@ export default function InvoiceModal({
   const scenarioMeta = SCENARIO_LABELS[scenario];
   const invNo = invoiceNumber(cycle);
 
-  // Pull breakdown metadata saved by NewConnectionForm (if any)
   const bd = cycle.breakdown || {};
-
-  // originalPackagePrice:
-  //   - from breakdown (new connection with discount) → bd.originalPackagePrice
-  //   - from renewal  → cycle.totalAmount - previousBalance
-  //   - fallback      → cycle.totalAmount
   const previousBalance = Number(cycle.previousBalance || 0);
+
+  // Calculate Base Service
   const originalPackagePrice =
     bd.originalPackagePrice != null
       ? Number(bd.originalPackagePrice)
       : Number(cycle.totalAmount) - previousBalance;
 
   const discountAmt = Number(bd.discountAmt || 0);
-  const effectivePkgPrice = Number(
-    bd.effectivePkgPrice != null
-      ? bd.effectivePkgPrice
-      : originalPackagePrice - discountAmt,
+  // const effectivePkgPrice = Number(
+  //   bd.effectivePkgPrice != null
+  //     ? bd.effectivePkgPrice
+  //     : originalPackagePrice - discountAmt,
+  // );
+  const installationFee = Number(bd.installationFee || 0);
+
+  // Fetch jobs related to this cycle's start date
+  const relatedJobs = jobs.filter(
+    (j) =>
+      j.subscriberId === customer.id &&
+      (j.date === cycle.cycleStartDate ||
+        j.createdAt?.startsWith(cycle.cycleStartDate)),
   );
-  const materialTotal = Number(bd.materialTotal || 0);
+
+  // Use relatedJobs for inventory financials to be accurate with payments
+  const invTotal =
+    relatedJobs.length > 0
+      ? relatedJobs.reduce((sum, j) => sum + (Number(j.totalValue) || 0), 0)
+      : Number(bd.materialTotal || 0);
+  const invPaid = relatedJobs.reduce(
+    (sum, j) => sum + (Number(j.amountPaid) || 0),
+    0,
+  );
+  const invPending = relatedJobs.reduce(
+    (sum, j) => sum + (Number(j.amountPending) || 0),
+    0,
+  );
+
+  const serviceTotal = Number(cycle.totalAmount);
+  const servicePaid = Number(cycle.amountPaid || 0);
+  const servicePending = Number(cycle.amountPending || 0);
+
+  const grandTotal = serviceTotal + invTotal;
+  const grandPaid = servicePaid + invPaid;
+  const grandPending = servicePending + invPending;
 
   // Build a human-readable discount label
   let discountLabel = "";
@@ -317,17 +368,8 @@ export default function InvoiceModal({
   else if (bd.discountType === "amount" && bd.discountValue > 0)
     discountLabel = `PKR ${Number(bd.discountValue).toLocaleString()} off`;
 
-  const totalAmount = Number(cycle.totalAmount);
-  const amountPaid = Number(cycle.amountPaid || 0);
-  const amountPending = Number(cycle.amountPending || 0);
   const installments = cycle.installments || [];
-
   const isCarriedForward = Number(cycle.shiftedAmount) > 0;
-  const isPaid = amountPending === 0 && !isCarriedForward;
-
-  // Material line items (stored in connection job — not on cycle directly,
-  // but breakdown.materialItems may be stored if we add it later; graceful fallback)
-  const materialItems = bd.materialItems || [];
 
   const invoiceProps = {
     invNo,
@@ -338,13 +380,17 @@ export default function InvoiceModal({
     originalPackagePrice,
     discountAmt,
     discountLabel,
-    effectivePkgPrice,
-    materialTotal,
-    materialItems,
+    installationFee,
+    invTotal,
+    invPaid,
+    invPending,
     previousBalance,
-    totalAmount,
-    amountPaid,
-    amountPending,
+    serviceTotal,
+    servicePaid,
+    servicePending,
+    grandTotal,
+    grandPaid,
+    grandPending,
     installments,
   };
 
@@ -485,7 +531,6 @@ export default function InvoiceModal({
                 </p>
               </div>
               <div className="px-4 py-3 space-y-2">
-                {/* Package line */}
                 <div className="flex justify-between items-center text-sm">
                   <span className="text-gray-600">
                     Package charge ({packageName})
@@ -495,7 +540,6 @@ export default function InvoiceModal({
                   </span>
                 </div>
 
-                {/* Discount line */}
                 {discountAmt > 0 && (
                   <div className="flex justify-between items-center text-sm">
                     <span className="text-green-700 flex items-center gap-1.5">
@@ -508,37 +552,30 @@ export default function InvoiceModal({
                   </div>
                 )}
 
-                {/* Material / Equipment */}
-                {materialTotal > 0 && (
-                  <>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-amber-700 flex items-center gap-1.5">
-                        <Package size={12} className="shrink-0" />
-                        Material / Equipment
-                      </span>
-                      <span className="font-semibold text-amber-700">
-                        + PKR {materialTotal.toLocaleString()}
-                      </span>
-                    </div>
-                    {materialItems.length > 0 && (
-                      <div className="pl-5 space-y-1">
-                        {materialItems.map((it, i) => (
-                          <div
-                            key={i}
-                            className="flex justify-between text-xs text-gray-400"
-                          >
-                            <span>
-                              {it.description} × {it.qty} {it.unit}
-                            </span>
-                            <span>PKR {it.totalValue.toLocaleString()}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </>
+                {installationFee > 0 && (
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-orange-700 flex items-center gap-1.5">
+                      <Wrench size={12} className="shrink-0" />
+                      Installation / Setup Fee
+                    </span>
+                    <span className="font-semibold text-orange-700">
+                      + PKR {installationFee.toLocaleString()}
+                    </span>
+                  </div>
                 )}
 
-                {/* Previous balance */}
+                {invTotal > 0 && (
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-purple-700 flex items-center gap-1.5">
+                      <Package size={12} className="shrink-0" />
+                      Material / Equipment
+                    </span>
+                    <span className="font-semibold text-purple-700">
+                      + PKR {invTotal.toLocaleString()}
+                    </span>
+                  </div>
+                )}
+
                 {previousBalance > 0 && (
                   <div className="flex justify-between items-center text-sm">
                     <span className="text-orange-600 flex items-center gap-1.5">
@@ -550,18 +587,19 @@ export default function InvoiceModal({
                   </div>
                 )}
 
-                {/* Total */}
                 <div className="border-t border-gray-200 pt-2 flex justify-between items-center">
-                  <span className="font-bold text-gray-800">Total Due</span>
+                  <span className="font-bold text-gray-800">
+                    Grand Total Due
+                  </span>
                   <span className="font-black text-gray-900 text-base">
-                    PKR {totalAmount.toLocaleString()}
+                    PKR {grandTotal.toLocaleString()}
                   </span>
                 </div>
               </div>
             </div>
 
             {/* Payments received */}
-            {installments.length > 0 && (
+            {(installments.length > 0 || invPaid > 0) && (
               <div className="border border-gray-200 rounded-xl overflow-hidden mb-4">
                 <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
                   <p className="text-[10px] font-bold uppercase text-gray-400 tracking-widest">
@@ -581,11 +619,9 @@ export default function InvoiceModal({
                         />
                         <span className="text-gray-600">
                           {formatDate(inst.datePaid)}
-                          {inst.note && (
-                            <span className="text-gray-400 ml-1">
-                              · {inst.note}
-                            </span>
-                          )}
+                          <span className="text-gray-400 ml-1">
+                            · {inst.note || "Service Payment"}
+                          </span>
                         </span>
                       </div>
                       <span className="font-semibold text-green-700">
@@ -593,12 +629,31 @@ export default function InvoiceModal({
                       </span>
                     </div>
                   ))}
+                  {invPaid > 0 && (
+                    <div className="flex justify-between items-center text-sm">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2
+                          size={13}
+                          className="text-green-500 shrink-0"
+                        />
+                        <span className="text-gray-600">
+                          {formatDate(cycle.cycleStartDate)}
+                          <span className="text-gray-400 ml-1">
+                            · Equipment Payment
+                          </span>
+                        </span>
+                      </div>
+                      <span className="font-semibold text-green-700">
+                        PKR {invPaid.toLocaleString()}
+                      </span>
+                    </div>
+                  )}
                   <div className="border-t border-gray-100 pt-2 flex justify-between text-sm">
                     <span className="font-semibold text-gray-700">
                       Total Paid
                     </span>
                     <span className="font-bold text-green-700">
-                      PKR {amountPaid.toLocaleString()}
+                      PKR {grandPaid.toLocaleString()}
                     </span>
                   </div>
                 </div>
@@ -627,7 +682,7 @@ export default function InvoiceModal({
                   PKR {Number(cycle.shiftedAmount).toLocaleString()}
                 </p>
               </div>
-            ) : isPaid ? (
+            ) : grandPending === 0 ? (
               <div className="flex items-center gap-3 bg-green-50 border border-green-200 rounded-xl px-4 py-3">
                 <CheckCircle2 size={20} className="text-green-600 shrink-0" />
                 <div>
@@ -647,13 +702,22 @@ export default function InvoiceModal({
                     <p className="font-bold text-red-800 text-sm">
                       Balance Due
                     </p>
-                    <p className="text-xs text-red-600">
-                      Please pay at your earliest convenience.
+                    <p className="text-xs text-red-700 font-semibold mt-0.5">
+                      {[
+                        servicePending > 0
+                          ? `Service: PKR ${servicePending.toLocaleString()}`
+                          : null,
+                        invPending > 0
+                          ? `Equipment: PKR ${invPending.toLocaleString()}`
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" | ")}
                     </p>
                   </div>
                 </div>
-                <p className="font-black text-red-700 text-lg">
-                  PKR {amountPending.toLocaleString()}
+                <p className="font-black text-red-700 text-lg shrink-0 pl-3">
+                  PKR {grandPending.toLocaleString()}
                 </p>
               </div>
             )}

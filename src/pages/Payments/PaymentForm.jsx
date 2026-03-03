@@ -14,6 +14,7 @@ import { today, daysUntil } from "../../utils/dateUtils";
 import usePaymentStore from "../../store/usePaymentStore";
 import usePackageStore from "../../store/usePackageStore";
 import useCustomerStore from "../../store/useCustomerStore";
+import useConnectionJobStore from "../../store/useConnectionJobStore";
 import InvoiceModal from "../../components/ui/InvoiceModal";
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -21,7 +22,7 @@ import InvoiceModal from "../../components/ui/InvoiceModal";
 function SummaryRow({ label, value, valueClass = "text-gray-800", highlight }) {
   return (
     <div
-      className={`flex justify-between items-center text-sm py-1.5 border-b border-gray-100 last:border-0 ${highlight ? "font-bold" : ""}`}
+      className={`flex justify-between items-center text-sm py-1.5 border-b border-gray-100 last:border-0 ${highlight ? "font-bold mt-1 pt-2 border-t-gray-200" : ""}`}
     >
       <span className={highlight ? "text-gray-800" : "text-gray-500"}>
         {label}
@@ -39,9 +40,36 @@ export default function PaymentForm({ customer, onClose }) {
   const renewCycle = usePaymentStore((s) => s.renewCycle);
   const updateCustomer = useCustomerStore((s) => s.updateCustomer);
   const packages = usePackageStore((s) => s.packages);
+  const jobs = useConnectionJobStore((s) => s.jobs);
 
   const activeCycle = getActiveCycle(customer.id);
   const days = activeCycle ? daysUntil(activeCycle.cycleEndDate) : 0;
+
+  // Inventory Dues logic
+  const customerJobs = jobs.filter((j) => j.subscriberId === customer.id);
+  const invPending = customerJobs.reduce(
+    (sum, j) => sum + (j.amountPending || 0),
+    0,
+  );
+
+  // Cycle Dues Breakdown Logic
+  const amountPaidFromCycle = activeCycle?.amountPaid || 0;
+  const prevBal = activeCycle?.previousBalance || 0;
+  const installFee = activeCycle?.breakdown?.installationFee || 0;
+  const pkgFee =
+    activeCycle?.breakdown?.effectivePkgPrice ??
+    (activeCycle ? activeCycle.totalAmount - installFee - prevBal : 0);
+
+  let remPaid = amountPaidFromCycle;
+  const prevBalPaid = Math.min(remPaid, prevBal);
+  const prevPending = prevBal - prevBalPaid;
+  remPaid -= prevBalPaid;
+
+  const installPaid = Math.min(remPaid, installFee);
+  const installPending = installFee - installPaid;
+  remPaid -= installPaid;
+
+  const pkgPending = Math.max(0, pkgFee - remPaid);
 
   // ── Determine situation ───────────────────────────────────────────────────
   const isExpired = days < 0; // cycle ended
@@ -218,6 +246,20 @@ export default function PaymentForm({ customer, onClose }) {
         <p className="text-xs text-gray-400 mt-0.5">{customer.userName}</p>
       </div>
 
+      {/* ── INVENTORY ALERT ── */}
+      {invPending > 0 && (
+        <div className="flex items-start gap-3 rounded-xl bg-purple-50 border border-purple-200 px-4 py-3">
+          <Info size={16} className="text-purple-600 mt-0.5 shrink-0" />
+          <p className="text-sm text-purple-800">
+            <span className="font-bold">Inventory Dues Notice:</span> This
+            subscriber also owes{" "}
+            <strong>PKR {invPending.toLocaleString()}</strong> for
+            equipment/material. You can clear this separately via the{" "}
+            <strong>Inventory Dues</strong> tab on the main screen.
+          </p>
+        </div>
+      )}
+
       {/* ── MODE TOGGLE (only shown when cycle is expired+unpaid) ── */}
       {canChooseMode && (
         <div>
@@ -353,24 +395,34 @@ export default function PaymentForm({ customer, onClose }) {
       {/* ── CURRENT CYCLE SUMMARY (Pay Dues Only mode) ── */}
       {!isRenewal && activeCycle && (
         <div className="rounded-xl bg-gray-50 border border-gray-200 px-4 py-3 space-y-0.5">
-          <p className="text-xs font-bold uppercase text-gray-400 tracking-wide mb-2">
-            Current Billing Cycle
+          <p className="text-xs font-bold uppercase text-gray-400 tracking-wide mb-2 border-b border-gray-200 pb-1.5">
+            Current Billing Cycle Dues
           </p>
+
+          {prevPending > 0 && (
+            <SummaryRow
+              label="Arrears (From Previous)"
+              value={`PKR ${prevPending.toLocaleString()}`}
+              valueClass="text-red-600"
+            />
+          )}
+          {installPending > 0 && (
+            <SummaryRow
+              label="Setup / Installation"
+              value={`PKR ${installPending.toLocaleString()}`}
+              valueClass="text-orange-600"
+            />
+          )}
+          {pkgPending > 0 && (
+            <SummaryRow
+              label="Package Subscription"
+              value={`PKR ${pkgPending.toLocaleString()}`}
+              valueClass="text-blue-600"
+            />
+          )}
+
           <SummaryRow
-            label="Period"
-            value={`${activeCycle.cycleStartDate} → ${activeCycle.cycleEndDate}`}
-          />
-          <SummaryRow
-            label="Total Bill"
-            value={`PKR ${Number(activeCycle.totalAmount).toLocaleString()}`}
-          />
-          <SummaryRow
-            label="Already Paid"
-            value={`PKR ${Number(activeCycle.amountPaid).toLocaleString()}`}
-            valueClass="text-green-700"
-          />
-          <SummaryRow
-            label="Outstanding Balance"
+            label="Total Remaining Dues"
             value={`PKR ${pendingAmount.toLocaleString()}`}
             valueClass={pendingAmount > 0 ? "text-red-600" : "text-green-700"}
             highlight
@@ -433,7 +485,7 @@ export default function PaymentForm({ customer, onClose }) {
             type="number"
             min="0"
             max={!isRenewal ? pendingAmount : undefined}
-            className="w-full border border-gray-300 rounded-lg px-3 h-11 text-base focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            className="w-full border border-gray-300 rounded-lg px-3 h-11 text-base font-bold focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
             value={amount}
             onChange={(e) => {
               setAmount(e.target.value);
@@ -441,7 +493,7 @@ export default function PaymentForm({ customer, onClose }) {
             }}
             placeholder={
               isRenewal
-                ? `Suggested: PKR ${renewalPrice.toLocaleString()}`
+                ? `PKR ${renewalPrice.toLocaleString()}`
                 : `Max: PKR ${pendingAmount.toLocaleString()}`
             }
             onKeyDown={(e) =>

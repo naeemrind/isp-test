@@ -15,6 +15,7 @@ import {
   Zap,
   ArrowDown,
   ArrowRight,
+  Hammer,
 } from "lucide-react";
 import { checkDuplicate } from "../../utils/duplicateCheck";
 import { today } from "../../utils/dateUtils";
@@ -60,6 +61,7 @@ function SectionTitle({ icon: Icon, color, title, badge }) {
     amber: "bg-amber-500",
     green: "bg-green-600",
     purple: "bg-purple-600",
+    gray: "bg-gray-600",
   };
   return (
     <div className="flex items-center gap-2">
@@ -115,6 +117,9 @@ export default function NewConnectionForm({ onClose }) {
     startDate: today(),
   });
 
+  // ── Installation Charges (New Professional Field) ────────────────────────────
+  const [installationFee, setInstallationFee] = useState("");
+
   // ── Inventory fields ─────────────────────────────────────────────────────────
   const [technicianName, setTechnicianName] = useState("");
   const [jobNote, setJobNote] = useState("");
@@ -124,8 +129,8 @@ export default function NewConnectionForm({ onClose }) {
   const [amountPaid, setAmountPaid] = useState("");
   const [paymentDate, setPaymentDate] = useState(today());
   const [paymentNote, setPaymentNote] = useState("");
-  // Allocation Priority: "package" or "material"
-  const [allocationPriority, setAllocationPriority] = useState("package");
+  // Allocation Priority: "service" (Package + Installation) or "material"
+  const [allocationPriority, setAllocationPriority] = useState("service");
 
   // ── Discount fields ──────────────────────────────────────────────────────────
   const [discountType, setDiscountType] = useState("none");
@@ -170,38 +175,54 @@ export default function NewConnectionForm({ onClose }) {
         ? Number(discountValue) || 0
         : 0;
   const discountAmt = Math.min(Math.max(0, rawDiscount), packagePrice);
-  const effectivePkgPrice = packagePrice - discountAmt;
+
+  // Service Total = (Package - Discount) + Installation Fee
+  const installFeeVal = Number(installationFee) || 0;
+  const effectivePkgPrice = packagePrice - discountAmt; // The recurring part
+  const totalServiceCharges = effectivePkgPrice + installFeeVal;
 
   // Grand Total calculation
-  const grandTotal = effectivePkgPrice + (showInventory ? materialTotal : 0);
+  const grandTotal = totalServiceCharges + (showInventory ? materialTotal : 0);
 
-  // ── Payment Split Calculation (The Logic Fix) ─────────────────────────────────
+  // ── Payment Split Calculation (Smart Allocation) ──────────────────────────────
   const enteredAmount = Number(amountPaid) || 0;
   const showMat = showInventory && materialTotal > 0;
 
+  let allocInstall = 0;
   let allocPackage = 0;
   let allocMaterial = 0;
 
+  let rem = enteredAmount;
+
   if (enteredAmount > 0) {
-    if (allocationPriority === "package") {
-      // Priority 1: Clear Package
-      allocPackage = Math.min(enteredAmount, effectivePkgPrice);
-      const remainingForMat = enteredAmount - allocPackage;
-      // Priority 2: Clear Material
+    if (allocationPriority === "service") {
+      // 1. Setup / Installation
+      allocInstall = Math.min(rem, installFeeVal);
+      rem -= allocInstall;
+      // 2. Package
+      allocPackage = Math.min(rem, effectivePkgPrice);
+      rem -= allocPackage;
+      // 3. Material
       if (showMat) {
-        allocMaterial = Math.min(remainingForMat, materialTotal);
+        allocMaterial = Math.min(rem, materialTotal);
+        rem -= allocMaterial;
       }
     } else {
-      // Priority 1: Clear Material
+      // 1. Material
       if (showMat) {
-        allocMaterial = Math.min(enteredAmount, materialTotal);
+        allocMaterial = Math.min(rem, materialTotal);
+        rem -= allocMaterial;
       }
-      const remainingForPkg = enteredAmount - allocMaterial;
-      // Priority 2: Clear Package
-      allocPackage = Math.min(remainingForPkg, effectivePkgPrice);
+      // 2. Setup / Installation
+      allocInstall = Math.min(rem, installFeeVal);
+      rem -= allocInstall;
+      // 3. Package
+      allocPackage = Math.min(rem, effectivePkgPrice);
+      rem -= allocPackage;
     }
   }
 
+  const pendingInstall = installFeeVal - allocInstall;
   const pendingPackage = effectivePkgPrice - allocPackage;
   const pendingMaterial = showMat ? materialTotal - allocMaterial : 0;
 
@@ -314,6 +335,11 @@ export default function NewConnectionForm({ onClose }) {
         e.discount = `Cannot exceed package price PKR ${packagePrice.toLocaleString()}`;
     }
 
+    const installVal = Number(installationFee);
+    if (installationFee && (isNaN(installVal) || installVal < 0)) {
+      e.installationFee = "Invalid amount";
+    }
+
     if (showPayment && amountPaid !== "") {
       const amt = Number(amountPaid);
       if (isNaN(amt) || amt < 0) e.amountPaid = "Enter a valid amount";
@@ -353,11 +379,11 @@ export default function NewConnectionForm({ onClose }) {
       });
 
       // 2. Create billing cycle
-      // IMPORTANT: Cycle only tracks package price. Inventory price goes to job.
+      // IMPORTANT: Cycle total = Package + Installation Fee (Service Revenue)
       const newCycle = await createInitialCycle(
         newCustomer.id,
         form.startDate,
-        effectivePkgPrice, // Only package amount in cycle
+        totalServiceCharges,
       );
 
       // Store breakdown metadata on the cycle for invoice rendering
@@ -367,18 +393,20 @@ export default function NewConnectionForm({ onClose }) {
         discountValue: discountType !== "none" ? Number(discountValue) || 0 : 0,
         discountAmt,
         effectivePkgPrice,
+        installationFee: installFeeVal,
         materialTotal: showInventory ? materialTotal : 0,
       };
       await db.paymentCycles.update(newCycle.id, { breakdown });
       newCycle.breakdown = breakdown;
 
-      // 3. Record Payment (Split Logic)
+      // 3. Record Payment (Smart Allocation)
       if (showPayment) {
-        // A. Package Payment (goes to cycle)
-        if (allocPackage > 0) {
+        // A. Service Payment (goes to cycle)
+        const cyclePaymentAmount = allocInstall + allocPackage;
+        if (cyclePaymentAmount > 0) {
           await addInstallment(
             newCycle.id,
-            allocPackage,
+            cyclePaymentAmount,
             paymentDate,
             paymentNote || "Initial Payment",
           );
@@ -458,12 +486,14 @@ export default function NewConnectionForm({ onClose }) {
         grandTotal,
         discountAmt,
         effectivePkgPrice,
+        installFeeVal,
         materialTotal: showInventory ? materialTotal : 0,
         job: savedJob,
         packageName: pkg?.name ?? "—",
-        // Pass split info for summary view
+        allocInstall,
         allocPackage,
         allocMaterial,
+        pendingInstall,
         pendingPackage,
         pendingMaterial,
       });
@@ -505,6 +535,12 @@ export default function NewConnectionForm({ onClose }) {
               <span>− PKR {savedSummary.discountAmt.toLocaleString()}</span>
             </div>
           )}
+          {savedSummary.installFeeVal > 0 && (
+            <div className="flex justify-between text-gray-600">
+              <span>Installation Fee</span>
+              <span>+ PKR {savedSummary.installFeeVal.toLocaleString()}</span>
+            </div>
+          )}
           {savedSummary.materialTotal > 0 && (
             <div className="flex justify-between text-gray-600">
               <span>Material / Equipment</span>
@@ -525,9 +561,16 @@ export default function NewConnectionForm({ onClose }) {
           )}
 
           {/* Detailed Breakdown of where money went */}
-          {(savedSummary.allocPackage > 0 ||
+          {(savedSummary.allocInstall > 0 ||
+            savedSummary.allocPackage > 0 ||
             savedSummary.allocMaterial > 0) && (
             <div className="text-xs text-gray-500 bg-gray-100 p-2 rounded mt-1">
+              {savedSummary.allocInstall > 0 && (
+                <p>
+                  • Setup/Install received PKR{" "}
+                  {savedSummary.allocInstall.toLocaleString()}
+                </p>
+              )}
               {savedSummary.allocPackage > 0 && (
                 <p>
                   • Package received PKR{" "}
@@ -553,6 +596,9 @@ export default function NewConnectionForm({ onClose }) {
               </div>
               {/* Show where the debt is */}
               <div className="flex justify-between text-xs px-1 text-red-600 font-medium">
+                {savedSummary.pendingInstall > 0 && (
+                  <span>Setup Dues: {savedSummary.pendingInstall}</span>
+                )}
                 {savedSummary.pendingPackage > 0 && (
                   <span>Package Dues: {savedSummary.pendingPackage}</span>
                 )}
@@ -718,19 +764,35 @@ export default function NewConnectionForm({ onClose }) {
         </div>
       </div>
 
-      {/* ══ SECTION 2: DISCOUNT ════════════════════════════════════════════════ */}
+      {/* ══ SECTION 2: CHARGES & DISCOUNT ══════════════════════════════════════ */}
       {selectedPkg && (
         <div className="border border-gray-200 rounded-xl p-5">
           <div className="mb-4">
-            <SectionTitle
-              icon={Tag}
-              color="green"
-              title="Discount"
-              badge="Optional"
-            />
+            <SectionTitle icon={Hammer} color="gray" title="One-Time Charges" />
           </div>
 
           <div className="grid grid-cols-2 gap-4">
+            {/* Installation Fee */}
+            <Field
+              label="Installation / Setup Fee (PKR)"
+              error={errors.installationFee}
+            >
+              <input
+                type="number"
+                min="0"
+                className={inp(errors.installationFee)}
+                value={installationFee}
+                onChange={(e) => {
+                  setInstallationFee(e.target.value);
+                  userEditedAmount.current = false;
+                }}
+                placeholder="0"
+                onKeyDown={(e) =>
+                  ["-", "+", "e", "E"].includes(e.key) && e.preventDefault()
+                }
+              />
+            </Field>
+
             <Field label="Discount Type">
               <select
                 className={inp(errors.discount)}
@@ -1035,6 +1097,12 @@ export default function NewConnectionForm({ onClose }) {
                       <span>− PKR {discountAmt.toLocaleString()}</span>
                     </div>
                   )}
+                  {installFeeVal > 0 && (
+                    <div className="flex justify-between text-gray-600">
+                      <span>Installation Fee</span>
+                      <span>+ PKR {installFeeVal.toLocaleString()}</span>
+                    </div>
+                  )}
                   {showInventory && materialTotal > 0 && (
                     <div className="flex justify-between text-gray-600">
                       <span>Material / Equipment</span>
@@ -1057,11 +1125,11 @@ export default function NewConnectionForm({ onClose }) {
                       <input
                         type="radio"
                         name="allocation"
-                        checked={allocationPriority === "package"}
-                        onChange={() => setAllocationPriority("package")}
+                        checked={allocationPriority === "service"}
+                        onChange={() => setAllocationPriority("service")}
                         className="text-blue-600 focus:ring-blue-500"
                       />
-                      Clear Package First (Recommended)
+                      Clear Package & Setup First
                     </label>
                     <label className="flex items-center gap-2 text-xs font-medium text-gray-700 cursor-pointer">
                       <input
@@ -1124,10 +1192,35 @@ export default function NewConnectionForm({ onClose }) {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100">
+                        {/* Setup Row */}
+                        {(installFeeVal > 0 || allocInstall > 0) && (
+                          <tr className="bg-white">
+                            <td className="px-4 py-2 font-medium text-orange-600">
+                              Setup / Installation
+                            </td>
+                            <td className="px-4 py-2 text-right text-gray-600">
+                              {installFeeVal.toLocaleString()}
+                            </td>
+                            <td className="px-4 py-2 text-right font-bold text-green-600">
+                              {allocInstall.toLocaleString()}
+                            </td>
+                            <td className="px-4 py-2 text-right">
+                              {pendingInstall > 0 ? (
+                                <span className="text-red-500 font-semibold">
+                                  {pendingInstall.toLocaleString()}
+                                </span>
+                              ) : (
+                                <span className="text-gray-400 text-xs">
+                                  Cleared
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        )}
                         {/* Package Row */}
-                        <tr className="bg-white">
-                          <td className="px-4 py-2 font-medium text-blue-700">
-                            Package
+                        <tr className="bg-white border-t border-gray-50">
+                          <td className="px-4 py-2 font-medium text-blue-600">
+                            Package Subscription
                           </td>
                           <td className="px-4 py-2 text-right text-gray-600">
                             {effectivePkgPrice.toLocaleString()}
@@ -1149,7 +1242,7 @@ export default function NewConnectionForm({ onClose }) {
                         </tr>
                         {/* Material Row (if exists) */}
                         {showMat && (
-                          <tr className="bg-white">
+                          <tr className="bg-white border-t border-gray-50">
                             <td className="px-4 py-2 font-medium text-amber-700">
                               Material
                             </td>
