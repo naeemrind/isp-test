@@ -1401,8 +1401,13 @@ export default function Dashboard({ onNavigate }) {
     const logs = Array.isArray(i.issueLog) ? i.issueLog : [];
     if (logs.length > 0) {
       logs.forEach((log) => {
-        // FIX: Multiply quantity issued by original Purchase Rate (i.unitRate)
-        at_cogs += (log.qty || 0) * (i.unitRate || 0);
+        // COGS rule: only count dispatches that are fully paid.
+        // Legacy entries (no amountPending field) are treated as paid.
+        const isPaid =
+          log.amountPending === undefined || Number(log.amountPending) === 0;
+        if (isPaid) {
+          at_cogs += (log.qty || 0) * (i.unitRate || 0);
+        }
       });
     } else {
       at_cogs += (i.stockOut || 0) * (i.unitRate || 0);
@@ -1484,8 +1489,12 @@ export default function Dashboard({ onNavigate }) {
     logs.forEach((log) => {
       const ld = new Date(log.date);
       if (ld >= monthStart && ld <= monthEnd) {
-        // FIX: Multiply quantity issued by original Purchase Rate (i.unitRate)
-        mo_cogs += (log.qty || 0) * (i.unitRate || 0);
+        // COGS rule: only count dispatches that are fully paid
+        const isPaid =
+          log.amountPending === undefined || Number(log.amountPending) === 0;
+        if (isPaid) {
+          mo_cogs += (log.qty || 0) * (i.unitRate || 0);
+        }
       }
     });
   });
@@ -1545,8 +1554,12 @@ export default function Dashboard({ onNavigate }) {
     const logs = Array.isArray(i.issueLog) ? i.issueLog : [];
     logs.forEach((log) => {
       if (log.date === selDate) {
-        // FIX: Multiply quantity issued by original Purchase Rate (i.unitRate)
-        day_cogs += (log.qty || 0) * (i.unitRate || 0);
+        // COGS rule: only count dispatches that are fully paid
+        const isPaid =
+          log.amountPending === undefined || Number(log.amountPending) === 0;
+        if (isPaid) {
+          day_cogs += (log.qty || 0) * (i.unitRate || 0);
+        }
       }
     });
   });

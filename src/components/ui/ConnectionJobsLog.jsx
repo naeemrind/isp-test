@@ -821,18 +821,21 @@ const ITEMS_PER_PAGE = 10;
 function buildAllDispatches(jobs, inventoryItems) {
   const list = [];
 
-  // Path B: Connection Jobs
+  // All jobs (both "connection" and "adhoc" dispatchType) come from the jobs table.
+  // This is the primary source since the new dispatch flow always creates a job.
   for (const job of jobs) {
+    const jobType = job.dispatchType || "connection"; // legacy jobs default to connection
     list.push({
       id: `job-${job.id}`,
       _jobId: job.id,
-      type: "connection",
+      type: jobType,
       date: job.date || job.createdAt,
       createdAt: job.createdAt,
       subscriberName: job.subscriberName || null,
       subscriberUsername: job.subscriberUsername || null,
       technicianName: job.technicianName || null,
       note: job.note || null,
+      reference: job.reference || null,
       items: job.items || [],
       totalValue: job.totalValue || 0,
       amountPaid: job.amountPaid || 0,
@@ -840,14 +843,19 @@ function buildAllDispatches(jobs, inventoryItems) {
     });
   }
 
-  // Path A: Ad-hoc issueLog entries (those NOT tagged as connection)
+  // Legacy ad-hoc issueLog entries that predate the job-based system
+  // (entries without a jobId field). Skipped once they have a linked job.
   for (const item of inventoryItems) {
     const log = Array.isArray(item.issueLog) ? item.issueLog : [];
     for (const entry of log) {
-      const isConnection =
+      const isConnectionEntry =
         entry.jobRef === true || entry.dispatchType === "connection";
-      if (isConnection) continue;
+      // Skip connection entries (covered by connection jobs above)
+      if (isConnectionEntry) continue;
+      // Skip entries that already have a linked job record (new ad-hoc flow)
+      if (entry.jobId) continue;
 
+      // Legacy ad-hoc entry (no jobId) — show with info from issueLog
       list.push({
         id: `adhoc-${item.id}-${entry.createdAt || entry.date}`,
         type: "adhoc",
@@ -856,6 +864,7 @@ function buildAllDispatches(jobs, inventoryItems) {
         subscriberName: entry.subscriberName || null,
         technicianName: entry.issuedTo || null,
         note: entry.note || null,
+        reference: entry.note || null,
         items: [
           {
             description: item.description,
@@ -870,8 +879,8 @@ function buildAllDispatches(jobs, inventoryItems) {
         totalValue:
           entry.totalValue ||
           (entry.qty || 0) * (entry.unitRate || item.unitRate || 0),
-        amountPaid: 0,
-        amountPending: 0,
+        amountPaid: Number(entry.amountPaid) || 0,
+        amountPending: Number(entry.amountPending) || 0,
         _inventoryItem: item,
         _logEntry: entry,
       });
@@ -951,6 +960,10 @@ export default function ConnectionJobsLog() {
     0,
   );
   const adhocTotal = adhocDispatches.reduce((s, d) => s + d.totalValue, 0);
+  const adhocPendingTotal = adhocDispatches.reduce(
+    (s, d) => s + (d.amountPending || 0),
+    0,
+  );
   const grandTotal = connectionTotal + adhocTotal;
 
   const toggleExpand = (id) => {
@@ -1048,8 +1061,14 @@ export default function ConnectionJobsLog() {
           label="Ad-hoc"
           value={adhocDispatches.length}
           sub={`PKR ${adhocTotal.toLocaleString()} value`}
-          extra="No billing linked"
-          extraColor="text-gray-400"
+          extra={
+            adhocPendingTotal > 0
+              ? `PKR ${adhocPendingTotal.toLocaleString()} pending`
+              : adhocDispatches.length > 0
+                ? "All cleared ✓"
+                : "No dispatches"
+          }
+          extraColor={adhocPendingTotal > 0 ? "text-red-500" : "text-green-600"}
         />
       </div>
 
@@ -1248,12 +1267,24 @@ export default function ConnectionJobsLog() {
                             <CheckCircle2 size={10} /> Paid ✓
                           </span>
                         )
+                      ) : dispatch.amountPending > 0 ? (
+                        <span
+                          className="text-[10px] bg-red-100 text-red-700 font-bold px-2 py-0.5 rounded-md flex items-center gap-1 border border-red-200 shadow-sm cursor-help"
+                          title="Pending balance on this ad-hoc dispatch."
+                        >
+                          <AlertCircle size={10} /> Pending
+                        </span>
                       ) : (
                         <span
-                          className="text-[10px] bg-gray-100 text-gray-500 font-medium px-2 py-0.5 rounded-md border border-gray-200 cursor-help"
-                          title="Internal dispatch. No payment tracking required."
+                          className="text-[10px] bg-green-100 text-green-700 font-bold px-2 py-0.5 rounded-md flex items-center gap-1 border border-green-200 shadow-sm cursor-help"
+                          title={
+                            dispatch.amountPaid > 0
+                              ? "Fully paid."
+                              : "Internal use — no billing."
+                          }
                         >
-                          Internal Use
+                          <CheckCircle2 size={10} />{" "}
+                          {dispatch.amountPaid > 0 ? "Paid ✓" : "Internal Use"}
                         </span>
                       )}
                     </div>
@@ -1355,7 +1386,7 @@ export default function ConnectionJobsLog() {
 
                       {/* Right: Payment Summary Box */}
                       {isConnection ? (
-                        <div className="bg-white border border-blue-100 rounded-xl p-4 min-w-[240px] shadow-sm text-sm">
+                        <div className="bg-white border border-blue-100 rounded-xl p-4 min-w-60 shadow-sm text-sm">
                           <p className="text-[10px] font-bold text-blue-600 uppercase tracking-widest mb-3 flex items-center gap-1">
                             <Receipt size={12} /> Payment Summary
                           </p>
@@ -1395,11 +1426,54 @@ export default function ConnectionJobsLog() {
                           )}
                         </div>
                       ) : (
-                        <div className="bg-white border border-amber-100 rounded-xl p-4 min-w-[240px] shadow-sm text-center flex flex-col justify-center text-amber-600/80">
-                          <p className="text-xs font-medium italic">
-                            Ad-hoc Dispatch
+                        <div className="bg-white border border-amber-100 rounded-xl p-4 min-w-60 shadow-sm text-sm">
+                          <p className="text-[10px] font-bold text-amber-600 uppercase tracking-widest mb-3 flex items-center gap-1">
+                            <Receipt size={12} /> Payment Summary
                           </p>
-                          <p className="text-[10px]">No payment expected</p>
+                          <div className="space-y-1.5">
+                            <div className="flex justify-between text-gray-500 font-medium">
+                              <span>Total Value:</span>
+                              <span className="text-gray-800">
+                                PKR {total.toLocaleString()}
+                              </span>
+                            </div>
+                            <div className="flex justify-between text-green-600 font-medium">
+                              <span>Paid:</span>
+                              <span>
+                                PKR{" "}
+                                {(dispatch.amountPaid || 0).toLocaleString()}
+                              </span>
+                            </div>
+                            <div className="flex justify-between text-red-600 font-bold border-t border-gray-100 pt-2 mt-2">
+                              <span>Pending Due:</span>
+                              <span>
+                                PKR{" "}
+                                {(dispatch.amountPending || 0).toLocaleString()}
+                              </span>
+                            </div>
+                          </div>
+                          {dispatch.amountPending > 0 && (
+                            <div className="mt-3 bg-amber-50 text-amber-700 p-2 rounded-lg text-[10px] leading-tight flex items-start gap-1.5 border border-amber-100">
+                              <Info size={12} className="shrink-0 mt-0.5" />
+                              <span>
+                                {dispatch.subscriberName ? (
+                                  <>
+                                    Use the <strong>Inventory Dues</strong>{" "}
+                                    filter in the Subscribers tab to log a
+                                    payment.
+                                  </>
+                                ) : (
+                                  "No subscriber linked — record payment manually."
+                                )}
+                              </span>
+                            </div>
+                          )}
+                          {dispatch.amountPaid === 0 &&
+                            dispatch.amountPending === 0 && (
+                              <p className="text-[10px] text-gray-400 italic mt-2">
+                                Internal use — no billing tracked.
+                              </p>
+                            )}
                         </div>
                       )}
                     </div>
